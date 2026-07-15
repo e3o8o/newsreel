@@ -102,6 +102,17 @@ which is how the look matches without forking it. Attribution: BetterShot, BSD-3
   while mirelo beds landed ~-32 to -25 dBFS depending only on the prompt, so a generated bed
   usually wants a lower value. Listen before shipping. Omitting the `music` block entirely
   gives the procedural bed; `none` drops the bed.
+- **Capture runs headed, and that is load-bearing.** `capture` defaults to a visible browser.
+  It reads like a convenience and is not. Auth providers sit behind bot management (Clerk's
+  API is fronted by Cloudflare, hence the `__cf_bm` cookie), and a headless browser gets
+  flagged, so the session token refresh fails and the app bounces to the sign-in page. The
+  symptom is a saved session that works in a headed browser and is rejected in a headless one,
+  with the server logging an "infinite redirect loop, your keys do not match" message that
+  points at the wrong cause entirely. Do not add `--headless` to make it quieter.
+- **A dev server is slow enough to fool a probe.** A page can return 200 with the app shell
+  painted and its data still loading 15 seconds later. Wait on a selector that only exists once
+  the data has arrived, never on a fixed timeout, and never on `networkidle` (an app that polls
+  never goes idle).
 - **Re-seed before re-capturing.** Interactive shots consume seeded state (each confirm
   burns a pair).
 - **Playwright means web apps only.** It cannot drive a native dialog, a terminal, or an

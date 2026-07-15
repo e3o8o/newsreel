@@ -26,6 +26,9 @@ const COMMANDS = {
     },
     login: {
         config: true,
+        // Logging in is how you get far enough into an app to write the shot list, so this one
+        // cannot require shots to exist yet.
+        skipShots: true,
         mod: '../lib/commands/login.cjs',
         blurb: 'Open a headed browser; log in by hand; save the session',
         usage: ['--timeout <sec>   how long to wait for auth.readyPath (default 480)'],
@@ -127,7 +130,7 @@ async function main() {
 
     const cmd = require(spec.mod);
     // Config commands get the validated bundle; the rest just get their flags.
-    await cmd.run(spec.config ? loadConfig(rest) : { args: parseArgs(rest) });
+    await cmd.run(spec.config ? loadConfig(rest, { skipShots: spec.skipShots }) : { args: parseArgs(rest) });
 }
 
 main().catch((e) => {
