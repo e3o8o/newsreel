@@ -1,0 +1,7 @@
+node_modules/
+.newsreel/
+*.log
+.DS_Store
+.env
+npm-debug.log*
+*.tgz

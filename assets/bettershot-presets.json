@@ -1,0 +1,234 @@
+{
+  "_source": "Derived from BetterShot (KartikLabhshetwar/better-shot), BSD-3-Clause. Values lifted from Sources/Models/BackgroundStyle.swift + Sources/Services/BeautifierRenderer.swift so our pipeline matches its look without forking it.",
+  "gradients": [
+    {
+      "id": "dawn-fire",
+      "name": "Dawn Fire",
+      "stops": [
+        "#FA4F94",
+        "#6652F2",
+        "#4AD6CC"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "deep-ocean",
+      "name": "Deep Ocean",
+      "stops": [
+        "#0A0D80",
+        "#4230ED",
+        "#6BABFA"
+      ],
+      "angle": 153
+    },
+    {
+      "id": "coral-bloom",
+      "name": "Coral Bloom",
+      "stops": [
+        "#FA615C",
+        "#FCB55C",
+        "#E654A6"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "arctic-lens",
+      "name": "Arctic Lens",
+      "stops": [
+        "#DEF2F0",
+        "#75C4DB",
+        "#4087ED"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "neon-pulse",
+      "name": "Neon Pulse",
+      "stops": [
+        "#140538",
+        "#591FD6",
+        "#F2426B"
+      ],
+      "angle": 225
+    },
+    {
+      "id": "ripe-mango",
+      "name": "Ripe Mango",
+      "stops": [
+        "#FCBF33",
+        "#F55436",
+        "#AB30E3"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "soft-linen",
+      "name": "Soft Linen",
+      "stops": [
+        "#F0F0EB",
+        "#CCE0F0",
+        "#F2C2B2"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "tidal-pool",
+      "name": "Tidal Pool",
+      "stops": [
+        "#144C8A",
+        "#40A3B8",
+        "#B2EBC7"
+      ],
+      "angle": 45
+    },
+    {
+      "id": "forge",
+      "name": "Forge",
+      "stops": [
+        "#2E0814",
+        "#DB2B2E",
+        "#FFAB40"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "twilight",
+      "name": "Twilight",
+      "stops": [
+        "#3D1482",
+        "#9638F0",
+        "#F56BBD"
+      ],
+      "angle": 153
+    },
+    {
+      "id": "lagoon",
+      "name": "Lagoon",
+      "stops": [
+        "#6EDBBF",
+        "#409ECC",
+        "#3859BF"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "orchard",
+      "name": "Orchard",
+      "stops": [
+        "#FCE84C",
+        "#70C74A",
+        "#1F946B"
+      ],
+      "angle": 225
+    },
+    {
+      "id": "gemstone",
+      "name": "Gemstone",
+      "stops": [
+        "#1A1447",
+        "#5926A6",
+        "#C263F2"
+      ],
+      "angle": 45
+    },
+    {
+      "id": "sherbet",
+      "name": "Sherbet",
+      "stops": [
+        "#FF7D82",
+        "#FFBD7A",
+        "#8FC7FA"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "granite",
+      "name": "Granite",
+      "stops": [
+        "#EDF5F2",
+        "#A3B8D1",
+        "#546B8C"
+      ],
+      "angle": 135
+    },
+    {
+      "id": "sunrise",
+      "name": "Sunrise",
+      "stops": [
+        "#FA9EC4",
+        "#FAD178",
+        "#6BB5F5"
+      ],
+      "angle": 45
+    }
+  ],
+  "solids": [
+    {
+      "id": "obsidian",
+      "name": "Obsidian",
+      "hex": "#050508"
+    },
+    {
+      "id": "chalk",
+      "name": "Chalk",
+      "hex": "#F5F5F0"
+    },
+    {
+      "id": "slate",
+      "name": "Slate",
+      "hex": "#2B2E38"
+    },
+    {
+      "id": "ember",
+      "name": "Ember",
+      "hex": "#F03D47"
+    },
+    {
+      "id": "tangerine",
+      "name": "Tangerine",
+      "hex": "#F78729"
+    },
+    {
+      "id": "saffron",
+      "name": "Saffron",
+      "hex": "#F5BD3B"
+    },
+    {
+      "id": "fern",
+      "name": "Fern",
+      "hex": "#3B9E5C"
+    },
+    {
+      "id": "cobalt",
+      "name": "Cobalt",
+      "hex": "#2980E0"
+    },
+    {
+      "id": "iris",
+      "name": "Iris",
+      "hex": "#7A45E8"
+    },
+    {
+      "id": "rose",
+      "name": "Rose",
+      "hex": "#EDABA1"
+    },
+    {
+      "id": "seafoam",
+      "name": "Seafoam",
+      "hex": "#A8E6BD"
+    },
+    {
+      "id": "cloud",
+      "name": "Cloud",
+      "hex": "#A1CCF0"
+    }
+  ],
+  "shadowFormula": {
+    "_note": "From BeautifierRenderer.drawShadow(). shortEdge = shorter side of the image in px; strength is style.shadow (0-1).",
+    "blurPx": "max(2, shortEdge * (0.035 + strength * 0.035))",
+    "yOffsetPx": "-shortEdge * (0.012 + strength * 0.018)",
+    "alpha": "strength * 0.36",
+    "color": "black"
+  }
+}

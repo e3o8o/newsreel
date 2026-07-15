@@ -1,0 +1,173 @@
+// newsreel.config.json — the ONLY project-specific file for the newsreel pipeline.
+// `newsreel init` copies this into a project; fill it in and the CLI drives the rest.
+//
+// Comments are fine in the real file: the loader strips // and /* */ and trailing commas
+// before parsing, so this documentation can stay next to the values it explains.
+{
+  "project": "Your Project",        // the kicker printed on every card
+
+  // Where the app runs for capture. Never production.
+  "baseUrl": "http://localhost:3000",
+
+  // Where artifacts land. Relative paths resolve against THIS FILE's directory, never the
+  // shell's cwd.
+  "output": {
+    "videoDir": "docs/demo-videos",   // per-cycle folders go here: <videoDir>/YYYY-MM-DD/
+    "reportDir": "docs/reports",      // where you keep the written report; the CLI never writes here
+    "workDir": ".newsreel"       // persistent intermediates (auth state, clips, cards, cached bed)
+  },
+
+  // Auth: you log in once by hand; the session is reused. Provider-agnostic (Clerk, Auth0,
+  // plain sessions, whatever).
+  "auth": {
+    "storageState": ".newsreel/auth-state.json",
+    "loginPath": "/sign-in",
+    "readyPath": "/dashboard"        // capture starts once this path loads while authed
+  },
+
+  // Optional, and informational only: THE CLI NEVER RUNS THIS. Demo data is app-specific, so
+  // you run the command yourself before capturing. Recorded here so it is not lost.
+  // ⚠️ Re-run it before every clean re-capture: interactive shots consume seeded state
+  //    (each confirm burns a pair).
+  "seed": {
+    "command": "npm run seed:demo",
+    "note": "Re-run before every clean re-capture: interactive shots consume seeded state."
+  },
+
+  "capture": {
+    // The canvas for the whole video. Both must be EVEN (h264 cannot encode an odd side).
+    "viewport": { "width": 1440, "height": 900 },
+    // CSS injected into every shot, to keep dev-only chrome off camera.
+    "hideCss": "nextjs-portal, [data-nextjs-dev-overlay], #__next-build-watcher { display: none !important; }"
+  },
+
+  // The styled frame around every clip (the CleanShot/BetterShot look).
+  // `background` takes one of three shapes:
+  //   { "preset": "deep-ocean" }                                      - a bundled preset by id
+  //                                                                     (16 gradients + 12 solids;
+  //                                                                     run: newsreel presets)
+  //   { "type": "gradient", "from": "#…", "to": "#…", "angle": 135 }  - a custom 2-stop gradient
+  //   { "type": "solid", "color": "#0f172a" }                         - a flat colour
+  // `angle` is optional and overrides a gradient preset's own angle.
+  // `shadow` is 0-1 and is the alpha of a fixed `0 24px 64px` drop shadow.
+  "style": {
+    "background": { "preset": "deep-ocean" },
+    "padding": 64,                  // margin around the clip; 2*padding must be < the short edge
+    "radius": 16,
+    "shadow": 0.35,
+    "accent": "#22c55e",            // cards + lower-thirds
+    "theme": "dark"                 // "dark" | "light"
+  },
+
+  // Narration. Each provider uses a different subset of the keys below; the rest are ignored.
+  //   "elevenlabs" - hosted. Needs apiKeyEnv (an env var, or a KEY=value line in the project's
+  //                  .env), plus voiceId and model.
+  //   "voicebox"   - a local Voicebox server (https://voicebox.sh). Keyless, nothing leaves the
+  //                  machine. Uses baseUrl + profile + language. If the server is not running the
+  //                  run FAILS with instructions; it never silently falls back to another voice.
+  //   "say"        - the keyless macOS fallback; voiceId is a `say` voice name (see: say -v '?').
+  //   "none"       - skips narration; section lengths are then estimated from the narration text.
+  "voice": {
+    "provider": "say",              // "elevenlabs" | "voicebox" | "say" | "none"
+
+    // -- elevenlabs --
+    // "voiceId": "EXAVITQu4vr4xnSDxMaL",  // Sarah (premade; the free tier cannot use library voices)
+    // "model": "eleven_multilingual_v2",
+    // "apiKeyEnv": "ELEVEN_API_KEY",
+
+    // -- voicebox --
+    // "baseUrl": "http://127.0.0.1:17493",  // optional; this is the default
+    // "profile": "Morgan",                  // a profile NAME (case-insensitive) or id; omit to use
+    //                                       // the server's first profile. Resolved via GET /profiles
+    //                                       // at startup, which doubles as the reachability check.
+    // "language": "en",                     // optional; defaults to "en"
+
+    // -- say --
+    "voiceId": "Samantha"           // a macOS voice name; see: say -v '?'
+  },
+
+  // Optional ambient bed under the narration. OMIT THE WHOLE BLOCK for the behaviour this
+  // pipeline has always had (the procedural bed at its usual level).
+  //   "mirelo"     - generate from a text prompt via api.mirelo.ai. COSTS CREDITS: the free
+  //                  preflight always runs first and the price is logged before spending.
+  //                  The result is cached under output.workDir, keyed by (prompt, durationMs,
+  //                  loop), so re-runs reuse the bed and spend nothing. Change any of those
+  //                  three and the next run generates (and pays) again.
+  //   "file"       - use a local audio file as-is. Relative to THIS config file's directory.
+  //   "procedural" - the keyless ffmpeg-synthesised drone. Same as omitting the block.
+  //   "none"       - no bed at all; the narration carries the video.
+  "music": {
+    "provider": "procedural",       // "mirelo" | "file" | "procedural" | "none"
+
+    // Level under the narration, in dB, applied to the bed AS DELIVERED (nothing is
+    // loudness-normalised). Default -18, which reproduces the pre-`music` mix for the
+    // procedural bed. Beds differ a lot: measured at -18, procedural peaked ~-35 dBFS while
+    // mirelo beds landed ~-32 to -25 dBFS depending only on the prompt, so a mirelo or file
+    // bed usually wants a LOWER value here. Listen to a cut before shipping.
+    "gainDb": -18
+
+    // -- mirelo --
+    // "prompt": "calm ambient pad, soft, minimal, unobtrusive background bed",
+    // "apiKeyEnv": "MIRELO_API_KEY",  // optional; MIRELO_API_KEY is the default
+    // "loop": true,                   // ask for a seamlessly loopable bed; default true
+    // "durationMs": 30000,            // how much audio to BUY, not the video length: the bed is
+    //                                 // tiled/trimmed to the final cut either way. Keep it fixed
+    //                                 // and short so the cache keeps hitting. Range 3000-600000
+    //                                 // when loop is true, else 1000-60000.
+
+    // -- file --
+    // "path": "assets/bed.mp3"
+  },
+
+  "video": {
+    "targetSeconds": 60,            // soft target; only warns. Sections speed 1.5-maxSpeed x to fit
+    "maxSpeed": 3,
+    "title": "What shipped this week",
+    "thumbnail": true,              // writes thumbnail.jpg (the title card) as the poster
+    // Optional. Title-card narration; defaults to `title` when omitted.
+    "narration": "Here is what reached production this week."
+  },
+
+  // The only part that changes every cycle: what to show. One entry = one scene.
+  //   id        names the clip and the lower-third, and must be unique (it is a filename)
+  //   route     the path to film, resolved against baseUrl
+  //   caption   the lower-third text; omit for a clip with no caption
+  //   narration drives that section's length, and its voiceover
+  //   tag       optional coloured label on the caption; defaults to `id`
+  //   actions   waitFor | click | fill | wait | scroll | press
+  //             `selector` takes CSS or any Playwright engine ("text=Confirm",
+  //             "role=button[name=Save]").
+  "shots": [
+    {
+      "id": "invoices",
+      "tag": "Invoices",
+      "route": "/invoices",
+      "caption": "One-click approval",
+      "narration": "Approving an invoice is now a single click.",
+      "actions": [
+        { "type": "waitFor", "selector": "[data-testid=invoice-row]" },
+        { "type": "click", "selector": "[data-testid=approve]" },
+        { "type": "wait", "ms": 1500 }
+      ]
+    },
+    {
+      "id": "search",
+      "route": "/search",
+      "caption": "Search fills the rest in",
+      "narration": "Type a company name and the registry fills in the rest.",
+      "actions": [
+        { "type": "fill", "selector": "#query", "value": "Acme" },
+        { "type": "wait", "ms": 1200 },
+        { "type": "click", "selector": "[role=option]" }
+      ]
+    }
+  ],
+
+  // Non-visual wins get a closing card instead of a shot. Omit the whole block to end on the
+  // last shot. `narration` is optional and defaults to the title plus the lines.
+  "closingCard": {
+    "title": "Also shipped",
+    "lines": ["Backend hardening", "Bug backlog cleared", "Coming next: bulk import"],
+    "narration": "Plus backend hardening and a clean bug backlog."
+  }
+}

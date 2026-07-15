@@ -1,0 +1,48 @@
+{
+    "name": "newsreel",
+    "version": "0.1.0",
+    "description": "Turn a week of shipped work into a short, styled demo video: Playwright captures your app, ffmpeg assembles it with cards, voiceover and a music bed",
+    "license": "MIT",
+    "type": "commonjs",
+    "bin": {
+        "newsreel": "bin/newsreel.cjs"
+    },
+    "main": "lib/config.cjs",
+    "files": [
+        "bin",
+        "lib",
+        "assets",
+        "README.md",
+        "LICENSE"
+    ],
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "scripts": {
+        "test": "node test/run.cjs"
+    },
+    "keywords": [
+        "demo",
+        "demo-video",
+        "screencast",
+        "playwright",
+        "ffmpeg",
+        "changelog",
+        "release-notes",
+        "screen-recording",
+        "product-demo",
+        "cli"
+    ],
+    "peerDependencies": {
+        "@playwright/test": ">=1.30.0",
+        "playwright": ">=1.30.0"
+    },
+    "peerDependenciesMeta": {
+        "@playwright/test": {
+            "optional": true
+        },
+        "playwright": {
+            "optional": true
+        }
+    }
+}
