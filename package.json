@@ -3,6 +3,14 @@
     "version": "0.1.0",
     "description": "Turn a week of shipped work into a short, styled demo video: Playwright captures your app, ffmpeg assembles it with cards, voiceover and a music bed",
     "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/e3o8o/newsreel.git"
+    },
+    "bugs": {
+        "url": "https://github.com/e3o8o/newsreel/issues"
+    },
+    "homepage": "https://github.com/e3o8o/newsreel#readme",
     "type": "commonjs",
     "bin": {
         "newsreel": "bin/newsreel.cjs"

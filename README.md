@@ -34,6 +34,7 @@ newsreel run       # capture -> cards -> assemble
 - [Verifying a cut](#verifying-a-cut)
 - [Known limits](#known-limits)
 - [Adding a provider](#adding-a-provider)
+- [The skill folder](#the-skill-folder)
 - [Licence](#licence)
 
 ## Why it looks the way it does
@@ -404,6 +405,24 @@ module.exports = {
 
 Then add the `require` to `PROVIDERS` in that folder's `index.cjs`, and the name to the enum in
 `lib/validate.cjs`. Providers return a raw bed; looping, trimming, ducking and fading are shared.
+
+## The skill folder
+
+`skill/SKILL.md` is the workflow around the tool: how to decide what goes in a report, what
+belongs on the closing card instead of in a shot, and the judgement calls this CLI cannot make
+for you. The CLI is the how; that file is the why.
+
+It is written as a [Claude Code](https://claude.com/claude-code) skill, so an agent can load it
+and run the whole cycle. It reads fine as plain Markdown if you do not use Claude. It is not
+shipped in the npm package.
+
+To use it as a skill, symlink it (which keeps it version-controlled here rather than only in
+your home directory):
+
+```bash
+mkdir -p ~/.claude/skills/newsreel
+ln -s "$PWD/skill/SKILL.md" ~/.claude/skills/newsreel/SKILL.md
+```
 
 ## Licence
 
