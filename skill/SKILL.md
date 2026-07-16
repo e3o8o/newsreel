@@ -92,6 +92,7 @@ which is how the look matches without forking it. Attribution: BetterShot, BSD-3
   status settles, then take the audio. `GET /generate/{id}/status` is an SSE stream, not
   plain JSON. Failures come back as HTTP **200** with `status: "failed"` and a populated
   `error`, so they have to be read out of the record or they look like success.
+- **The built-in "music" is not music.** `mirelo` is a text-to-SFX model and `procedural` is four detuned sines: both are drones, not songs, and louder just means a louder drone. For an actual track use the `file` provider with a real instrumental. A generated one works (BlockRun MiniMax Music via agentcash, ~$0.16 for an instrumental, returns an mp3 URL to download into the project). A real track has dynamics; verify it does (segment RMS should vary), or you have shipped another drone.
 - **Generated music costs money.** `music.provider: "mirelo"` bills per generation, so the
   CLI prices every job with the free preflight and logs it before spending, and caches the
   bed by (prompt, duration, loop). Buy a short loop and let the pipeline tile it; buying the
