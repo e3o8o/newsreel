@@ -408,7 +408,7 @@ Then add the `require` to `PROVIDERS` in that folder's `index.cjs`, and the name
 
 ## The skill folder
 
-`skill/SKILL.md` is the workflow around the tool: how to decide what goes in a report, what
+`SKILL.md` is the workflow around the tool: how to decide what goes in a report, what
 belongs on the closing card instead of in a shot, and the judgement calls this CLI cannot make
 for you. The CLI is the how; that file is the why.
 
@@ -421,7 +421,7 @@ your home directory):
 
 ```bash
 mkdir -p ~/.claude/skills/newsreel
-ln -s "$PWD/skill/SKILL.md" ~/.claude/skills/newsreel/SKILL.md
+ln -s "$PWD/SKILL.md" ~/.claude/skills/newsreel/SKILL.md
 ```
 
 ## Licence
