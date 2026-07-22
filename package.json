@@ -19,6 +19,7 @@
     "files": [
         "bin",
         "lib",
+        "templates",
         "assets",
         "README.md",
         "LICENSE"

@@ -1,0 +1,31 @@
+{
+    "fps": 30,
+    "width": 1440,
+    "height": 900,
+    "voiceDelayFrames": 8,
+    "palette": {
+        "bgGradient": "linear-gradient(135deg, #ff9a5a 0%, #ff5e62 30%, #ff2e88 65%, #7b2ff7 100%)",
+        "bgGlow": "radial-gradient(ellipse at 20% 10%, rgba(255,255,255,0.35), transparent 55%)",
+        "card": "#16121f",
+        "cardSoft": "rgba(22, 18, 31, 0.88)",
+        "ink": "#fff7ef",
+        "inkSoft": "rgba(255, 247, 239, 0.78)",
+        "accent": "#ffd166",
+        "accentInk": "#161320",
+        "chip": "#ffd166",
+        "frameRadius": 18,
+        "font": "'Helvetica Neue', Helvetica, Arial, sans-serif"
+    },
+    "music": { "file": null },
+    "sections": [
+        {
+            "kind": "card",
+            "id": "_title",
+            "kicker": "NEWSREEL",
+            "title": "Run newsreel compose to regenerate this data",
+            "bullets": [],
+            "voice": null,
+            "durationInFrames": 90
+        }
+    ]
+}

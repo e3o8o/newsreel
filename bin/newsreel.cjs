@@ -47,7 +47,13 @@ const COMMANDS = {
     assemble: {
         config: true,
         mod: '../lib/commands/assemble.cjs',
-        blurb: 'Styled frame + speed-fit + voiceover + music + thumbnail',
+        blurb: 'ffmpeg cut: styled frame + speed-fit + voiceover + music + thumbnail',
+        usage: ['--date <YYYY-MM-DD>  output folder name (default today)'],
+    },
+    compose: {
+        config: true,
+        mod: '../lib/commands/compose.cjs',
+        blurb: 'Remotion cut: animated cards/lower-thirds + Ken Burns + voiceover + music',
         usage: ['--date <YYYY-MM-DD>  output folder name (default today)'],
     },
     run: {

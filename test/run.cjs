@@ -163,6 +163,78 @@ function testBackground() {
     eq('preset ids are unique', new Set(presetIds()).size, presetIds().length);
 }
 
+function testPalettes() {
+    const { resolvePalette, paletteIds } = require('../lib/palettes.cjs');
+    ok('palettes: at least the four shipped ids', paletteIds().length >= 4, paletteIds().join(','));
+    eq('palette ids are unique', new Set(paletteIds()).size, paletteIds().length);
+    const sunrise = resolvePalette(null);
+    ok('default palette is sunrise with commons merged',
+        sunrise.accent === '#ffd166' && sunrise.frameRadius === 18 && typeof sunrise.font === 'string');
+    eq('unknown palette name -> null (compose reports it)', resolvePalette('sunset-strip'), null);
+    const custom = resolvePalette({ base: 'deep-ocean', accent: '#ffffff' });
+    ok('object spec overrides its base', custom.accent === '#ffffff' && custom.card === '#0d1220');
+    // Every named palette must be complete: the template reads all of these keys.
+    for (const id of paletteIds()) {
+        const p = resolvePalette(id);
+        const keys = ['bgGradient', 'bgGlow', 'card', 'cardSoft', 'ink', 'inkSoft', 'accent', 'accentInk', 'chip', 'frameRadius', 'font'];
+        ok(`palette "${id}" is complete`, keys.every((k) => p[k] !== undefined && p[k] !== ''),
+            keys.filter((k) => p[k] === undefined || p[k] === '').join(',') || 'all keys');
+    }
+}
+
+// The validator exits the process on errors, so rejects are exercised in a child node.
+function testValidator() {
+    const base = {
+        project: 'Test',
+        baseUrl: 'http://localhost:3000',
+        output: { workDir: '.w', videoDir: 'out' },
+        auth: { storageState: '.w/auth.json', loginPath: '/sign-in', readyPath: '/home' },
+        shots: [{ id: 'a', route: '/a', caption: 'A' }],
+    };
+    const { validateConfig } = require('../lib/validate.cjs');
+
+    // Accepts: everything this round added, in one config.
+    let threw = false;
+    try {
+        validateConfig({
+            ...base,
+            auth: { profile: '.w/profile', loginPath: '/sign-in', readyPath: '/home' },
+            compose: { palette: 'sunrise', tailSeconds: 1.2 },
+            shots: [{
+                id: 'a', route: '/a', caption: 'A',
+                motion: { type: 'in-out', to: 1.07, focus: [0.4, 0.35] },
+                trimBefore: 3.2, speed: 1,
+                actions: [
+                    { type: 'type', selector: 'input', value: 'Bolt', delay: 110 },
+                    { type: 'press', key: 'Meta+a' },
+                ],
+            }],
+        }, 'test.json');
+    } catch { threw = true; }
+    ok('validator accepts profile auth + compose + motion + type action', !threw);
+
+    // Rejects: each bad config exits non-zero in a child process.
+    const reject = (name, mutate) => {
+        const cfg = JSON.parse(JSON.stringify(base));
+        mutate(cfg);
+        const r = execFileSync(process.execPath, ['-e', `
+            const { validateConfig } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'validate.cjs'))});
+            validateConfig(${JSON.stringify(cfg)}, 'test.json');
+        `], { encoding: 'utf8', stdio: 'pipe' });
+        return r; // only reached when validation passed
+    };
+    const rejects = (name, mutate) => {
+        let failedAsExpected = false;
+        try { reject(name, mutate); } catch { failedAsExpected = true; }
+        ok(name, failedAsExpected);
+    };
+    rejects('validator rejects an unknown palette name', (c) => { c.compose = { palette: 'sunset-strip' }; });
+    rejects('validator rejects motion.to above 1.3', (c) => { c.shots[0].motion = { type: 'in', to: 2 }; });
+    rejects('validator rejects a bad motion focus', (c) => { c.shots[0].motion = { focus: [2, 0] }; });
+    rejects('validator rejects a type action without value', (c) => { c.shots[0].actions = [{ type: 'type', selector: 'input' }]; });
+    rejects('validator rejects auth with neither storageState nor profile', (c) => { c.auth = { loginPath: '/a', readyPath: '/b' }; });
+}
+
 function testFrameBox() {
     // h264/yuv420p rejects odd dimensions, so every value out of here must be even.
     for (const [W, H, pad] of [[1440, 900, 64], [1440, 900, 0], [1920, 1080, 100], [1280, 720, 33]]) {
@@ -183,6 +255,8 @@ try {
     testStripJsonc();
     testBackground();
     testFrameBox();
+    testPalettes();
+    testValidator();
 
     let ff = null;
     try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }

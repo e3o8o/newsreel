@@ -119,7 +119,8 @@ vanish between runs and a paid music bed gets bought twice. Add it to `.gitignor
 | `login` | Headed browser, manual login, saves the session. `--timeout <sec>` (default 480). |
 | `capture` | Record one clip per shot. `--only <shotId>`, `--headless`, `--slow-mo <ms>`. |
 | `cards` | Render the title/closing cards and the lower-thirds. |
-| `assemble` | Build the video. `--date <YYYY-MM-DD>` sets the output folder. |
+| `assemble` | The ffmpeg cut. `--date <YYYY-MM-DD>` sets the output folder. |
+| `compose` | The Remotion cut: animated cards and lower-thirds, Ken Burns motion, freeze-frames. |
 | `run` | `capture` -> `cards` -> `assemble`, with an ffmpeg/Playwright preflight first. |
 
 Every command takes `--config <path>` (default `./newsreel.config.json`). Relative paths inside
@@ -128,6 +129,12 @@ the same config works from anywhere.
 
 `run` deliberately excludes `login` (headed and interactive, and the session is reused for
 weeks) and seeding (app-specific).
+
+**Which renderer?** `assemble` needs only ffmpeg and runs anywhere; its cards are static and
+its motion is a linear push-in. `compose` renders through Remotion (a one-time `npm install`
+in its generated project) and adds animated cards, lower-thirds that slide in and out, zoom
+that eases back out, and clean freeze-frames. Same config, same narration, same music: pick
+per cut with `newsreel assemble` or `newsreel compose`.
 
 ## Configuration
 
@@ -151,22 +158,32 @@ Errors are reported together, each naming the key and what would have broken.
 | `output.workDir` | yes | Persistent intermediates: session, clips, cards, cached bed. |
 | `output.videoDir` | yes | Finished videos land in `<videoDir>/<YYYY-MM-DD>/`. |
 | `output.reportDir` | no | Where you keep the written report. The CLI never writes here. |
-| `auth.storageState` | yes | Where the saved session is written. |
+| `auth.storageState` | yes* | Where the saved session is written. *Not needed with `auth.profile`. |
+| `auth.profile` | no | A persistent Chromium profile directory; see the session-modes note below. |
 | `auth.loginPath` | yes | Your sign-in path, e.g. `/sign-in`. |
 | `auth.readyPath` | yes | The path that means "logged in". Must start with `/`. |
 | `seed.command` | no | Informational only. The CLI never runs it. |
 | `capture.viewport` | no | `{ width, height }`, default `1440x900`. Both must be even. |
+| `capture.zoom` | no | Browser-zoom emulation, 0.3 to 2. At `0.8` more UI fits on camera. |
 | `capture.hideCss` | no | CSS injected into every shot, to keep dev chrome off camera. |
-| `style.*` | no | The styled frame. See below. |
+| `style.*` | no | The styled frame (assemble). See below. |
 | `voice.*` | no | Narration. Default `none`. See the provider matrix. |
 | `music.*` | no | The bed. Omit the block entirely for `procedural`. |
 | `video.*` | no | Title, target length, max speed, poster. |
+| `compose.*` | no | The Remotion renderer's palette and pacing. See Composing below. |
 | `shots[]` | yes | The scenes. The only part that changes each cycle. |
 | `closingCard` | no | A card for non-visual wins. Omit to end on the last shot. |
 
 `seed.command` is recorded, not executed. Demo data is inherently app-specific, so you run the
 command yourself before capturing. Re-run it before every clean re-capture: interactive shots
 consume seeded state, and each confirm burns a pair.
+
+**Session modes.** With `auth.storageState` (the default), every shot records in a fresh
+context seeded from a saved state file; that suits cookie sessions that stay valid at rest.
+With `auth.profile`, `login` signs you into a persistent Chromium profile and every shot is a
+page inside it. Use the profile when the auth provider rotates tokens on use -- Clerk dev
+instances do -- because a static state file goes stale after its first handshake, while a real
+profile absorbs each rotation. One sign-in keeps the profile valid across runs.
 
 ### style
 
@@ -199,17 +216,26 @@ consume seeded state, and each confirm burns a pair.
 | `narration` | no | Drives this section's length and its voiceover. Falls back to `caption`. |
 | `tag` | no | The coloured label on the caption. Defaults to `id`. |
 | `actions[]` | no | What to do on the page. |
+| `motion` | no | Ken Burns for this shot: `{ "type": "in-out" \| "in", "to": 1.07, "focus": [x, y] }`. |
+| `trimBefore` | no | Seconds to cut from the clip's start (compose), when the auto-trim can't see the lead. |
+| `speed` | no | Pin this clip's playback rate (compose) instead of fitting it to the narration. |
 
-Actions: `waitFor`, `click`, `fill`, `wait`, `scroll`, `press`.
+Actions: `waitFor`, `click`, `fill`, `type`, `wait`, `scroll`, `press`.
 
 | Type | Keys |
 | --- | --- |
 | `waitFor` | `selector`, optional `state` (`visible` default), `timeout` |
 | `click` | `selector`, `timeout` |
 | `fill` | `selector`, `value`, `timeout` |
+| `type` | `selector`, `value`, optional `delay` ms/keystroke (default 90), `timeout` |
 | `press` | `key`, optional `selector`, `timeout` |
 | `wait` | `ms` (default 1000) |
 | `scroll` | optional `selector` (scrolls it into view), else `x` / `y` wheel deltas |
+
+`fill` sets the value in one go; `type` presses real keys one `delay` apart. Use `type` when
+typing should read on camera or when a debounced autocomplete only opens on genuine key
+events. `type` appends -- when the field pre-fills, clear it first with
+`{ "type": "press", "key": "Meta+a" }` then `{ "type": "press", "key": "Backspace" }`.
 
 `selector` accepts CSS or any Playwright engine: `text=Confirm`, `role=button[name=Save]`.
 
@@ -244,6 +270,44 @@ frames match its look. `angle` overrides a gradient preset's own angle. For some
 "style": { "background": { "type": "solid", "color": "#0f172a" } }
 ```
 
+## Composing with Remotion
+
+`newsreel compose` renders the same shots, narration, and music through a generated
+[Remotion](https://www.remotion.dev) project instead of ffmpeg filters. What that buys:
+
+- **Animated cards**: the kicker drops in, the headline slides up, bullets stagger in.
+- **Animated lower-thirds**: the chip pops, the caption slides in, both exit before the cut.
+- **Ken Burns that comes back**: `motion.type "in-out"` pushes toward the focus point over the
+  first half and eases back out, so no shot ends mid-drift. `"in"` pushes and stays.
+- **Real freezes**: when a clip is shorter than its narration, the scene freezes on the clip's
+  final frame at its final zoom rather than crawling below natural speed. Typed input and
+  cursor movement stay at 1x when the timing allows it.
+
+```jsonc
+"compose": {
+  "palette": "sunrise",        // sunrise | deep-ocean | emerald | midnight, or an object
+  "tailSeconds": 1.0           // beat after each narration before the cut
+}
+```
+
+A palette is the whole look: backdrop gradient, panel colours, ink, accent. The thumbnail is
+a mid-title still, so it inherits the palette's brightness. To adjust one colour, pass an
+object: `{ "base": "sunrise", "accent": "#ffffff" }`.
+
+The project is emitted into `<output.workDir>/remotion/` and is disposable: src and configs
+are re-copied from this package's template on every run, `data.json` and `public/` are
+regenerated from the config and the measured narration. Edit the config, never the project.
+The first run does one `npm install` in there (Remotion is not a dependency of newsreel
+itself); node_modules persist for later runs. `npx remotion studio` inside that directory
+opens the cut for interactive scrubbing when something looks off.
+
+Clip timing carries over from assemble: the blank page-load lead is auto-trimmed with the
+same structure detector, and clips speed up (never above `video.maxSpeed`) to fit their
+narration. Two per-shot escape hatches exist for compose: `trimBefore` (seconds) replaces the
+auto-trim when a clip's lead is a spinner rather than a blank -- a spinner has structure, so
+the detector cannot see it -- and `speed` pins the playback rate for shots that must play in
+real time.
+
 ## Voice and music providers
 
 Both are pluggable adapters. Both are validated at startup, before anything renders, so a typo
@@ -258,10 +322,26 @@ or a dead server costs a second rather than a full assemble.
 | `voicebox` | | | A local [Voicebox](https://voicebox.sh) server. Nothing leaves the machine. |
 | `elevenlabs` | yes | `voice.apiKeyEnv` | Needs `voiceId` and `model`. |
 
+| `dir` | | | Pre-recorded files from `voice.dir`: one `vo-<section>.mp3/wav/m4a/aiff` per section. |
+
 `voicebox` resolves `voice.profile` (a name, case-insensitive, or an id) against `GET /profiles`
 at startup. That call doubles as the reachability probe, so an unreachable server fails the run
 with install instructions instead of quietly swapping in another voice. Set `voice.baseUrl` if
-it does not listen on `http://127.0.0.1:17493`.
+it does not listen on `http://127.0.0.1:17493`. The request carries the profile's own engine
+(`default_engine`/`preset_engine` from the profile list, or `voice.engine` to override):
+Voicebox's `/generate` otherwise defaults to its qwen engine, and preset profiles reject that
+with a 400.
+
+**Free narration with no cloning:** Voicebox bundles Kokoro-82M (Apache 2.0, CPU-realtime,
+about 50 preset voices). Create a preset profile once --
+`POST /profiles {"name": "Narrator", "voice_type": "preset", "preset_engine": "kokoro",
+"preset_voice_id": "bm_george", "default_engine": "kokoro"}` -- and point `voice.profile` at
+it. No samples, no cloud, no cost. `GET /profiles/presets/kokoro` lists the voices.
+
+`dir` is the bring-your-own escape hatch: a studio read, a paid TTS run from another tool, a
+colleague's voiceover. Files are matched by section name (`vo-_title`, `vo-<shotId>`,
+`vo-_closing`); the run fails naming the missing file if one is absent. Both renderers measure
+the files and fit sections to them exactly as with generated audio.
 
 ### Music
 
@@ -287,6 +367,20 @@ the browser's blank page-load: black, then white, then the app. A fade between s
 *through* that white. The fix is to detect the end of the blank lead per clip and `-ss` trim it
 before speeding, render over a persistent opaque background, and use hard cuts. There is no
 `xfade` or fade-from-transparent anywhere in the pipeline.
+
+**A saved session that dies between runs is the auth provider rotating tokens.** Clerk dev
+instances hand the browser a dev JWT that rotates on use: a `storageState` file replays the
+old one, works once, then every later context bounces to the sign-in page -- which reads as
+"login worked but capture is broken". Set `auth.profile` and sign in once; the rotation then
+happens inside a persistent profile that stays valid. Related: when a valid session bounces
+through the provider's origin and back (a handshake), capture waits up to 25s for the page to
+return to `baseUrl` before failing the shot -- re-navigating mid-handshake restarts it.
+
+**A spinner lead defeats the blank-lead trim, on purpose.** The auto-trim cuts leading frames
+with no structure. A loading spinner on an app-coloured background *is* structure, so the trim
+correctly refuses to guess and keeps it. When a shot opens on a spinner (client-side data
+fetch before first paint), watch the clip once and set that shot's `trimBefore` in seconds;
+compose then cuts exactly there.
 
 **The trim keys on structure, not brightness.** This is what makes it theme-agnostic. A blank
 page-load frame is near-uniform whatever colour it is, so its luma range (`YMAX-YMIN`, via
