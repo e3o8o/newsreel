@@ -18,14 +18,6 @@
         }
     },
     "style": {
-        "background": {
-            "preset": "deep-ocean"
-        },
-        "padding": 64,
-        "radius": 16,
-        "shadow": 0.35,
-        "accent": "#34d399",
-        "theme": "dark",
         "captionBand": 150
     },
     "voice": {
@@ -35,16 +27,16 @@
     },
     "music": {
         "provider": "default",
-        "track": "upbeat",
         "gainDb": -19,
         "startAt": 8
     },
     "video": {
         "targetSeconds": 135,
         "maxSpeed": 3,
-        "title": "newsreel",
+        "title": "A week of work, in two minutes",
         "narration": "This is newsreel.",
-        "thumbnail": true
+        "thumbnail": true,
+        "kind": "ad"
     },
     "shots": [
         {

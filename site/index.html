@@ -4,183 +4,244 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newsreel — a week of work, in two minutes</title>
-<meta name="description" content="Turn a week of shipped work into a written report and a narrated demo video. Ships a collection of web visuals you can use in videos or drop straight into your site." />
+<meta name="description" content="Turn a week of shipped work into a written report and a narrated demo video. Ships a collection of web visuals you can put in a video or drop straight into your site." />
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<main>
 
-  <!-- ── header ─────────────────────────────────────────────────────────── -->
-  <header class="top">
-    <h1>newsreel</h1>
-    <div class="top-right">
-      <a class="meta-link" href="https://github.com/e3o8o/newsreel">github</a>
-      <span class="meta-dot" aria-hidden="true"></span>
-      <span class="meta-link muted">MIT</span>
+<!-- ══ nav ═════════════════════════════════════════════════════════════════ -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top">newsreel</a>
+    <div class="nav-links">
+      <a href="#collection">Collection</a>
+      <a href="#studio">Studio</a>
+      <a href="#use">Use it</a>
+      <a class="nav-cta" href="https://github.com/e3o8o/newsreel">GitHub</a>
     </div>
-  </header>
-
-  <p class="tagline">
-    A week of shipped work becomes a written report and a narrated demo video.
-    One config file, one command. The visuals are yours to keep.
-  </p>
-
-  <!-- ── the proof: the ad, made by the tool ─────────────────────────────── -->
-  <section class="proof">
-    <div class="video-shell">
-      <video
-        id="reel"
-        poster="./ad/thumbnail.jpg"
-        preload="none"
-        controls
-        playsinline
-        width="1440" height="900"
-      >
-        <source src="./ad/newsreel-ad.mp4" type="video/mp4" />
-      </video>
-    </div>
-    <p class="proof-note">
-      <span class="dot" aria-hidden="true"></span>
-      This ad was made by newsreel. Every scene is a bundled visual; all three voices ship with it.
-    </p>
-  </section>
-
-  <!-- ── install ────────────────────────────────────────────────────────── -->
-  <button class="cmd" type="button" data-copy="npx newsreel init" aria-label="Copy install command">
-    <span class="cmd-prefix" aria-hidden="true">$</span>
-    <span class="cmd-text">npx newsreel init</span>
-    <span class="cmd-icon" aria-hidden="true"></span>
-  </button>
-
-  <!-- ── rows: what it does ─────────────────────────────────────────────── -->
-  <section class="rows">
-    <div class="row">
-      <span class="row-name">capture</span>
-      <span class="row-value">drives your app in a real browser</span>
-    </div>
-    <div class="row">
-      <span class="row-name">narrate</span>
-      <span class="row-value">local TTS, three bundled voices</span>
-    </div>
-    <div class="row">
-      <span class="row-name">scenes</span>
-      <span class="row-value"><span id="live-count">17</span> live, <span id="all-count">35</span> in the collection</span>
-    </div>
-    <div class="row">
-      <span class="row-name">music</span>
-      <span class="row-value">calm · upbeat · driving</span>
-    </div>
-    <div class="row">
-      <span class="row-name">output</span>
-      <span class="row-value">mp4 + poster + report</span>
-    </div>
-  </section>
-
-</main>
-
-<!-- ── the gallery: full-width, deliberately outside the narrow column ──── -->
-<section class="gallery" id="gallery">
-  <div class="gallery-head">
-    <h2>The collection</h2>
-    <div class="filters" id="filters" role="group" aria-label="Filter visuals"></div>
   </div>
-  <div class="grid" id="grid"></div>
-  <p class="gallery-foot">
-    Live cards run the real thing in your browser, paused when off-screen.
-    Prompt-only cards ship the build prompt so you (or your AI) can make your own.
-  </p>
+</nav>
+
+<!-- ══ hero ════════════════════════════════════════════════════════════════ -->
+<header class="hero" id="top">
+  <div class="hero-inner">
+    <p class="eyebrow"><span class="dot" aria-hidden="true"></span> open source · runs on your machine</p>
+    <h1>A week of work,<br /><em>in two minutes.</em></h1>
+    <p class="lede">
+      newsreel drives your real app in a browser, narrates it in a voice that never leaves
+      your laptop, and cuts the whole thing together. The visuals it ships are web components,
+      so they belong in your site as much as in your video.
+    </p>
+
+    <div class="hero-actions">
+      <button class="cmd" type="button" data-copy="npx newsreel init" aria-label="Copy install command">
+        <span class="cmd-prefix" aria-hidden="true">$</span>
+        <span class="cmd-text">npx newsreel init</span>
+        <span class="cmd-icon" aria-hidden="true"></span>
+      </button>
+      <a class="btn-ghost" href="#collection">Browse the collection</a>
+    </div>
+
+    <figure class="reel">
+      <div class="video-shell">
+        <video id="reel" poster="./ad/thumbnail.jpg" preload="none" controls playsinline
+               width="1440" height="900">
+          <source src="./ad/newsreel-ad.mp4" type="video/mp4" />
+        </video>
+      </div>
+      <figcaption>
+        This ad was made by newsreel. Every scene is a bundled visual, and all three
+        narration voices ship with it.
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<!-- ══ pipeline ════════════════════════════════════════════════════════════ -->
+<section class="band" id="how">
+  <div class="wrap">
+    <h2 class="section-title">Three steps, one config file</h2>
+    <ol class="steps">
+      <li>
+        <span class="step-n">01</span>
+        <h3>Capture</h3>
+        <p>Playwright signs in once and drives your app for real. Clicks, typing, scrolling —
+           whatever the shot needs. Generated scenes record the same way.</p>
+      </li>
+      <li>
+        <span class="step-n">02</span>
+        <h3>Narrate</h3>
+        <p>Your script, spoken by a local model. Three voices ship with it, and a shot can be
+           given to any of them, so two narrators can trade sections.</p>
+      </li>
+      <li>
+        <span class="step-n">03</span>
+        <h3>Assemble</h3>
+        <p>Styled frames, lower thirds, a music bed and hard cuts, with every scene cut to the
+           length of its own narration so picture and voice land together.</p>
+      </li>
+    </ol>
+  </div>
 </section>
 
-<main class="lower">
+<!-- ══ collection ══════════════════════════════════════════════════════════ -->
+<section class="collection" id="collection">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <h2 class="section-title">The collection</h2>
+        <p class="section-sub">
+          <span id="live-count">24</span> of <span id="all-count">35</span> run live right here.
+          Take the embed code for your site, the shot config for a video, or the build prompt
+          to make your own variant.
+        </p>
+      </div>
+      <div class="filters" id="filters" role="group" aria-label="Filter visuals"></div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+</section>
 
-  <!-- ── usage ──────────────────────────────────────────────────────────── -->
-  <section class="usage">
-    <div class="usage-head">
-      <h2>Usage</h2>
-      <div class="tabs" id="tabs" role="tablist">
-        <button class="tab is-active" role="tab" data-panel="video">video</button>
-        <button class="tab" role="tab" data-panel="web">web</button>
-        <button class="tab" role="tab" data-panel="cli">cli</button>
+<!-- ══ studio: voices + music ══════════════════════════════════════════════ -->
+<section class="band" id="studio">
+  <div class="wrap">
+    <h2 class="section-title">The studio ships with it</h2>
+    <p class="section-sub">No accounts, no API keys, nothing to download twice.</p>
+
+    <div class="studio">
+      <div class="studio-col">
+        <h3 class="col-title">Voices</h3>
+        <div class="media-row">
+          <div class="media-meta"><strong>Narrator George</strong><span>warm British male · preset</span></div>
+          <audio controls preload="none" src="./media/voice-george.mp3"></audio>
+        </div>
+        <div class="media-row">
+          <div class="media-meta"><strong>Narrator Nova</strong><span>clear female · preset</span></div>
+          <audio controls preload="none" src="./media/voice-nova.mp3"></audio>
+        </div>
+        <div class="media-row">
+          <div class="media-meta"><strong>Karo</strong><span>a cloned voice · example</span></div>
+          <audio controls preload="none" src="./media/voice-karo.mp3"></audio>
+        </div>
+        <p class="fine">
+          <code>newsreel voices --install</code> puts them in your local Voicebox.
+          A cloned voice is a real person's — use your own, with consent.
+        </p>
+      </div>
+
+      <div class="studio-col">
+        <h3 class="col-title">Music</h3>
+        <div class="media-row">
+          <div class="media-meta"><strong>calm</strong><span>~90 BPM · reports, walkthroughs</span></div>
+          <audio controls preload="none" src="./media/bed-calm.mp3"></audio>
+        </div>
+        <div class="media-row">
+          <div class="media-meta"><strong>upbeat</strong><span>~124 BPM · ads, launches</span></div>
+          <audio controls preload="none" src="./media/bed-upbeat.mp3"></audio>
+        </div>
+        <div class="media-row">
+          <div class="media-meta"><strong>driving</strong><span>~104 BPM · demos, product tours</span></div>
+          <audio controls preload="none" src="./media/bed-driving.mp3"></audio>
+        </div>
+        <p class="fine">
+          Pick one with <code>music.track</code>, or bring your own file.
+        </p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ══ usage ═══════════════════════════════════════════════════════════════ -->
+<section class="band alt" id="use">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <h2 class="section-title">Two ways to use a visual</h2>
+        <p class="section-sub">The same module, in a video or in your page.</p>
+      </div>
+      <div class="tabs" id="tabs" role="tablist">
+        <button class="tab is-active" role="tab" data-panel="video">in a video</button>
+        <button class="tab" role="tab" data-panel="web">in your site</button>
+        <button class="tab" role="tab" data-panel="cli">the commands</button>
+      </div>
+    </div>
+
     <div class="code-card">
-      <pre class="panel is-active" data-panel="video"><code><span class="c">// a scene in newsreel.config.json</span>
+      <pre class="panel is-active" data-panel="video"><code><span class="c">// one shot in newsreel.config.json</span>
 {
   <span class="k">"id"</span>: <span class="s">"opener"</span>,
   <span class="k">"type"</span>: <span class="s">"generated"</span>,
   <span class="k">"scene"</span>: <span class="s">"swirl"</span>,
   <span class="k">"props"</span>: { <span class="k">"word"</span>: <span class="s">"acme"</span> },
   <span class="k">"duration"</span>: <span class="n">10</span>,
-  <span class="k">"narration"</span>: <span class="s">"This week we shipped..."</span>
+  <span class="k">"narrator"</span>: <span class="s">"Narrator Nova"</span>,
+  <span class="k">"narration"</span>: <span class="s">"This week we shipped the thing."</span>
 }</code></pre>
-      <pre class="panel" data-panel="web"><code><span class="c">// the same visual, in your page</span>
+      <pre class="panel" data-panel="web"><code><span class="c">// the same visual, mounted in your page</span>
 <span class="k">import</span> scene <span class="k">from</span> <span class="s">"./visuals/primitives/swirl.js"</span>;
 
 <span class="k">const</span> handle = <span class="k">await</span> scene.mount(el, {
   word: <span class="s">"acme"</span>,
   ink: [<span class="s">"#34d399"</span>, <span class="s">"#818cf8"</span>],
 });
-handle.start();</code></pre>
-      <pre class="panel" data-panel="cli"><code><span class="c"># once, to sign in to your app</span>
+handle.start();
+<span class="c">// handle.destroy() when the element goes away</span></code></pre>
+      <pre class="panel" data-panel="cli"><code><span class="c"># sign in once; the session is saved</span>
 npx newsreel login
 
-<span class="c"># capture, cards, voice, music, assemble</span>
+<span class="c"># capture, cards, narration, music, assemble</span>
 npx newsreel run
 
-<span class="c"># what the bundled beds sound like</span>
-npx newsreel presets</code></pre>
+<span class="c"># backgrounds, music beds, voices</span>
+npx newsreel presets
+npx newsreel voices --install</code></pre>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- ── dependencies ───────────────────────────────────────────────────── -->
-  <section class="deps">
-    <h2>What you need</h2>
-    <div class="rows">
-      <div class="row">
-        <span class="row-name">node 18+</span>
-        <a class="row-value link" href="https://nodejs.org">nodejs.org</a>
-      </div>
-      <div class="row">
-        <span class="row-name">playwright</span>
-        <a class="row-value link" href="https://playwright.dev">peer dep · capture + cards</a>
-      </div>
-      <div class="row">
-        <span class="row-name">ffmpeg</span>
-        <a class="row-value link" href="https://ffmpeg.org/download.html">assembly + audio</a>
-      </div>
-      <div class="row">
-        <span class="row-name">voicebox</span>
-        <a class="row-value link" href="https://voicebox.sh">optional · local narration</a>
-      </div>
-      <div class="row">
-        <span class="row-name">elevenlabs</span>
-        <a class="row-value link" href="https://elevenlabs.io">optional · hosted narration</a>
-      </div>
-      <div class="row">
-        <span class="row-name">bundled</span>
-        <span class="row-value muted">visuals, music beds, card renderer</span>
-      </div>
+<!-- ══ requirements ════════════════════════════════════════════════════════ -->
+<section class="band" id="needs">
+  <div class="wrap">
+    <h2 class="section-title">What you need</h2>
+    <div class="deps">
+      <a class="dep" href="https://nodejs.org">
+        <strong>Node 18+</strong><span>the runtime</span><em>required</em>
+      </a>
+      <a class="dep" href="https://playwright.dev">
+        <strong>Playwright</strong><span>capture and card rendering</span><em>peer dependency</em>
+      </a>
+      <a class="dep" href="https://ffmpeg.org/download.html">
+        <strong>ffmpeg</strong><span>assembly, audio, thumbnails</span><em>on your PATH</em>
+      </a>
+      <a class="dep" href="https://voicebox.sh">
+        <strong>Voicebox</strong><span>local narration, keyless</span><em>optional</em>
+      </a>
+      <a class="dep" href="https://elevenlabs.io">
+        <strong>ElevenLabs</strong><span>hosted narration</span><em>optional</em>
+      </a>
+      <span class="dep is-static">
+        <strong>Bundled</strong><span>visuals, voices, music, frames</span><em>nothing to fetch</em>
+      </span>
     </div>
-    <p class="deps-note">
-      Zero runtime dependencies of its own. Playwright is a peer dependency so you control the
-      browser version; ffmpeg comes from your system.
+    <p class="fine">
+      newsreel has no runtime dependencies of its own. Playwright is a peer dependency so you
+      pin the browser; ffmpeg comes from your system.
     </p>
-  </section>
+  </div>
+</section>
 
-  <footer class="foot">
-    <span class="muted">MIT</span>
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span>MIT</span>
     <a href="https://github.com/e3o8o/newsreel">source</a>
     <a href="https://playwright.dev">playwright</a>
     <a href="https://ffmpeg.org">ffmpeg</a>
     <a href="https://voicebox.sh">voicebox</a>
     <span class="muted">frame presets from BetterShot (BSD-3)</span>
-  </footer>
+  </div>
+</footer>
 
-</main>
-
-<!-- copy toast, one instance, width-locked -->
 <div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-text">copied</span></div>
-
 <script type="module" src="./site.js"></script>
 </body>
 </html>

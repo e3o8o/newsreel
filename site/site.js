@@ -162,9 +162,22 @@ async function loadScene(name) {
   return REGISTRY[name];
 }
 
+// The scenes are authored for a 1440x900 frame; the card scales that whole stage down, so a
+// preview is the real thing rather than a squeezed re-layout.
+const STAGE_W = 1440;
+const STAGE_H = 900;
+function fitStage(el) {
+  if (!el._mount) return;
+  const box = el.querySelector(".stage");
+  if (!box) return;
+  const s = box.clientWidth / STAGE_W;
+  el._mount.style.transform = `scale(${s})`;
+}
+
 async function mountCard(el, v) {
   if (el._handle || el._mounting || v.status !== "live") return;
   el._mounting = true;
+  fitStage(el);
   try {
     const mod = await loadScene(v.scene);
     el._handle = await mod.default.mount(el._mount, v.props || {});
@@ -188,6 +201,11 @@ function remount(el, v) {
   unmountCard(el);
   mountCard(el, v);
 }
+
+// One observer for the whole grid: cards re-fit when the column width changes.
+const ro = new ResizeObserver((entries) => {
+  for (const e of entries) fitStage(e.target);
+});
 
 const io = new IntersectionObserver(
   (entries) => {
@@ -221,7 +239,10 @@ function render() {
   for (const v of list) {
     const el = card(v);
     grid.appendChild(el);
-    if (v.status === "live") io.observe(el);
+    if (v.status === "live") {
+      io.observe(el);
+      ro.observe(el);
+    }
   }
 }
 
