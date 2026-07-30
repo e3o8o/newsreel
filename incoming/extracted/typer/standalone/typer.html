@@ -1,0 +1,36 @@
+<!-- Typer — a stacked block of lines that reveal character by character, each glyph
+     rippling through randomized pill/highlight/border states before it settles.
+     Load typer.css, put one [data-typer] element per line, then drive them with a
+     TyperGroup (from typer.ts) for the top-to-bottom cascade.
+
+     Colors are three custom properties (set them on any ancestor):
+       --typer-fg  ink/pill · --typer-bg  page/knockout · --typer-accent  highlight -->
+
+<link rel="stylesheet" href="typer.css" />
+
+<div class="typer-block" style="display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;font-weight:600;font-size:clamp(1.4rem,4vw,2.4rem)">
+  <span data-typer data-typer-type="initial">design engineered by me :)</span>
+</div>
+
+<!-- typer.ts is an ES module. Instantiate a TyperGroup over the lines and reveal
+     them; the group staggers each line so the block cascades in top-to-bottom. -->
+<script type="module">
+  import { TyperGroup } from "./typer.js"; // built from typer.ts
+
+  const lines = [...document.querySelectorAll("[data-typer]")];
+  const group = new TyperGroup(
+    lines,
+    { fps: 20, cycles: 3 }, // tune speed and how many states each char rolls through
+    0.15, // seconds of stagger between consecutive lines
+  );
+
+  // reveal once the block scrolls into view
+  const io = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting) {
+      group.in();
+      io.disconnect();
+    }
+  }, { threshold: 0.4 });
+  io.observe(document.querySelector(".typer-block"));
+</script>
+

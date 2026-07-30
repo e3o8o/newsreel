@@ -66,6 +66,19 @@ id (`{"preset": "deep-ocean"}`), a custom gradient, or a solid. The presets were
 BetterShot's source (16 gradients, 12 solids, plus its shadow formula as reference data),
 which is how the look matches without forking it. Attribution: BetterShot, BSD-3-Clause.
 
+## Generated scenes (the third scene source)
+
+Beyond captured footage and cards, a shot can be a GENERATED SCENE: a packaged
+web visual (title effects, backgrounds, a CTA) the CLI mounts on its own
+harness page and records like any clip. Add `"type": "generated"` with a
+`scene` name, `props`, and a `duration`; assemble plays it full-bleed at
+native speed (no speed-fit — the choreography is the point) and holds the
+last frame if the narration runs longer. Pick scenes from
+`visuals/LOOKBOOK.md`; at most two title styles per video, alternate dark and
+light beats, and let every scene breathe at least 5 seconds. This is what
+makes ads and launch videos possible in the same config format as the weekly
+report.
+
 ## Gotchas (each one cost real time)
 
 - **White flashes between scenes.** Not a transition problem. Every captured clip starts

@@ -1,0 +1,71 @@
+<!-- The Art of Color Depth — markup for the ten button materials + three shapes.
+     Load color-depth.css, then use `depth-btn` plus one material class. The markup
+     is identical for every material; only the second class changes.
+
+     Pure CSS gets you every static look. Two things want the small companion
+     script (color-depth.js): the cursor-reactive materials (Metal, Foil) and the
+     toggle's slide. Glass also needs the SVG filter at the bottom, once. -->
+
+<link rel="stylesheet" href="color-depth.css" />
+
+<!-- the ten materials, on the default label pill -->
+<button class="depth-btn depth-glossy"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-glow"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-metal"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-layered"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-inset"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-glass"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-neon"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-duotone"><span class="depth-label">Get Started</span></button>
+<button class="depth-btn depth-satin"><span class="depth-label">Get Started</span></button>
+
+<!-- Foil needs its five stacked layers around the label. Without the script it
+     is still a handsome static holographic silver; with it, it tracks the cursor. -->
+<button class="depth-btn depth-foil">
+  <span aria-hidden class="depth-foil-l depth-foil-base"></span>
+  <span aria-hidden class="depth-foil-l depth-foil-film"></span>
+  <span aria-hidden class="depth-foil-l depth-foil-pearl"></span>
+  <span class="depth-label">Get Started</span>
+  <span aria-hidden class="depth-foil-l depth-foil-shine"></span>
+  <span aria-hidden class="depth-foil-l depth-foil-glare"></span>
+</button>
+
+<!-- other shapes, same material class. Icon button (a square) -->
+<button class="depth-btn depth-icon depth-glossy" aria-label="Go">
+  <span class="depth-label">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+  </span>
+</button>
+
+<!-- Toggle switch: material on the track, a sliding knob on top. The script flips
+     data-on on click; start it on or off with the attribute. -->
+<button class="depth-btn depth-toggle depth-glossy" role="switch" data-on="true" aria-label="Toggle">
+  <span aria-hidden class="depth-knob"></span>
+</button>
+
+<!-- Glass refraction filter. Keep it once in the page (it can be visually
+     hidden). The .depth-glass rule points at it via backdrop-filter: url(#…). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="liquid-glass-filter" color-interpolation-filters="sRGB">
+      <!-- map: neutral-grey centre (no shift) ramping to colour only at the rim,
+           so glass bends the view at its edges and passes the centre through. -->
+      <feImage x="0" y="0" width="100%" height="100%"
+        href="data:image/svg+xml,%3Csvg%20viewBox%3D%270%200%20200%2080%27%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27r%27%20x2%3D%27100%25%27%3E%3Cstop%20stop-color%3D%27%23f00%27%2F%3E%3Cstop%20offset%3D%2750%25%27%20stop-color%3D%27%23808080%27%2F%3E%3Cstop%20offset%3D%27100%25%27%20stop-color%3D%27%230f0%27%2F%3E%3C%2FlinearGradient%3E%3ClinearGradient%20id%3D%27b%27%20y2%3D%27100%25%27%3E%3Cstop%20stop-color%3D%27%2300f%27%2F%3E%3Cstop%20offset%3D%2750%25%27%20stop-color%3D%27%23808080%27%2F%3E%3Cstop%20offset%3D%27100%25%27%20stop-color%3D%27%23ff0%27%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%27200%27%20height%3D%2780%27%20rx%3D%2740%27%20fill%3D%27url%28%23r%29%27%2F%3E%3Crect%20width%3D%27200%27%20height%3D%2780%27%20rx%3D%2740%27%20fill%3D%27url%28%23b%29%27%20style%3D%27mix-blend-mode%3Aoverlay%27%2F%3E%3Crect%20x%3D%2714%27%20y%3D%2714%27%20width%3D%27172%27%20height%3D%2752%27%20rx%3D%2726%27%20fill%3D%27%23808080%27%20style%3D%27filter%3Ablur%2814px%29%27%2F%3E%3C%2Fsvg%3E"
+        result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="-14" xChannelSelector="R" yChannelSelector="G" result="dispRed" />
+      <feColorMatrix in="dispRed" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="red" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="-13" xChannelSelector="R" yChannelSelector="G" result="dispGreen" />
+      <feColorMatrix in="dispGreen" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="green" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="-12" xChannelSelector="R" yChannelSelector="G" result="dispBlue" />
+      <feColorMatrix in="dispBlue" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="blue" />
+      <feBlend in="red" in2="green" mode="screen" result="rg" />
+      <feBlend in="rg" in2="blue" mode="screen" result="output" />
+      <feGaussianBlur in="output" stdDeviation="0.4" />
+    </filter>
+  </defs>
+</svg>
+
+<!-- optional: cursor-reactive materials + the toggle slide. Static without it. -->
+<script src="color-depth.js"></script>
+

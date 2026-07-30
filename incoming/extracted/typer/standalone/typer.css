@@ -1,0 +1,144 @@
+/* Typer — the styling for the character reveal. The engine (typer.ts) swaps each
+   char's class between these states; the CSS is what makes a state look like a
+   solid pill, an outlined pill, an accent block, and so on. The nicest trick is
+   pill-merging: adjacent same-state chars round only at the two outer ends, so a
+   run of them reads as one continuous rounded bar, not separate boxes.
+
+   Everything is themed from four custom properties, so a preset can recolor the
+   text, the pill fills, AND the borders all at once:
+     --typer-fg          the base ink (plain letters, ink pills, ink borders)
+     --typer-bg          the page / knockout color inside a filled pill
+     --typer-accent      the accent surface (accent pill fills, accent borders)
+     --typer-accent-ink  the text color that sits ON an accent fill
+   Set them on the [data-typer] element or any ancestor. */
+
+[data-typer] {
+  --typer-fg: #1b1b1b;
+  --typer-bg: #fcfcfc;
+  --typer-accent: #12a150;
+  --typer-accent-ink: #fcfcfc;
+  --typer-radius: 5px;
+}
+
+/* before the reveal runs, the whole line is invisible (chars are charInit). */
+[data-typer][data-typer-type="initial"] {
+  opacity: 0;
+}
+
+[data-typer] .word {
+  white-space: pre; /* keep intra-word spacing exact */
+}
+
+[data-typer] .word .char {
+  box-sizing: content-box;
+  display: inline-block;
+  color: var(--typer-fg);
+  background: transparent;
+  transition: none; /* state changes are discrete frames, not tweened */
+}
+
+/* not yet revealed → transparent (holds the layout, shows nothing). */
+[data-typer] .word .char.charInit {
+  color: transparent;
+}
+
+/* ── Solid pill: ink block, knockout text. Adjacent fills merge into one bar. ── */
+[data-typer] .word .char.charFill {
+  color: var(--typer-bg);
+  background: var(--typer-fg);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charFill:has(+ .charFill) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charFill + .charFill {
+  border-radius: 0;
+}
+[data-typer] .word .char.charFill + .charFill:last-child,
+[data-typer] .word .char.charFill + .charFill:has(+ :not(.charFill)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+/* ── Inverse: ink knockout, no rounding (a hard block). ── */
+[data-typer] .word .char.charInverse {
+  color: var(--typer-bg);
+  background: var(--typer-fg);
+}
+
+/* ── Accent: colored LETTERS on the page (no pill) — the accent reaching the
+      text itself, not just a fill. ── */
+[data-typer] .word .char.charAccent {
+  color: var(--typer-accent);
+  background: transparent;
+}
+
+/* ── Accent inverse: an accent PILL with knockout text sitting on it. Merges into
+      a bar like the ink fill. ── */
+[data-typer] .word .char.charAccentInverse {
+  color: var(--typer-accent-ink);
+  background: var(--typer-accent);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charAccentInverse:has(+ .charAccentInverse) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charAccentInverse + .charAccentInverse {
+  border-radius: 0;
+}
+[data-typer] .word .char.charAccentInverse + .charAccentInverse:last-child,
+[data-typer]
+  .word
+  .char.charAccentInverse
+  + .charAccentInverse:has(+ :not(.charAccentInverse)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+/* ── Accent fill: a briefly solid block of pure accent (both fill and text). ── */
+[data-typer] .word .char.charAccentFill {
+  color: var(--typer-accent);
+  background: var(--typer-accent);
+}
+
+/* ── Outlined pill: an ACCENT border box around ink text; a run merges like the
+      solid pill, but by dropping the inner vertical borders instead of the fill. ── */
+[data-typer] .word .char.charBorder {
+  position: relative;
+  color: var(--typer-fg);
+}
+[data-typer] .word .char.charBorder::after {
+  content: "";
+  display: inline-block;
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--typer-accent);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charBorder:has(+ .charBorder)::after {
+  border-right: 1px solid transparent;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charBorder + .charBorder::after {
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  border-radius: 0;
+}
+[data-typer] .word .char.charBorder + .charBorder:last-child::after,
+[data-typer] .word .char.charBorder + .charBorder:has(+ :not(.charBorder))::after {
+  border-left: 1px solid transparent;
+  border-right: 1px solid var(--typer-accent);
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* no reveal animation: show the text plainly. */
+  [data-typer][data-typer-type="initial"] {
+    opacity: 1;
+  }
+  [data-typer] .word .char.charInit {
+    color: var(--typer-fg);
+  }
+}
+
