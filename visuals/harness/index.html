@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>newsreel scene harness</title>
+<style>
+  /* Font vars the drops reference, mapped to reliable system stacks. */
+  :root {
+    --font-neue-corp: -apple-system, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+    --font-neue-montreal: -apple-system, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+    --font-pangram: -apple-system, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+    --font-kyoto: Georgia, "Times New Roman", serif;
+    --font-woodland: "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
+    --font-mondwest: "Menlo", "SF Mono", ui-monospace, monospace;
+    --font-neue-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --text-primary: #1b1b1e;
+    --text-secondary: #55565c;
+    --text-tertiary: #8b8c93;
+    --bg-page: #f4f4f6;
+    --bg-surface: #ffffff;
+    --bg-hover: #e8e8ec;
+    --border-line: #dcdce2;
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0b10; }
+  #stage { position: absolute; inset: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module" src="./harness.js"></script>
+</body>
+</html>
