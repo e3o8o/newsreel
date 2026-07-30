@@ -15707,3 +15707,11780 @@ export function SmearCard({
 }
 
 ```
+
+---
+
+## Set 3 (received 2026-07-30, final set)
+
+1. Build this: a wordmark rendered as a dense grid of square tiles: a slow morphing colour wave lights tiles up as it wanders across, and the cursor brushes a soft morphing light blob with occasional sparks.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### tile-field/engine.ts
+
+```ts
+const TAU = Math.PI * 2;
+
+type Row = {
+  word: string;
+  font: (px: number) => string;
+  letterTrack: number;
+  fillFrac: number;
+  bright: boolean;
+};
+
+const ROWS: Row[] = [
+  {
+    word: "humandelta <3",
+    font: (px) => `600 ${px}px ui-sans-serif, system-ui, Arial, sans-serif`,
+    letterTrack: -0.02,
+    fillFrac: 0.92,
+    bright: false,
+  },
+];
+
+const REST = "oklch(0.64 0.006 263)";
+const BRAND_HUE = 263;
+const GLOW_LCH = "0.42 0.07 263";
+const SPARK = "70,100,180";
+
+const MAXSZ = 0.9;
+const SPEED = 0.02;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const smoothstep = (x: number, e0: number, e1: number) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+function hash(x: number, y: number) {
+  const r = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return r - Math.floor(r);
+}
+
+const HUE_STEPS = 24;
+const ALPHA_STEPS = 6;
+
+export type TileFieldOptions = Record<string, never>;
+
+export class TileField {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private reduced: boolean;
+
+  private dpr = Math.min(2, window.devicePixelRatio || 1);
+  private viewW = 0;
+  private viewH = 0;
+  private cell = 10;
+  private time = 0;
+
+  private n = 0;
+  private px = new Float32Array(0);
+  private py = new Float32Array(0);
+  private rowOf = new Uint8Array(0);
+  private hueSeed = new Float32Array(0);
+  private spark = new Uint8Array(0);
+  private lit = new Float32Array(0);
+  private seed = new Float32Array(0);
+
+  private hasPointer = false;
+  private rawX = 0;
+  private rawY = 0;
+  private lightX = 0;
+  private lightY = 0;
+  private lightSpeed = 0;
+
+  private raf = 0;
+
+  private stepL = new Float32Array(HUE_STEPS);
+  private stepC = new Float32Array(HUE_STEPS);
+
+  constructor(host: HTMLElement, _opts: TileFieldOptions = {} as TileFieldOptions) {
+    this.host = host;
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "pointer-events-none absolute inset-0 block h-full w-full";
+    this.ctx = this.canvas.getContext("2d")!;
+    this.host.appendChild(this.canvas);
+
+    this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    this.resize();
+
+    window.addEventListener("pointermove", this.onMove, { passive: true });
+    window.addEventListener("pointerleave", this.onLeave);
+  }
+
+  resize() {
+    const stage = this.host;
+    const canvas = this.canvas;
+    const ctx = this.ctx;
+
+    const rect = stage.getBoundingClientRect();
+    this.viewW = rect.width;
+    this.viewH = rect.height;
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.cell = Math.max(2, Math.round(this.viewW / 460));
+    const cell = this.cell;
+    const viewW = this.viewW;
+    const viewH = this.viewH;
+
+    canvas.style.width = Math.round(viewW) + "px";
+    canvas.style.height = Math.round(viewH) + "px";
+    canvas.width = Math.ceil(viewW * this.dpr);
+    canvas.height = Math.ceil(viewH * this.dpr);
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+
+    const splits = ROWS.length === 1 ? [1] : [0.62, 0.38];
+    const bandTops: number[] = [];
+    const bandHeights: number[] = [];
+    let acc = 0;
+    for (const frac of splits) {
+      bandTops.push(acc * viewH);
+      bandHeights.push(frac * viewH);
+      acc += frac;
+    }
+
+    const xs: number[] = [], ys: number[] = [], rw: number[] = [],
+      sp: number[] = [], sd: number[] = [], hs: number[] = [];
+
+    ROWS.forEach((row, ri) => {
+      const bandTop = bandTops[ri];
+      const bandH = bandHeights[ri];
+      const sc = document.createElement("canvas");
+      sc.width = Math.max(1, Math.floor(viewW));
+      sc.height = Math.max(1, Math.floor(bandH));
+      const s = sc.getContext("2d")!;
+      const sls = s as CanvasRenderingContext2D & { letterSpacing?: string };
+      s.fillStyle = "#000";
+      s.textAlign = "center";
+      s.textBaseline = "middle";
+
+      let fs = bandH * 0.9;
+      sls.letterSpacing = `${row.letterTrack * fs}px`;
+      s.font = row.font(fs);
+      const measured = s.measureText(row.word).width || 1;
+      fs *= (viewW * row.fillFrac) / measured;
+      sls.letterSpacing = `${row.letterTrack * fs}px`;
+      s.font = row.font(fs);
+      s.fillText(row.word, viewW / 2, bandH / 2);
+
+      const data = s.getImageData(0, 0, sc.width, sc.height).data;
+      const cols = Math.ceil(viewW / cell);
+      const rows = Math.ceil(bandH / cell);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const lx = Math.floor(c * cell + cell / 2);
+          const ly = Math.floor(r * cell + cell / 2);
+          if (lx >= sc.width || ly >= sc.height) continue;
+          const a = (data[(ly * sc.width + lx) * 4 + 3] ?? 0) / 255;
+          if (a <= 0.5) continue;
+          const gx = lx;
+          const gy = ly + bandTop;
+          xs.push(gx);
+          ys.push(gy);
+          rw.push(ri);
+          sp.push(hash(gx + 7, gy - 3) > 0.82 ? 1 : 0);
+          sd.push(hash(gx * 1.3, gy * 0.7));
+          hs.push(hash(gx * 0.7 + 11, gy * 1.9 - 5));
+        }
+      }
+    });
+
+    this.n = xs.length;
+    this.px = new Float32Array(xs);
+    this.py = new Float32Array(ys);
+    this.rowOf = new Uint8Array(rw);
+    this.spark = new Uint8Array(sp);
+    this.seed = new Float32Array(sd);
+    this.hueSeed = new Float32Array(hs);
+    this.lit = new Float32Array(this.n);
+
+    if (this.reduced && !this.raf) this.renderStatic();
+  }
+
+  private distSegSq(qx: number, qy: number, ax: number, ay: number, bx: number, by: number) {
+    const dx = bx - ax, dy = by - ay;
+    if (dx === 0 && dy === 0) {
+      const ex = qx - ax, ey = qy - ay;
+      return ex * ex + ey * ey;
+    }
+    const t = clamp(((qx - ax) * dx + (qy - ay) * dy) / (dx * dx + dy * dy), 0, 1);
+    const ex = qx - (ax + dx * t), ey = qy - (ay + dy * t);
+    return ex * ex + ey * ey;
+  }
+
+  private frame = (t: number) => {
+    const ctx = this.ctx;
+    const { viewW, viewH, cell, n, px, py, rowOf, hueSeed, spark, lit, seed } = this;
+
+    ctx.clearRect(0, 0, viewW, viewH);
+    this.time += SPEED;
+    const time = this.time;
+
+    const prevX = this.lightX, prevY = this.lightY;
+    if (this.hasPointer) {
+      this.lightX += (this.rawX - this.lightX) * 0.5;
+      this.lightY += (this.rawY - this.lightY) * 0.5;
+    }
+    const lightX = this.lightX, lightY = this.lightY;
+    const stepDist = Math.hypot(lightX - prevX, lightY - prevY);
+    this.lightSpeed = 0.9 * this.lightSpeed + 0.1 * stepDist;
+    const lightSpeed = this.lightSpeed;
+    const moving = this.hasPointer;
+
+    const reach = clamp(viewH * 0.22 + lightSpeed * 0.9, viewH * 0.18, viewH * 0.42);
+    const influence = 1.5 * reach;
+    const influenceSq = influence * influence;
+    const minX = Math.min(prevX, lightX) - influence;
+    const maxX = Math.max(prevX, lightX) + influence;
+    const minY = Math.min(prevY, lightY) - influence;
+    const maxY = Math.max(prevY, lightY) + influence;
+
+    const T = time;
+
+    const grayP = new Path2D();
+    const litList: number[] = [];
+    const buckets: Path2D[][] = Array.from({ length: HUE_STEPS }, () =>
+      Array.from({ length: ALPHA_STEPS }, () => new Path2D())
+    );
+
+    const hueOfStep = new Float32Array(HUE_STEPS);
+
+    for (let i = 0; i < n; i++) {
+      const x = px[i], y = py[i];
+
+      let target = 0;
+      if (moving && x >= minX && x <= maxX && y >= minY && y <= maxY) {
+        const dSq = this.distSegSq(x, y, prevX, prevY, lightX, lightY);
+        if (dSq <= influenceSq) {
+          const ang = Math.atan2(y - lightY, x - lightX);
+          const wobble =
+            1 +
+            0.30 * Math.sin(3 * ang + time * 1.6) +
+            0.16 * Math.sin(5 * ang - time * 1.1 + 1.3);
+          const f = clamp(1 - Math.sqrt(dSq) / (reach * wobble), 0, 1);
+          target = f * f * (3 - 2 * f);
+        }
+      }
+
+      const rate = target > lit[i] ? 0.24 : 0.02;
+      lit[i] += (target - lit[i]) * rate;
+
+      const u = x / Math.max(viewW, 1);
+      const v = y / Math.max(viewH, 1);
+      const flow =
+        Math.sin((u * 1.6 + 0.4 * Math.sin(T * 0.3)) * TAU + T * 0.8) +
+        0.7 * Math.sin((v * 2.1 - u * 0.9) * TAU - T * 0.6 + 1.7) +
+        0.5 * Math.sin((u * 3.3 + v * 2.7) * TAU + T * 0.4 + 4.2) +
+        0.4 * Math.cos((v * 1.3 - 1.1 * Math.sin(T * 0.2)) * TAU - T * 0.5);
+      let colorAmt = smoothstep(flow, 0.1, 1.6);
+      colorAmt = Math.max(colorAmt, lit[i]);
+
+      const breathe = 0.5 + 0.5 * Math.sin(seed[i] * TAU + time * 1.3);
+      const base = 0.22 + 0.1 * breathe;
+      const sz = cell * (base + (MAXSZ - base) * colorAmt);
+      const h = sz / 2;
+      grayP.rect(x - h, y - h, sz, sz);
+
+      if (colorAmt > 0.04) {
+
+        let hue: number;
+        let chroma: number;
+        if (ROWS[rowOf[i]].bright) {
+
+          hue = (hueSeed[i] * 360 + time * 26) % 360;
+          chroma = 0.19;
+        } else {
+
+          const drift = (flow - 0.8) * 16;
+          hue = BRAND_HUE + drift + (hueSeed[i] - 0.5) * 8;
+          chroma = 0.085;
+        }
+        const hStep = ((Math.round((hue / 360) * HUE_STEPS) % HUE_STEPS) + HUE_STEPS) % HUE_STEPS;
+        const lightness = ROWS[rowOf[i]].bright ? 0.62 : 0.5;
+        hueOfStep[hStep] = hue;
+        const as = Math.min(ALPHA_STEPS - 1, Math.floor(colorAmt * ALPHA_STEPS));
+        buckets[hStep][as].rect(x - h, y - h, sz, sz);
+
+        this.stepL[hStep] = lightness;
+        this.stepC[hStep] = chroma;
+      }
+
+      if (lit[i] > 0.02) litList.push(i);
+    }
+
+    ctx.fillStyle = REST;
+    ctx.fill(grayP);
+
+    for (let hsI = 0; hsI < HUE_STEPS; hsI++) {
+      const hue = hueOfStep[hsI];
+      for (let as = 0; as < ALPHA_STEPS; as++) {
+        const p = buckets[hsI][as];
+        ctx.globalAlpha = (as + 1) / ALPHA_STEPS;
+        ctx.fillStyle = `oklch(${this.stepL[hsI]} ${this.stepC[hsI]} ${hue})`;
+        ctx.fill(p);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    for (const i of litList) {
+      const L = lit[i];
+      const x = px[i], y = py[i];
+      const gsz = cell * (0.7 + (MAXSZ - 0.7) * L);
+      const gh = gsz / 2;
+      if (spark[i]) {
+        const ph = seed[i];
+        const tt = 0.00025 * t;
+        const amp = (0.45 + ph) * cell * 0.28;
+        const jx = x + Math.sin(0.05 * x + 1.3 * tt + ph * TAU) * amp;
+        const jy = y + Math.cos(0.04 * y - 0.9 * tt + ph * TAU) * amp;
+        ctx.fillStyle = `rgba(${SPARK},${(0.1 * L).toFixed(3)})`;
+        ctx.fillRect(jx - gh * 1.5, jy - gh * 1.5, gsz * 1.5, gsz * 1.5);
+        ctx.fillStyle = `rgba(${SPARK},${(0.55 * L).toFixed(3)})`;
+        ctx.fillRect(jx - gh, jy - gh, gsz, gsz);
+      } else {
+        ctx.fillStyle = `oklch(${GLOW_LCH} / ${(0.85 * L).toFixed(3)})`;
+        ctx.fillRect(x - gh, y - gh, gsz, gsz);
+      }
+    }
+
+    this.raf = requestAnimationFrame(this.frame);
+  };
+
+  renderStatic() {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.viewW, this.viewH);
+    const grayP = new Path2D();
+    for (let i = 0; i < this.n; i++) {
+      const sz = this.cell * 0.5;
+      const h = sz / 2;
+      grayP.rect(this.px[i] - h, this.py[i] - h, sz, sz);
+    }
+    ctx.fillStyle = REST;
+    ctx.fill(grayP);
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    if (x >= -40 && y >= -40 && x <= rect.width + 40 && y <= rect.height + 40) {
+      if (!this.hasPointer) {
+        this.hasPointer = true;
+        this.lightX = x;
+        this.lightY = y;
+        this.lightSpeed = 0;
+      }
+      this.rawX = x;
+      this.rawY = y;
+    } else {
+      this.hasPointer = false;
+    }
+  };
+
+  private onLeave = () => {
+    this.hasPointer = false;
+  };
+
+  start() {
+    if (this.reduced) return;
+    if (!this.raf) this.raf = requestAnimationFrame(this.frame);
+  }
+
+  stop() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  destroy() {
+    this.stop();
+    window.removeEventListener("pointermove", this.onMove);
+    window.removeEventListener("pointerleave", this.onLeave);
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+2. Build this: Minecraft fire on a 2D canvas: a 16x16, 32-frame flipbook drawn as crisp blocks, with a live mutable pixel buffer the cursor can physically edit (shoving lit pixels around and heating them) that heals back toward the animation over time.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### fire-field/engine.ts
+
+```ts
+import { isMuted } from "../../lib/sound";
+
+const N = 16;
+const FRAMES = 32;
+const FPS = 18;
+
+const BURN_RADIUS = 2.8;
+const HEAL_RATE = 6.0;
+const SWAY_MAX = 2.0;
+
+const FIRE_FRAC = 0.6;
+
+function decodeSheet(img: HTMLImageElement): ImageData[] {
+  const c = document.createElement("canvas");
+  c.width = N;
+  c.height = N * FRAMES;
+  const ctx = c.getContext("2d")!;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0);
+  const out: ImageData[] = [];
+  for (let f = 0; f < FRAMES; f++) out.push(ctx.getImageData(0, f * N, N, N));
+  return out;
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+export type FireFieldOptions = {
+
+  reduced?: boolean;
+};
+
+export class FireField {
+  private stage: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private reduced: boolean;
+
+  private fireSnd: HTMLAudioElement | null = null;
+  private fizzSnd: HTMLAudioElement | null = null;
+  private fireWanted = false;
+  private lastFizz = 0;
+
+  private off: HTMLCanvasElement;
+  private offCtx: CanvasRenderingContext2D;
+  private buf: ImageData;
+
+  private grid = new Float32Array(N * N * 4);
+  private scratch = new Float32Array(N * N * 4);
+
+  private dist = new Float32Array(N * N);
+  private primed = false;
+
+  private swayX = 0;
+  private swayTarget = 0;
+
+  private vel = { x: 0, y: 0 };
+  private blobPhase = 0;
+
+  private frames: ImageData[] | null = null;
+  private netherrack: HTMLImageElement | null = null;
+
+  private box = { x: 0, y: 0, size: 0, dpr: 1 };
+
+  private pcell: { x: number; y: number } | null = null;
+  private prevP: { x: number; y: number } | null = null;
+
+  private hovering = false;
+
+  private raf = 0;
+
+  private wantRun = false;
+  private last = 0;
+  private acc = 0;
+  private dead = false;
+
+  constructor(stage: HTMLElement, opts: FireFieldOptions = {}) {
+    this.stage = stage;
+    this.reduced = !!opts.reduced;
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.style.imageRendering = "pixelated";
+    this.canvas.className = "pointer-events-none absolute inset-0 block h-full w-full";
+    this.ctx = this.canvas.getContext("2d")!;
+    this.stage.appendChild(this.canvas);
+
+    try {
+      this.fireSnd = new Audio("/vault/fire/fire.ogg");
+      this.fireSnd.loop = true;
+      this.fireSnd.volume = 0;
+      this.fizzSnd = new Audio("/vault/fire/fizz.ogg");
+      this.fizzSnd.volume = 0.18;
+    } catch {}
+
+    this.off = document.createElement("canvas");
+    this.off.width = N;
+    this.off.height = N;
+    this.offCtx = this.off.getContext("2d")!;
+    this.buf = this.offCtx.createImageData(N, N);
+
+    this.resize();
+
+    window.addEventListener("pointermove", this.onMove, { passive: true });
+    this.stage.addEventListener("pointerenter", this.onEnter);
+    this.stage.addEventListener("pointerleave", this.onCardLeave);
+    this.stage.addEventListener("pointerdown", this.onTap, { passive: true });
+
+    loadImage("/vault/fire/netterack.png")
+      .then((img) => {
+        if (!this.dead) this.netherrack = img;
+      })
+      .catch(() => {});
+    loadImage("/vault/fire/fire_sheet.png")
+      .then((img) => {
+        if (this.dead) return;
+        this.frames = decodeSheet(img);
+        if (this.reduced) {
+          this.acc = 16;
+          this.grid.set(this.frames[16].data);
+          this.primed = true;
+          this.render();
+          return;
+        }
+
+        this.kick();
+      })
+      .catch((e) => console.warn("fire texture:", e));
+  }
+
+  private stepAudio = (ms: number) => {
+    if (!this.fireSnd) return;
+    const target = this.fireWanted && !isMuted() ? 1.0 : 0;
+
+    this.fireSnd.volume += (target - this.fireSnd.volume) * 0.08;
+    if (target > 0 && this.fireSnd.paused) this.fireSnd.play().catch(() => {});
+    if (this.fireSnd.volume < 0.01 && !this.fireSnd.paused) this.fireSnd.pause();
+    void ms;
+  };
+
+  private playFizz(ms: number) {
+    if (!this.fizzSnd || isMuted()) return;
+    if (ms - this.lastFizz < 350) return;
+    this.lastFizz = ms;
+    try {
+      this.fizzSnd.currentTime = 0;
+      this.fizzSnd.play().catch(() => {});
+    } catch {}
+  }
+
+  resize = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cw = this.stage.clientWidth;
+    const ch = Math.max(1, this.stage.clientHeight);
+    this.canvas.width = Math.round(cw * dpr);
+    this.canvas.height = Math.round(ch * dpr);
+    const size = Math.min(cw, ch) * FIRE_FRAC;
+    this.box.size = size;
+    this.box.x = (cw - size) / 2;
+    this.box.y = (ch - size) / 2 - ch * 0.08;
+    this.box.dpr = dpr;
+    this.ctx.imageSmoothingEnabled = false;
+  };
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.stage.getBoundingClientRect();
+    const px = e.clientX - r.left - this.box.x;
+    const py = e.clientY - r.top - this.box.y;
+    if (px < 0 || py < 0 || px > this.box.size || py > this.box.size) {
+      this.pcell = null;
+      return;
+    }
+    this.pcell = { x: (px / this.box.size) * N, y: (py / this.box.size) * N };
+  };
+  private onEnter = () => {
+    this.hovering = true;
+  };
+  private onCardLeave = () => {
+    this.hovering = false;
+    this.pcell = null;
+  };
+
+  private idx = (x: number, y: number) => y * N + x;
+
+  private blowAll(ms: number) {
+    for (let i = 0; i < N * N; i++) {
+      const p = i * 4;
+      if (this.grid[p + 3] > 127) {
+        this.grid[p] = this.grid[p + 1] = this.grid[p + 2] = this.grid[p + 3] = 0;
+        this.dist[i] = 1;
+      }
+    }
+    this.playFizz(ms);
+  }
+
+  private onTap = () => {
+    this.blowAll(performance.now());
+  };
+
+  private stepFire(dt: number, ms: number, src: Uint8ClampedArray) {
+    const { grid, scratch, dist } = this;
+    this.blobPhase += dt;
+
+    if (!this.primed) {
+      grid.set(src);
+      this.primed = true;
+    }
+
+    if (this.pcell && this.prevP) {
+      this.vel.x += ((this.pcell.x - this.prevP.x) / Math.max(dt, 0.001) - this.vel.x) * 0.3;
+      this.vel.y += ((this.pcell.y - this.prevP.y) / Math.max(dt, 0.001) - this.vel.y) * 0.3;
+    } else {
+      this.vel.x *= 0.8;
+      this.vel.y *= 0.8;
+    }
+    this.prevP = this.pcell ? { x: this.pcell.x, y: this.pcell.y } : null;
+
+    this.swayTarget = this.pcell ? ((this.pcell.x - N / 2) / (N / 2)) * SWAY_MAX : 0;
+    this.swayX += (this.swayTarget - this.swayX) * Math.min(1, dt * 6);
+    this.fireWanted = this.hovering;
+
+    const distDecay = Math.min(1, HEAL_RATE * dt);
+    for (let i = 0; i < N * N; i++) {
+      const p = i * 4;
+      const srcLit = src[p + 3] > 127;
+      const d = dist[i];
+
+      if (d < 0.02) {
+
+        if (srcLit) {
+          grid[p] = src[p];
+          grid[p + 1] = src[p + 1];
+          grid[p + 2] = src[p + 2];
+          grid[p + 3] = 255;
+        } else {
+          grid[p] = grid[p + 1] = grid[p + 2] = grid[p + 3] = 0;
+        }
+        continue;
+      }
+
+      const lit = grid[p + 3] > 127;
+      if (!lit && srcLit) {
+        if (Math.random() < distDecay * 0.6) {
+          grid[p] = src[p];
+          grid[p + 1] = src[p + 1];
+          grid[p + 2] = src[p + 2];
+          grid[p + 3] = 255;
+          dist[i] = 0;
+          continue;
+        }
+      } else if (lit && !srcLit) {
+
+        grid[p] = grid[p + 1] = grid[p + 2] = grid[p + 3] = 0;
+      }
+      dist[i] = d * (1 - distDecay);
+    }
+
+    let snuffedNow = 0;
+    if (this.pcell) {
+      const cx = this.pcell.x;
+      const cy = this.pcell.y;
+      const r = BURN_RADIUS;
+
+      const speed = Math.hypot(this.vel.x, this.vel.y);
+      const inv = speed > 0.001 ? 1 / speed : 0;
+      const pushX = this.vel.x * inv;
+      const pushY = this.vel.y * inv - 0.8;
+      const pl = Math.hypot(pushX, pushY) || 1;
+      const ux = pushX / pl;
+      const uy = pushY / pl;
+
+      const reach = r + 1.2;
+      const x0 = Math.max(0, Math.floor(cx - reach));
+      const x1 = Math.min(N - 1, Math.ceil(cx + reach));
+      const y0 = Math.max(0, Math.floor(cy - reach));
+      const y1 = Math.min(N - 1, Math.ceil(cy + reach));
+
+      scratch.set(grid);
+
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const dx = x + 0.5 - cx;
+          const dy = y + 0.5 - cy;
+          const d = Math.hypot(dx, dy);
+          if (d > r) continue;
+          const i = this.idx(x, y);
+          const p = i * 4;
+          const fall = 1 - d / r;
+
+          if (grid[p + 3] < 40) continue;
+
+          const moveBy = 1 + Math.round(fall * 3);
+          const tx = Math.min(N - 1, Math.max(0, x + Math.round(ux * moveBy)));
+          const ty = Math.min(N - 1, Math.max(0, y + Math.round(uy * moveBy)));
+          const tp = this.idx(tx, ty) * 4;
+
+          let rr = grid[p];
+          let gg = grid[p + 1];
+          let bb = grid[p + 2];
+          const heat = fall;
+          rr = rr + (255 - rr) * heat * 0.6;
+          gg = gg + (245 - gg) * heat * 0.45;
+          bb = bb + (190 - bb) * heat * 0.3;
+
+          if (rr + gg + bb >= scratch[tp] + scratch[tp + 1] + scratch[tp + 2]) {
+            scratch[tp] = rr;
+            scratch[tp + 1] = gg;
+            scratch[tp + 2] = bb;
+          }
+          scratch[tp + 3] = 255;
+          dist[this.idx(tx, ty)] = 1;
+
+          if (fall > 0.12) {
+            scratch[p] = 0;
+            scratch[p + 1] = 0;
+            scratch[p + 2] = 0;
+            scratch[p + 3] = 0;
+            dist[i] = 1;
+            snuffedNow++;
+          }
+        }
+      }
+      grid.set(scratch);
+    }
+
+    if (snuffedNow >= 3) this.playFizz(ms);
+  }
+
+  private render() {
+    if (!this.frames) return;
+    const { ctx, canvas, box, off } = this;
+    const out = this.buf.data;
+    for (let y = 0; y < N; y++) {
+
+      const leanFrac = 1 - y / (N - 1);
+      const shift = Math.round(this.swayX * leanFrac);
+      for (let x = 0; x < N; x++) {
+        const p = this.idx(x, y) * 4;
+        const sx = Math.min(N - 1, Math.max(0, x - shift));
+        const gp = this.idx(sx, y) * 4;
+
+        out[p] = this.grid[gp];
+        out[p + 1] = this.grid[gp + 1];
+        out[p + 2] = this.grid[gp + 2];
+        out[p + 3] = this.grid[gp + 3];
+      }
+    }
+    this.offCtx.putImageData(this.buf, 0, 0);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = false;
+    const d = box.dpr;
+
+    if (this.netherrack) {
+      const bw = box.size;
+      const bx = box.x;
+      const by = box.y + box.size;
+      ctx.drawImage(this.netherrack, bx * d, by * d, bw * d, bw * d);
+    }
+
+    ctx.drawImage(off, box.x * d, box.y * d, box.size * d, box.size * d);
+  }
+
+  private frame = (ms: number) => {
+    this.raf = 0;
+    const dt = this.last ? Math.min(0.05, (ms - this.last) / 1000) : 0.016;
+    this.last = ms;
+    this.acc = (this.acc + dt * FPS) % FRAMES;
+    const f = Math.floor(this.acc) % FRAMES;
+    this.stepFire(dt, ms, this.frames![f].data);
+    this.stepAudio(ms);
+    this.render();
+    if (this.wantRun) this.raf = requestAnimationFrame(this.frame);
+  };
+
+  private kick() {
+    if (!this.raf && this.wantRun && this.frames) {
+      this.last = 0;
+      this.raf = requestAnimationFrame(this.frame);
+    }
+  }
+
+  start() {
+    if (this.reduced) return;
+    this.wantRun = true;
+    this.kick();
+  }
+
+  stop() {
+    this.wantRun = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    if (this.fireSnd && !this.fireSnd.paused) this.fireSnd.pause();
+  }
+
+  destroy() {
+    this.dead = true;
+    this.stop();
+    window.removeEventListener("pointermove", this.onMove);
+    this.stage.removeEventListener("pointerenter", this.onEnter);
+    this.stage.removeEventListener("pointerleave", this.onCardLeave);
+    this.stage.removeEventListener("pointerdown", this.onTap);
+    if (this.fireSnd) this.fireSnd.src = "";
+    if (this.fizzSnd) this.fizzSnd.src = "";
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+3. Build this: a WebGL fragment shader over a word: a diagonal band sweeps across and assembles the word out of a dense spray of tiny coloured blocks, then rests as solid text while the cursor lights a pool of blocks with a lasting wake.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### pixel-scan/engine.ts
+
+```ts
+import { glitchScan, glitchTick } from "../../lib/sound";
+
+const SHADER =  `
+precision highp float;
+uniform sampler2D src;
+uniform vec2 resolution;
+uniform vec2 offset;
+uniform float time;
+uniform float enterTime;
+uniform float leaveTime;
+
+uniform int mode;
+uniform float speed;
+uniform float delay;
+uniform float width;
+uniform vec3 accent;
+uniform vec3 accent2;
+uniform vec3 baseCol;
+uniform vec2 mouse;
+uniform float hover;
+uniform float spot;
+
+#define TRAIL 24
+uniform vec2 trail[TRAIL];
+uniform float trailW[TRAIL];
+
+#define W width
+#define LAYERS 3.0
+
+vec4 readTex(vec2 uv) {
+  if (uv.x < 0. || uv.x > 1. || uv.y < 0. || uv.y > 1.) return vec4(0);
+  return texture2D(src, uv);
+}
+float hash(vec2 p) { return fract(sin(dot(p, vec2(4859., 3985.))) * 3984.); }
+float sdBox(vec2 p, float r) { vec2 q = abs(p) - r; return min(length(q), max(q.y, q.x)); }
+
+float dir = 1.;
+vec2 mp = vec2(0.);
+vec2 tp[TRAIL];
+
+vec2 pxToP(vec2 px) {
+  vec2 uv = (px - offset) / resolution;
+  vec2 q = uv * 2. - 1.;
+  q.y *= resolution.y / resolution.x;
+  return q;
+}
+
+float toRangeT(vec2 p, float scale) {
+  float d;
+  if (mode == 0) d = p.x / (scale * 2.) + .5;
+  else if (mode == 1) d = 1. - (p.y / (scale * 2.) + .5);
+  else if (mode == 2) d = length(p) / scale;
+
+  else d = dot(p, vec2(0.7071, 0.7071)) / (scale * 2.) + .5;
+  d = dir > 0. ? d : (1. - d);
+  return d;
+}
+
+vec4 cell(vec2 p, vec2 pi, float scale, float t, float edge) {
+  vec2 pc = pi + .5;
+
+  vec2 uvc = pc / scale;
+  uvc.y /= resolution.y / resolution.x;
+  uvc = uvc * 0.5 + 0.5;
+  if (uvc.x < 0. || uvc.x > 1. || uvc.y < 0. || uvc.y > 1.) return vec4(0);
+  float alpha = smoothstep(.0, .1, texture2D(src, uvc).a);
+
+  float x = toRangeT(pi, scale);
+  float n = hash(pi);
+  float SPREAD = W * 2.2;
+  float anim = smoothstep(W * 2., .0, abs(x + n * SPREAD - t));
+
+  vec2 cellP = pc / scale;
+  float spotA = 0.;
+  for (int i = 0; i < TRAIL; i++) {
+    float w = trailW[i];
+    if (w <= 0.) continue;
+    vec2 rel = cellP - tp[i];
+    float ang = atan(rel.y, rel.x);
+    float wob = 1.
+      + 0.30 * sin(3. * ang + time * 1.6)
+      + 0.16 * sin(5. * ang - time * 1.1 + 1.3);
+    float reach = spot * 0.8 * wob;
+    spotA = max(spotA, smoothstep(reach, reach * 0.4, length(rel)) * w);
+  }
+  anim = max(anim, spotA * hover);
+
+  float tone = 0.5 + 0.5 * sin(time * 2.0 + n * 6.2831)
+                   + 0.18 * sin(time * 3.7 + n * 12.566);
+  tone = clamp(tone, 0., 1.);
+  vec3 cellAccent = mix(accent, accent2, tone);
+  vec4 color = vec4(mix(baseCol, cellAccent, anim), 1.) * anim;
+
+  float pull = hover * smoothstep(spot * 1.4, 0., length(cellP - mp));
+  vec2 mag = normalize(mp - cellP + 1e-5) * pull * 0.18;
+  vec2 bp = p - pc - mag;
+
+  float sd = sdBox(bp, .38);
+  color *= mix(1., clamp(.3 / abs(sd), 0., 10.), edge * pow(anim, 9.));
+  color += vec4(cellAccent, 1.) * anim * smoothstep(.55, .0, abs(sd)) * 0.07;
+
+  return color * alpha;
+}
+
+vec4 cellsColor(vec2 p, float scale, float t) {
+  vec2 pi = floor(p);
+  vec2 d = vec2(0, 1);
+  vec4 cc = vec4(0);
+  cc += cell(p, pi, scale, t, .2) * 4.;
+  cc += cell(p, pi + d.xy, scale, t, .9);
+  cc += cell(p, pi - d.xy, scale, t, .9);
+  cc += cell(p, pi + d.yx, scale, t, .9);
+  cc += cell(p, pi - d.yx, scale, t, .9);
+  return cc / 8.;
+}
+
+vec4 draw(vec2 uv, vec2 p, float t, float scale) {
+  vec4 c = readTex(uv);
+  vec2 pi = floor(p * scale);
+  float n = hash(pi);
+  t = t * (1. + W * 4.) - W * 2.;
+  float x = toRangeT(pi, scale);
+  float a1 = smoothstep(t, t - W, x + n * W);
+  c *= a1;
+  c += cellsColor(p * scale, scale, t) * 1.1;
+  return c;
+}
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy - offset) / resolution;
+  vec2 p = uv * 2. - 1.;
+  p.y *= resolution.y / resolution.x;
+
+  mp = pxToP(mouse);
+  for (int i = 0; i < TRAIL; i++) tp[i] = pxToP(trail[i]);
+
+  float t;
+  if (leaveTime > 0.) { dir = -1.; t = clamp(leaveTime * speed, 0., 1.); }
+  else { t = clamp((enterTime - delay) * speed, 0., 1.); }
+  t = (fract(t * .99999) - 0.5) * dir + 0.5;
+
+  for (float i = 0.; i < LAYERS; i++) {
+    float s = cos(i) * 11. + 32.;
+    gl_FragColor += draw(uv, p, t, abs(s));
+  }
+  gl_FragColor /= LAYERS;
+  gl_FragColor *= smoothstep(0., 0.01, t);
+}
+`;
+
+const VERT =  `
+precision highp float;
+attribute vec3 position;
+void main() { gl_Position = vec4(position, 1.0); }
+`;
+
+const ENTRANCE_SECONDS = 2.6;
+const HOVER_EASE = 0.22;
+const LIVE_EASE = 0.35;
+const SPOT_RADIUS = 0.28;
+
+const TRAIL = 24;
+const TRAIL_LIFE = 1.1;
+const TRAIL_MIN_PX = 3;
+
+const ACCENT: [number, number, number] = [0.4, 0.75, 1.0];
+const ACCENT2: [number, number, number] = [1.0, 0.45, 0.8];
+const BASE: [number, number, number] = [0.85, 0.8, 1.0];
+const TEXT_COLOR = "#191b24";
+
+const DEFAULT_WORD = "bababooey";
+
+type Three = typeof import("three");
+
+export type PixelScanFieldOptions = {
+
+  word?: string;
+
+  accent?: [number, number, number];
+  accent2?: [number, number, number];
+
+  base?: [number, number, number];
+
+  textColor?: string;
+};
+
+export class PixelScanField {
+  private host: HTMLDivElement;
+  private canvas: HTMLCanvasElement;
+  private THREE: Three;
+
+  private word: string;
+  private accent: [number, number, number];
+  private accent2: [number, number, number];
+  private base: [number, number, number];
+  private textColor: string;
+
+  private dpr = Math.min(2, window.devicePixelRatio || 1);
+  private family: string;
+
+  private renderer: InstanceType<Three["WebGLRenderer"]>;
+  private scene: InstanceType<Three["Scene"]>;
+  private camera: InstanceType<Three["Camera"]>;
+  private geo: InstanceType<Three["PlaneGeometry"]>;
+  private material: InstanceType<Three["RawShaderMaterial"]>;
+  private uniforms: Record<string, { value: unknown }>;
+
+  private texture: InstanceType<Three["CanvasTexture"]>;
+  private wordCanvas: HTMLCanvasElement | null = null;
+  private wordCtx: CanvasRenderingContext2D | null = null;
+
+  private rect: DOMRect;
+
+  private entranceStart = performance.now();
+
+  private hoverTarget = 0;
+  private hoverVal = 0;
+
+  private trailVecs: InstanceType<Three["Vector2"]>[];
+  private trailWeights: number[];
+  private trailBorn = new Array(TRAIL).fill(-1e9);
+  private liveX = -1e4;
+  private liveY = -1e4;
+  private liveOn = false;
+  private head = 1;
+  private lastPx = 0;
+  private lastPy = 0;
+
+  private targetX = -1e4;
+  private targetY = -1e4;
+
+  private startTime = performance.now();
+  private lastFrame = this.startTime;
+  private raf = 0;
+  private running = false;
+
+  constructor(
+    host: HTMLDivElement,
+    canvas: HTMLCanvasElement,
+    THREE: Three,
+    opts: PixelScanFieldOptions = {},
+  ) {
+    this.host = host;
+    this.canvas = canvas;
+    this.THREE = THREE;
+    this.word = opts.word ?? DEFAULT_WORD;
+    this.accent = opts.accent ?? ACCENT;
+    this.accent2 = opts.accent2 ?? ACCENT2;
+    this.base = opts.base ?? BASE;
+    this.textColor = opts.textColor ?? TEXT_COLOR;
+    this.family = wordFamily(host);
+
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: this.canvas,
+      alpha: true,
+      antialias: false,
+    });
+    this.renderer.setPixelRatio(this.dpr);
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.Camera();
+    this.geo = new THREE.PlaneGeometry(2, 2);
+
+    this.rect = host.getBoundingClientRect();
+    this.texture = this.makeTexture(this.rect.width, this.rect.height);
+
+    this.uniforms = {
+      src: { value: this.texture },
+      resolution: { value: new THREE.Vector2(this.rect.width * this.dpr, this.rect.height * this.dpr) },
+      offset: { value: new THREE.Vector2(0, 0) },
+      time: { value: 0 },
+      enterTime: { value: 0 },
+      leaveTime: { value: 0 },
+      mode: { value: 3 },
+      speed: { value: 1 },
+      delay: { value: 0 },
+      width: { value: 0.2 },
+      accent: { value: new THREE.Vector3(...this.accent) },
+      accent2: { value: new THREE.Vector3(...this.accent2) },
+      baseCol: { value: new THREE.Vector3(...this.base) },
+      mouse: { value: new THREE.Vector2(-1e4, -1e4) },
+      hover: { value: 0 },
+      spot: { value: SPOT_RADIUS },
+      trail: { value: Array.from({ length: TRAIL }, () => new THREE.Vector2(-1e4, -1e4)) },
+      trailW: { value: new Array(TRAIL).fill(0) },
+    };
+
+    this.material = new THREE.RawShaderMaterial({
+      vertexShader: VERT,
+      fragmentShader: SHADER,
+      uniforms: this.uniforms,
+      transparent: true,
+    });
+    this.scene.add(new THREE.Mesh(this.geo, this.material));
+
+    this.trailVecs = this.uniforms.trail.value as InstanceType<Three["Vector2"]>[];
+    this.trailWeights = this.uniforms.trailW.value as number[];
+
+    this.setSize();
+
+    this.host.addEventListener("pointerenter", this.onEnter);
+    this.host.addEventListener("pointerdown", this.onDown);
+    this.host.addEventListener("pointerleave", this.onLeave);
+    this.host.addEventListener("pointermove", this.onMove);
+    window.addEventListener("resize", this.onResize);
+
+    this.canvas.addEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.addEventListener("webglcontextrestored", this.onContextRestored);
+  }
+
+  private makeTexture(w: number, h: number): InstanceType<Three["CanvasTexture"]> {
+    const src = rasteriseWord(w, h, this.dpr, this.family, this.word, this.textColor);
+    this.wordCanvas = src;
+    this.wordCtx = src.getContext("2d", { willReadFrequently: true });
+    const tex = new this.THREE.CanvasTexture(src);
+
+    tex.minFilter = this.THREE.LinearFilter;
+    tex.magFilter = this.THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  private overGlyph(bx: number, by: number): boolean {
+    if (!this.wordCanvas || !this.wordCtx) return false;
+    const cx = Math.round(bx);
+    const cy = Math.round(this.wordCanvas.height - by);
+    if (cx < 0 || cy < 0 || cx >= this.wordCanvas.width || cy >= this.wordCanvas.height) return false;
+    try {
+      return this.wordCtx.getImageData(cx, cy, 1, 1).data[3] > 20;
+    } catch {
+      return false;
+    }
+  }
+
+  private setSize = () => {
+    this.rect = this.host.getBoundingClientRect();
+    this.renderer.setSize(this.rect.width, this.rect.height, false);
+    (this.uniforms.resolution.value as InstanceType<Three["Vector2"]>).set(
+      this.rect.width * this.dpr,
+      this.rect.height * this.dpr,
+    );
+    this.texture.dispose();
+    this.texture = this.makeTexture(this.rect.width, this.rect.height);
+    this.uniforms.src.value = this.texture;
+  };
+
+  private enterTimeVal(): number {
+    const e = (performance.now() - this.entranceStart) / 1000;
+    if (e >= ENTRANCE_SECONDS) return 2;
+    const x = e / ENTRANCE_SECONDS;
+    return 1 - (1 - x) * (1 - x);
+  }
+
+  private toLocal(ev: PointerEvent) {
+    const r = this.host.getBoundingClientRect();
+    return {
+      x: (ev.clientX - r.left) * this.dpr,
+      y: (r.height - (ev.clientY - r.top)) * this.dpr,
+    };
+  }
+
+  private onEnter = (ev: PointerEvent) => {
+    this.hoverTarget = 1;
+    this.liveOn = true;
+    const l = this.toLocal(ev);
+    this.targetX = this.liveX = this.lastPx = l.x;
+    this.targetY = this.liveY = this.lastPy = l.y;
+
+    this.entranceStart = performance.now();
+    glitchScan(ENTRANCE_SECONDS);
+  };
+  private onLeave = () => {
+    this.hoverTarget = 0;
+    this.liveOn = false;
+  };
+  private onMove = (ev: PointerEvent) => {
+    const l = this.toLocal(ev);
+    this.targetX = l.x;
+    this.targetY = l.y;
+    if (this.overGlyph(l.x, l.y)) glitchTick();
+  };
+
+  private onDown = (ev: PointerEvent) => {
+    if (ev.pointerType === "touch") {
+      this.entranceStart = performance.now();
+      glitchScan(ENTRANCE_SECONDS);
+    }
+  };
+
+  private onResize = () => this.setSize();
+
+  private onContextLost = (e: Event) => {
+    e.preventDefault();
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  };
+
+  private onContextRestored = () => {
+    this.setSize();
+    if (this.running && !this.raf) this.raf = requestAnimationFrame(this.tick);
+  };
+
+  private tick = () => {
+    const now = performance.now();
+    this.uniforms.time.value = (now - this.startTime) / 1000;
+    this.uniforms.enterTime.value = this.enterTimeVal();
+
+    this.hoverVal += (this.hoverTarget - this.hoverVal) * HOVER_EASE;
+    this.uniforms.hover.value = this.hoverVal;
+
+    this.liveX += (this.targetX - this.liveX) * LIVE_EASE;
+    this.liveY += (this.targetY - this.liveY) * LIVE_EASE;
+
+    if (this.liveOn) {
+      const step = TRAIL_MIN_PX * this.dpr;
+
+      const MAX_PER_FRAME = 4;
+      let moved = Math.hypot(this.liveX - this.lastPx, this.liveY - this.lastPy);
+      const total = moved;
+      let placed = 0;
+      while (moved >= step && placed < MAX_PER_FRAME) {
+        const f = step / moved;
+        this.lastPx += (this.liveX - this.lastPx) * f;
+        this.lastPy += (this.liveY - this.lastPy) * f;
+        this.head = this.head + 1 >= TRAIL ? 1 : this.head + 1;
+        this.trailVecs[this.head].set(this.lastPx, this.lastPy);
+
+        const along = total > 0 ? 1 - moved / total : 1;
+        this.trailBorn[this.head] = this.lastFrame + (now - this.lastFrame) * along;
+        moved = Math.hypot(this.liveX - this.lastPx, this.liveY - this.lastPy);
+        placed++;
+      }
+    }
+    this.lastFrame = now;
+
+    this.trailVecs[0].set(this.liveX, this.liveY);
+    this.trailWeights[0] = this.liveOn ? 1 : 0;
+    for (let i = 1; i < TRAIL; i++) {
+      const age = (now - this.trailBorn[i]) / 1000;
+
+      const d = Math.max(0, Math.min(1, 1 - age / TRAIL_LIFE));
+      this.trailWeights[i] = d * d * (3 - 2 * d);
+    }
+    (this.uniforms.mouse.value as InstanceType<Three["Vector2"]>).set(this.liveX, this.liveY);
+
+    this.renderer.render(this.scene, this.camera);
+    this.raf = requestAnimationFrame(this.tick);
+  };
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+
+    const now = performance.now();
+    this.lastFrame = now;
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  resize() {
+    this.setSize();
+  }
+
+  destroy() {
+    this.stop();
+    this.host.removeEventListener("pointerenter", this.onEnter);
+    this.host.removeEventListener("pointerdown", this.onDown);
+    this.host.removeEventListener("pointerleave", this.onLeave);
+    this.host.removeEventListener("pointermove", this.onMove);
+    window.removeEventListener("resize", this.onResize);
+    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
+    this.texture.dispose();
+    this.geo.dispose();
+    this.material.dispose();
+    this.renderer.dispose();
+
+    this.renderer.forceContextLoss?.();
+    this.renderer.getContext().getExtension("WEBGL_lose_context")?.loseContext();
+  }
+}
+
+function wordFamily(host: HTMLElement): string {
+  const v = getComputedStyle(host).getPropertyValue("--font-kyoto").trim();
+  return v ? `${v}, Georgia, serif` : "Georgia, serif";
+}
+
+function rasteriseWord(
+  w: number,
+  h: number,
+  dpr: number,
+  family: string,
+  word: string,
+  textColor: string,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w * dpr));
+  c.height = Math.max(1, Math.round(h * dpr));
+  const ctx = c.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const fontPx = w * 0.12;
+  ctx.font = `500 ${fontPx}px ${family}`;
+
+  ctx.letterSpacing = `${-fontPx * 0.02}px`;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(word, w / 2, h / 2 + fontPx * 0.04);
+  return c;
+}
+
+export function drawStaticWord(
+  canvas: HTMLCanvasElement,
+  host: HTMLElement,
+  word: string = DEFAULT_WORD,
+  textColor: string = TEXT_COLOR,
+) {
+  const r = host.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  const wordCanvas = rasteriseWord(r.width, r.height, dpr, wordFamily(host), word, textColor);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(wordCanvas, 0, 0);
+}
+
+```
+
+
+4. Build this: a canvas image-pixelization effect: cycle through a set of images, pixelizing each one in to sharp then back out to chunky blocks, with a swap that slides + scales + skews for a hint of 3D motion. The pixelize trick is downscaling the image into a tiny offscreen canvas then drawing it back up with image smoothing off.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### pixel-field/engine.ts
+
+```ts
+import { gsap } from "gsap";
+
+const PIXEL_START = 120;
+const PIXEL_MIN = 2;
+
+const PIXEL_STEPS = 24;
+function buildPixelRamp(): number[] {
+  const sizes: number[] = [];
+  let prev = Infinity;
+  for (let i = 0; i < PIXEL_STEPS; i++) {
+    const t = i / (PIXEL_STEPS - 1);
+
+    const size = Math.round(PIXEL_START + (PIXEL_MIN - PIXEL_START) * (t * (2 - t)));
+    const clamped = Math.max(PIXEL_MIN, size);
+    if (clamped < prev) {
+      sizes.push(clamped);
+      prev = clamped;
+    }
+  }
+  if (sizes[sizes.length - 1] !== PIXEL_MIN) sizes.push(PIXEL_MIN);
+  return sizes;
+}
+const BASE_PIXEL_SIZES = buildPixelRamp();
+const INTERACTION_PIXEL_SIZE = 70;
+
+const IN_DURATION = 0.5;
+const OUT_DURATION = 0.35;
+const SLIDE_DURATION = 0.5;
+const SWAP_SCALE_MIN = 0.15;
+const SWAP_SKEW = 0.18;
+
+const INSET = 0.0;
+
+const SCALE = { min: { scale: 0.33, width: 300 }, max: { scale: 1, width: 1400 } };
+
+type DrawParams = {
+  drawWidth: number;
+  drawHeight: number;
+  drawX: number;
+  drawY: number;
+};
+
+type Particle = {
+  x: number;
+  y: number;
+  color: { r: number; g: number; b: number };
+  opacity: number;
+  duration: number;
+  startTime: number;
+  size: number;
+};
+
+export type PixelFieldOptions = {
+
+  hold?: number;
+
+  interaction?: boolean;
+
+  onImageChange?: (index: number) => void;
+};
+
+export class PixelField {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private temp: HTMLCanvasElement;
+  private tempCtx: CanvasRenderingContext2D;
+
+  private dpr = Math.min(window.devicePixelRatio || 1, 2);
+  private cssW = 0;
+  private cssH = 0;
+
+  private images: HTMLImageElement[] = [];
+  private current = 0;
+  private img: HTMLImageElement | null = null;
+
+  private keyed = new Map<HTMLImageElement, HTMLCanvasElement>();
+
+  private basePixelSizes = BASE_PIXEL_SIZES;
+  private pixelSizes = BASE_PIXEL_SIZES;
+  private interactionPixelSize = INTERACTION_PIXEL_SIZE;
+  private lastScale = 0;
+
+  private drawParams: DrawParams | null = null;
+
+  private idx = 0;
+
+  private slideY = 0;
+  private swapScale = 1;
+  private swapSkew = 0;
+  private timeline: gsap.core.Timeline | null = null;
+  private raf = 0;
+  private running = false;
+
+  private interaction: boolean;
+  private hovering = false;
+  private mouse: { x: number; y: number } | null = null;
+  private lastCell: string | null = null;
+  private particles: Particle[] = [];
+
+  private hold: number;
+  private onImageChange?: (i: number) => void;
+
+  constructor(host: HTMLElement, sources: HTMLImageElement[], opts: PixelFieldOptions = {}) {
+    this.host = host;
+    this.images = sources;
+    this.img = sources[0] ?? null;
+    this.hold = opts.hold ?? 1.6;
+    this.interaction = !!opts.interaction;
+    this.onImageChange = opts.onImageChange;
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "ll-block--canvas-2d";
+    this.ctx = this.canvas.getContext("2d")!;
+    this.temp = document.createElement("canvas");
+    this.tempCtx = this.temp.getContext("2d")!;
+    this.host.appendChild(this.canvas);
+
+    this.disableSmoothing(this.ctx);
+    this.disableSmoothing(this.tempCtx);
+    this.measure();
+
+    if (this.interaction) {
+      this.canvas.addEventListener("mouseenter", this.onEnter);
+      this.canvas.addEventListener("mouseleave", this.onLeave);
+      this.canvas.addEventListener("mousemove", this.onMove);
+    }
+  }
+
+  private measure() {
+    const r = this.host.getBoundingClientRect();
+    this.cssW = r.width;
+    this.cssH = r.height;
+    this.canvas.width = Math.round(this.cssW * this.dpr);
+    this.canvas.height = Math.round(this.cssH * this.dpr);
+    this.canvas.style.width = `${this.cssW}px`;
+    this.canvas.style.height = `${this.cssH}px`;
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.disableSmoothing(this.ctx);
+    this.scalePixelSizes();
+    this.calcDrawParams();
+  }
+
+  private disableSmoothing(c: CanvasRenderingContext2D) {
+    c.imageSmoothingEnabled = false;
+
+    (c as unknown as Record<string, boolean>).webkitImageSmoothingEnabled = false;
+    (c as unknown as Record<string, boolean>).mozImageSmoothingEnabled = false;
+    (c as unknown as Record<string, boolean>).msImageSmoothingEnabled = false;
+  }
+
+  private calcDrawParams() {
+    const img = this.img;
+    if (!img) return;
+
+    const boxW = this.cssW * (1 - 2 * INSET);
+    const boxH = this.cssH * (1 - 2 * INSET);
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const boxRatio = boxW / boxH;
+
+    const fitW = imgRatio > boxRatio ? boxW : boxH * imgRatio;
+    const fitH = imgRatio > boxRatio ? boxW / imgRatio : boxH;
+    this.drawParams = {
+      drawWidth: fitW,
+      drawHeight: fitH,
+      drawX: (this.cssW - fitW) / 2,
+      drawY: (this.cssH - fitH) / 2,
+    };
+  }
+
+  private scalePixelSizes() {
+    const w = this.cssW;
+    if (!w) return;
+    let f = SCALE.min.scale;
+    if (w >= SCALE.max.width) f = SCALE.max.scale;
+    else if (w > SCALE.min.width)
+      f =
+        SCALE.min.scale +
+        ((SCALE.max.scale - SCALE.min.scale) * (w - SCALE.min.width)) /
+          (SCALE.max.width - SCALE.min.width);
+    if (Math.abs(f - this.lastScale) > 0.01) {
+      this.pixelSizes = this.basePixelSizes.map((s) => Math.max(1, Math.round(s * f)));
+      this.interactionPixelSize = Math.max(1, Math.round(INTERACTION_PIXEL_SIZE * f));
+      this.lastScale = f;
+    }
+  }
+
+  private pixelSizeNow(): number {
+    const max = this.pixelSizes.length - 1;
+    const i = Math.min(Math.floor(this.idx), max);
+    return this.pixelSizes[i];
+  }
+
+  private gridParams(px: number) {
+    const { drawX, drawY, drawWidth, drawHeight } = this.drawParams!;
+    const blocksX = Math.ceil(drawWidth / px);
+    const blocksY = Math.ceil(drawHeight / px);
+    const totalWidth = blocksX * px;
+    const totalHeight = blocksY * px;
+    return {
+      blocksX,
+      blocksY,
+      totalWidth,
+      totalHeight,
+      offsetX: drawX + (drawWidth - totalWidth) / 2,
+
+      offsetY: drawY + (drawHeight - totalHeight) / 2 + Math.round(this.slideY / px) * px,
+    };
+  }
+
+  private keyedSource(img: HTMLImageElement): HTMLCanvasElement {
+    const cached = this.keyed.get(img);
+    if (cached) return cached;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const cx = c.getContext("2d")!;
+    cx.drawImage(img, 0, 0);
+    const data = cx.getImageData(0, 0, w, h);
+    const d = data.data;
+    const T = 236;
+    const isWhite = (p: number) => d[p] >= T && d[p + 1] >= T && d[p + 2] >= T;
+
+    const seen = new Uint8Array(w * h);
+    const stack: number[] = [];
+    const pushIfWhite = (x: number, y: number) => {
+      const idx = y * w + x;
+      if (seen[idx]) return;
+      seen[idx] = 1;
+      if (isWhite(idx * 4)) stack.push(idx);
+    };
+    for (let x = 0; x < w; x++) {
+      pushIfWhite(x, 0);
+      pushIfWhite(x, h - 1);
+    }
+    for (let y = 0; y < h; y++) {
+      pushIfWhite(0, y);
+      pushIfWhite(w - 1, y);
+    }
+    while (stack.length) {
+      const idx = stack.pop()!;
+      d[idx * 4 + 3] = 0;
+      const x = idx % w;
+      const y = (idx / w) | 0;
+      if (x > 0) pushIfWhite(x - 1, y);
+      if (x < w - 1) pushIfWhite(x + 1, y);
+      if (y > 0) pushIfWhite(x, y - 1);
+      if (y < h - 1) pushIfWhite(x, y + 1);
+    }
+
+    cx.putImageData(data, 0, 0);
+    this.keyed.set(img, c);
+    return c;
+  }
+
+  private draw = () => {
+    if (!this.drawParams || !this.img) return;
+    const { ctx, cssW, cssH } = this;
+    const px = this.pixelSizeNow();
+    const { drawWidth, drawHeight } = this.drawParams;
+
+    const tw = Math.max(1, Math.ceil(drawWidth / px));
+    const th = Math.max(1, Math.ceil(drawHeight / px));
+
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    if (this.temp.width !== tw || this.temp.height !== th) {
+      this.temp.width = tw;
+      this.temp.height = th;
+    }
+    this.tempCtx.clearRect(0, 0, tw, th);
+    this.tempCtx.drawImage(this.keyedSource(this.img), 0, 0, tw, th);
+
+    const g = this.gridParams(px);
+
+    const transforming = this.swapScale !== 1 || this.swapSkew !== 0;
+    if (transforming) {
+      const cx = this.drawParams.drawX + drawWidth / 2;
+      const cy = this.drawParams.drawY + drawHeight / 2 + this.slideY;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(this.swapScale, this.swapScale);
+
+      ctx.transform(1, 0, this.swapSkew, 1, 0, 0);
+      ctx.translate(-cx, -cy);
+    }
+
+    ctx.drawImage(this.temp, 0, 0, tw, th, g.offsetX, g.offsetY, g.totalWidth, g.totalHeight);
+    if (transforming) ctx.restore();
+
+    if (this.interaction && this.hovering) this.drawInteraction();
+    if (this.particles.length) {
+      this.updateParticles();
+      this.drawParticles();
+    }
+  };
+
+  private sampleColor(px: number, cellX: number, cellY: number) {
+    const { drawWidth, drawHeight } = this.drawParams!;
+    const w = Math.max(1, Math.floor(drawWidth / px));
+    const h = Math.max(1, Math.floor(drawHeight / px));
+    if (this.temp.width !== w || this.temp.height !== h) {
+      this.temp.width = w;
+      this.temp.height = h;
+      this.tempCtx.clearRect(0, 0, w, h);
+      this.tempCtx.drawImage(this.img!, 0, 0, w, h);
+    }
+    const x = Math.max(0, Math.min(cellX, w - 1));
+    const y = Math.max(0, Math.min(cellY, h - 1));
+    const d = this.tempCtx.getImageData(x, y, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2] };
+  }
+
+  private drawInteraction() {
+    if (!this.mouse || !this.drawParams) return;
+    const px = this.interactionPixelSize;
+    const g = this.gridParams(px);
+    const cx = Math.floor((this.mouse.x - g.offsetX) / px);
+    const cy = Math.floor((this.mouse.y - g.offsetY) / px);
+    const n = Math.max(0, Math.min(cx, g.blocksX - 1));
+    const o = Math.max(0, Math.min(cy, g.blocksY - 1));
+    const key = `${n},${o}`;
+    if (this.lastCell === key) return;
+    this.lastCell = key;
+    this.spawnParticles(n, o, g, px);
+  }
+
+  private spawnParticles(
+    cellX: number,
+    cellY: number,
+    g: ReturnType<PixelField["gridParams"]>,
+    px: number,
+  ) {
+    const now = performance.now();
+    const make = (gx: number, gy: number): Particle => ({
+      x: g.offsetX + gx * px,
+      y: g.offsetY + gy * px,
+      color: this.sampleColor(px, gx, gy),
+      opacity: 1,
+      duration: 600 + Math.random() * 400,
+      startTime: now,
+      size: px,
+    });
+    this.particles.push(make(cellX, cellY));
+
+    const neigh: { gx: number; gy: number }[] = [];
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++) {
+        const gx = cellX + dx;
+        const gy = cellY + dy;
+        if ((dx || dy) && gx >= 0 && gx < g.blocksX && gy >= 0 && gy < g.blocksY)
+          neigh.push({ gx, gy });
+      }
+    const count = Math.min(Math.floor(Math.random() * 3) + 1, neigh.length);
+    neigh
+      .sort(() => Math.random() - 0.5)
+      .slice(0, count)
+      .forEach((c) => this.particles.push(make(c.gx, c.gy)));
+  }
+
+  private updateParticles() {
+    const now = performance.now();
+    this.particles = this.particles.filter((p) => {
+      const age = now - p.startTime;
+      if (age >= p.duration) return false;
+      p.opacity = 1 - age / p.duration;
+      return true;
+    });
+  }
+
+  private drawParticles() {
+    const c = this.ctx;
+    for (const p of this.particles) {
+      c.fillStyle = `rgba(${p.color.r}, ${p.color.g}, ${p.color.b}, ${p.opacity})`;
+      c.fillRect(p.x, p.y, p.size, p.size);
+    }
+  }
+
+  private onEnter = () => {
+    this.hovering = true;
+  };
+  private onLeave = () => {
+    this.hovering = false;
+    this.lastCell = null;
+    this.mouse = null;
+  };
+  private onMove = (e: MouseEvent) => {
+    if (!this.hovering) return;
+    const r = this.canvas.getBoundingClientRect();
+    this.mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+
+  private revealIn(delay = 0) {
+    const last = this.pixelSizes.length - 1;
+
+    return gsap.timeline({ delay }).to(this, {
+      idx: last,
+      duration: IN_DURATION,
+      ease: "power3.out",
+    });
+  }
+
+  private revealOut() {
+
+    return gsap.timeline().to(this, {
+      idx: 0,
+      duration: OUT_DURATION,
+      ease: "power3.in",
+    });
+  }
+
+  private advance() {
+    this.current = (this.current + 1) % this.images.length;
+    this.img = this.images[this.current];
+    this.calcDrawParams();
+    this.onImageChange?.(this.current);
+  }
+
+  private cycle(isFirst = false) {
+    this.timeline?.kill();
+    const tl = gsap.timeline({
+      onComplete: () => this.cycle(),
+    });
+    const dist = this.cssH * 0.6;
+
+    if (isFirst) {
+      this.idx = 0;
+      tl.add(this.revealIn(0));
+    }
+
+    tl.to({}, { duration: this.hold });
+    tl.add(this.revealOut());
+
+    tl.to(this, {
+      slideY: -dist,
+      swapScale: SWAP_SCALE_MIN,
+      swapSkew: SWAP_SKEW,
+      duration: SLIDE_DURATION * 0.4,
+      ease: "power2.in",
+      onComplete: () => {
+        this.advance();
+        this.idx = 0;
+        this.slideY = dist;
+        this.swapScale = SWAP_SCALE_MIN;
+        this.swapSkew = -SWAP_SKEW;
+      },
+    });
+
+    const growStart = tl.duration();
+    tl.to(this, {
+      slideY: 0,
+      swapScale: 1,
+      swapSkew: 0,
+      duration: SLIDE_DURATION * 0.6,
+      ease: "back.out(1.4)",
+    });
+
+    tl.add(this.revealIn(0), growStart + SLIDE_DURATION * 0.12);
+
+    this.timeline = tl;
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.timeline?.play();
+    if (!this.timeline) this.cycle(true);
+    const loop = () => {
+      this.draw();
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.timeline?.pause();
+  }
+
+  renderStill() {
+    this.idx = this.pixelSizes.length - 1;
+    this.draw();
+  }
+
+  resize() {
+    this.measure();
+    if (!this.running) this.draw();
+  }
+
+  destroy() {
+    this.stop();
+    this.timeline?.kill();
+    this.timeline = null;
+    this.particles = [];
+    if (this.interaction) {
+      this.canvas.removeEventListener("mouseenter", this.onEnter);
+      this.canvas.removeEventListener("mouseleave", this.onLeave);
+      this.canvas.removeEventListener("mousemove", this.onMove);
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+5. Build this: a live ASCII particle field that spells a word: GPGPU flow-field particles simulated on the GPU, rendered as a grid of ASCII glyphs that drift and react to the cursor.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### ascii-wordmark/shaders.ts
+
+```ts
+export const GPGPU_COMPUTE =  `
+uniform float uTime;
+uniform float uDeltaTime;
+uniform float uFlowFieldInfluence;
+uniform float uFlowFieldStrength;
+uniform float uFlowFieldFrequency;
+
+uniform vec3  uMouse;
+uniform float uMouseStrength;
+uniform float uMouseSpeed;
+
+uniform sampler2D uBase;
+
+vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+float permute(float x){return floor(mod(((x*34.0)+1.0)*x, 289.0));}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+float taylorInvSqrt(float r){return 1.79284291400159 - 0.85373472095314 * r;}
+
+vec4 grad4(float j, vec4 ip){
+  const vec4 ones = vec4(1.0, 1.0, 1.0, -1.0);
+  vec4 p,s;
+  p.xyz = floor( fract (vec3(j) * ip.xyz) * 7.0) * ip.z - 1.0;
+  p.w = 1.5 - dot(abs(p.xyz), ones.xyz);
+  s = vec4(lessThan(p, vec4(0.0)));
+  p.xyz = p.xyz + (s.xyz*2.0 - 1.0) * s.www;
+  return p;
+}
+
+float simplexNoise4d(vec4 v){
+  const vec2  C = vec2( 0.138196601125010504, 0.309016994374947451);
+  vec4 i  = floor(v + dot(v, C.yyyy) );
+  vec4 x0 = v -   i + dot(i, C.xxxx);
+  vec4 i0;
+  vec3 isX = step( x0.yzw, x0.xxx );
+  vec3 isYZ = step( x0.zww, x0.yyz );
+  i0.x = isX.x + isX.y + isX.z;
+  i0.yzw = 1.0 - isX;
+  i0.y += isYZ.x + isYZ.y;
+  i0.zw += 1.0 - isYZ.xy;
+  i0.z += isYZ.z;
+  i0.w += 1.0 - isYZ.z;
+  vec4 i3 = clamp( i0, 0.0, 1.0 );
+  vec4 i2 = clamp( i0-1.0, 0.0, 1.0 );
+  vec4 i1 = clamp( i0-2.0, 0.0, 1.0 );
+  vec4 x1 = x0 - i1 + 1.0 * C.xxxx;
+  vec4 x2 = x0 - i2 + 2.0 * C.xxxx;
+  vec4 x3 = x0 - i3 + 3.0 * C.xxxx;
+  vec4 x4 = x0 - 1.0 + 4.0 * C.xxxx;
+  i = mod(i, 289.0);
+  float j0 = permute( permute( permute( permute(i.w) + i.z) + i.y) + i.x);
+  vec4 j1 = permute( permute( permute( permute (
+             i.w + vec4(i1.w, i2.w, i3.w, 1.0 ))
+           + i.z + vec4(i1.z, i2.z, i3.z, 1.0 ))
+           + i.y + vec4(i1.y, i2.y, i3.y, 1.0 ))
+           + i.x + vec4(i1.x, i2.x, i3.x, 1.0 ));
+  vec4 ip = vec4(1.0/294.0, 1.0/49.0, 1.0/7.0, 0.0) ;
+  vec4 p0 = grad4(j0,   ip);
+  vec4 p1 = grad4(j1.x, ip);
+  vec4 p2 = grad4(j1.y, ip);
+  vec4 p3 = grad4(j1.z, ip);
+  vec4 p4 = grad4(j1.w, ip);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  p4 *= taylorInvSqrt(dot(p4,p4));
+  vec3 m0 = max(0.6 - vec3(dot(x0,x0), dot(x1,x1), dot(x2,x2)), 0.0);
+  vec2 m1 = max(0.6 - vec2(dot(x3,x3), dot(x4,x4)            ), 0.0);
+  m0 = m0 * m0;
+  m1 = m1 * m1;
+  return 49.0 * ( dot(m0*m0, vec3( dot( p0, x0 ), dot( p1, x1 ), dot( p2, x2 )))
+               + dot(m1*m1, vec2( dot( p3, x3 ), dot( p4, x4 ) ) ) ) ;
+}
+
+void main() {
+  float time = uTime * 0.2;
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  vec4 particle = texture(uParticles, uv);
+  vec4 base = texture(uBase, uv);
+
+  float uRepelStrength = clamp(uMouseSpeed, 0.0, uMouseStrength);
+  vec3 particlePos = particle.xyz;
+  vec3 dir = normalize(particlePos - uMouse);
+  float dist = distance(uMouse, particlePos);
+  float repulsionForce = uRepelStrength / (dist * (dist + 1.0));
+  vec3 repulsion = dir * repulsionForce * 2.0;
+  particle.xyz += repulsion * uRepelStrength;
+
+  if (particle.a >= 1.0) {
+
+    particle.a = mod(particle.a, 1.0);
+    particle.xyz = base.xyz;
+  } else {
+
+    float strength = simplexNoise4d(vec4(base.xyz, time + 1.0));
+    float influence = (uFlowFieldInfluence - 0.5) * (- 2.0);
+    strength = smoothstep(influence, 1.0, strength);
+
+    vec3 flowField = vec3(
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 0.0, time)),
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 1.0, time)),
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 2.0, time))
+    );
+    flowField = normalize(flowField);
+    particle.xyz += flowField * uDeltaTime * strength * uFlowFieldStrength;
+
+    particle.a += uDeltaTime * 0.3;
+    vec3 toTarget = base.xyz - particle.xyz;
+    particle.xyz += toTarget * uDeltaTime * 2.2;
+  }
+
+  gl_FragColor = particle;
+}
+`;
+
+export const PARTICLE_VERT =  `
+uniform vec2 uResolution;
+uniform float uSize;
+uniform float uVisibility;
+uniform sampler2D uParticlesTexture;
+
+attribute vec2 aParticlesUv;
+attribute float aSize;
+
+varying float vAlpha;
+
+void main() {
+  vec4 particle = texture2D(uParticlesTexture, aParticlesUv);
+
+  vec4 modelPosition = modelMatrix * vec4(particle.xyz, 1.0);
+  vec4 viewPosition = viewMatrix * modelPosition;
+  gl_Position = projectionMatrix * viewPosition;
+
+  vAlpha = uVisibility;
+  gl_PointSize = uSize * aSize * uResolution.y * 0.006;
+  gl_PointSize *= (1.0 / - viewPosition.z);
+}
+`;
+
+export const PARTICLE_FRAG =  `
+varying float vAlpha;
+void main() {
+
+  vec2 c = gl_PointCoord - 0.5;
+  float d = length(c);
+  if (d > 0.5) discard;
+  float a = smoothstep(0.5, 0.15, d) * vAlpha;
+
+  gl_FragColor = vec4(vec3(1.0), a);
+}
+`;
+
+export const ASCII_VERT =  `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+export const TRAIL_LEN = 24;
+
+export const ASCII_FRAG =  `
+uniform sampler2D tDiffuse;
+uniform vec2 uResolution;
+uniform float uAsciiPixelSize;
+uniform sampler2D uAsciiTexture;
+uniform vec2 uCharCount;
+uniform float uAsciiContrast;
+uniform float uAsciiBrightness;
+uniform float uAsciiMin;
+uniform float uAsciiMax;
+
+uniform float uAspect;
+uniform vec3  uInk;
+uniform vec2  uTrail[${TRAIL_LEN}];
+uniform float uTrailAge[${TRAIL_LEN}];
+uniform float uTrailOn;
+
+varying vec2 vUv;
+
+void main() {
+  vec2 normalizedPixelSize = uAsciiPixelSize / uResolution;
+  vec2 uvPixel = normalizedPixelSize * floor(vUv / normalizedPixelSize);
+  vec4 texColor = texture2D(tDiffuse, uvPixel);
+
+  float lumaRGB = dot(vec3(0.2126, 0.7152, 0.0722), texColor.rgb);
+  float luma = max(lumaRGB, texColor.a);
+
+  luma = (luma - uAsciiMin) / (uAsciiMax - uAsciiMin);
+  luma = clamp(luma, 0.0, 1.0);
+  luma = luma + uAsciiBrightness;
+  luma = (luma - 0.5) * uAsciiContrast + 0.5;
+  luma = clamp(luma, 0.0, 1.0);
+
+  vec2 cellUV = fract(vUv / normalizedPixelSize);
+  float charIndex = clamp(
+    floor(luma * (uCharCount.x - 1.0)),
+    0.0,
+    uCharCount.x - 1.0
+  );
+  vec2 asciiUV = vec2(
+    (charIndex + cellUV.x) / uCharCount.x,
+    cellUV.y
+  );
+  float character = texture2D(uAsciiTexture, asciiUV).r;
+
+  vec2 cellCenter = uvPixel + normalizedPixelSize * 0.5;
+
+  vec3 inkDeep = vec3(0.14, 0.16, 0.30);
+  vec3 inkLift = vec3(0.20, 0.24, 0.42);
+  vec3 baseColor = mix(inkDeep, inkLift, smoothstep(0.0, 1.0, cellCenter.x));
+
+  float trail = 0.0;
+  float headness = 0.0;
+  for (int i = 0; i < ${TRAIL_LEN}; i++) {
+    float age = uTrailAge[i];
+    if (age >= 1.0) continue;
+    vec2 d = (cellCenter - uTrail[i]) * vec2(uAspect, 1.0);
+    float rad = 0.16 + age * 0.10;
+    float g = smoothstep(rad, 0.0, length(d)) * (1.0 - age);
+    if (g > trail) { trail = g; headness = 1.0 - age; }
+  }
+  trail *= uTrailOn;
+
+  vec3 trailCool = vec3(0.29, 0.23, 1.0);
+  vec3 trailHot  = vec3(1.0, 0.32, 0.68);
+  vec3 trailColor = mix(trailCool, trailHot, headness);
+
+  vec3 glyphColor = mix(baseColor, trailColor, clamp(trail, 0.0, 1.0));
+
+  float ink = character * smoothstep(0.015, 0.18, luma);
+  ink = min(1.0, ink + trail * character * 0.3);
+
+  gl_FragColor = vec4(glyphColor * ink, ink);
+}
+`;
+
+```
+
+### ascii-wordmark/atlas.ts
+
+```ts
+export const RAMP = " .:-=+*#%VAULT";
+
+export function buildAtlas(ramp = RAMP, cell = 64): HTMLCanvasElement {
+  const n = ramp.length;
+  const c = document.createElement("canvas");
+  c.width = cell * n;
+  c.height = cell;
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.font = `${Math.floor(cell * 0.74)}px ui-monospace, "SF Mono", Menlo, monospace`;
+  for (let i = 0; i < n; i++) {
+    const ch = ramp[i];
+    if (ch !== " ") ctx.fillText(ch, i * cell + cell / 2, cell / 2 + cell * 0.04);
+  }
+  return c;
+}
+
+```
+
+### ascii-wordmark/word-points.ts
+
+```ts
+export interface WordPoints {
+  positions: Float32Array;
+  count: number;
+  aspect: number;
+}
+
+export function buildWordPoints(
+  word: string,
+  size: number,
+): WordPoints {
+  const count = size * size;
+
+  const W = 1024;
+  const H = 320;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  let fontSize = 240;
+  ctx.font = `800 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  const margin = 80;
+  const measured = ctx.measureText(word).width;
+  if (measured > W - margin) {
+    fontSize = Math.floor(fontSize * ((W - margin) / measured));
+    ctx.font = `800 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  }
+  ctx.fillText(word, W / 2, H / 2);
+
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  const lit: [number, number][] = [];
+  const stride = 2;
+  for (let y = 0; y < H; y += stride) {
+    for (let x = 0; x < W; x += stride) {
+      const a = data[(y * W + x) * 4 + 3];
+      if (a > 128) lit.push([x, y]);
+    }
+  }
+
+  if (lit.length === 0) {
+    for (let i = 0; i < 256; i++) lit.push([W / 2, H / 2]);
+  }
+
+  const aspect = W / H;
+  const positions = new Float32Array(count * 4);
+  for (let i = 0; i < count; i++) {
+
+    const p = lit[(Math.random() * lit.length) | 0];
+    const jx = (Math.random() - 0.5) * stride;
+    const jy = (Math.random() - 0.5) * stride;
+    const nx = ((p[0] + jx) / W - 0.5) * 2 * aspect;
+    const ny = -((p[1] + jy) / H - 0.5) * 2;
+    const nz = (Math.random() - 0.5) * 0.08;
+
+    positions[i * 4 + 0] = nx;
+    positions[i * 4 + 1] = ny;
+    positions[i * 4 + 2] = nz;
+    positions[i * 4 + 3] = Math.random();
+  }
+
+  return { positions, count, aspect };
+}
+
+```
+
+### ascii-wordmark/renderer.ts
+
+```ts
+import * as THREE from "three";
+import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import {
+  GPGPU_COMPUTE,
+  PARTICLE_VERT,
+  PARTICLE_FRAG,
+  ASCII_VERT,
+  ASCII_FRAG,
+  TRAIL_LEN,
+} from "./shaders";
+import { buildAtlas, RAMP } from "./atlas";
+import { buildWordPoints } from "./word-points";
+
+const FLOW_INFLUENCE = 0.43;
+const FLOW_STRENGTH = 1.09;
+const FLOW_FREQUENCY = 0.53;
+const MOUSE_STRENGTH = 0.08;
+const MOUSE_SPEED_GAIN = 1.5;
+
+const IS_TOUCH =
+  typeof window !== "undefined" &&
+  (window.matchMedia?.("(pointer: coarse)").matches ?? false);
+
+const FBO_SIZE = IS_TOUCH ? 128 : 200;
+const MAX_DPR = IS_TOUCH ? 1.5 : 2;
+const RENDER_SCALE = 0.5;
+const ASCII_CELL_DIVISOR = 100;
+
+export interface AsciiWordmarkOptions {
+  word: string;
+  inkColor: string;
+}
+
+export class AsciiWordmarkRenderer {
+  private host: HTMLElement;
+  private opts: AsciiWordmarkOptions;
+
+  private renderer!: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera!: THREE.PerspectiveCamera;
+  private composer!: EffectComposer;
+  private asciiPass!: ShaderPass;
+
+  private gpgpu!: GPUComputationRenderer;
+  private posVar!: ReturnType<GPUComputationRenderer["addVariable"]>;
+  private points!: THREE.Points;
+  private pointsMat!: THREE.ShaderMaterial;
+
+  private clock = new THREE.Clock();
+  private raf = 0;
+  private running = false;
+  private onScreen = true;
+  private disposed = false;
+
+  private mouse = new THREE.Vector3(9999, 9999, 0);
+  private prevMouse = new THREE.Vector3(9999, 9999, 0);
+  private mouseSpeed = 0;
+
+  private mouseUv = new THREE.Vector2(9999, 9999);
+  private onCard = false;
+
+  private trailPos: THREE.Vector2[] = [];
+  private trailAge: Float32Array = new Float32Array(TRAIL_LEN).fill(1);
+  private trailOn = 0;
+  private visibility = 0;
+  private wordAspect = 3;
+  private readonly WORD_MARGIN = 0.92;
+
+  private io?: IntersectionObserver;
+  private ro?: ResizeObserver;
+
+  constructor(host: HTMLElement, opts: AsciiWordmarkOptions) {
+    this.host = host;
+    this.opts = opts;
+  }
+
+  mount(): boolean {
+    const { clientWidth: w, clientHeight: h } = this.host;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+
+    this.renderer = new THREE.WebGLRenderer({
+      alpha: true,
+      antialias: false,
+      powerPreference: "high-performance",
+      failIfMajorPerformanceCaveat: false,
+    });
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
+    this.renderer.setClearColor(0x000000, 0);
+    this.host.appendChild(this.renderer.domElement);
+    Object.assign(this.renderer.domElement.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+
+      touchAction: "pan-y",
+      userSelect: "none",
+      WebkitUserSelect: "none",
+    });
+
+    const { positions, count, aspect } = buildWordPoints(this.opts.word, FBO_SIZE);
+    this.wordAspect = aspect;
+
+    this.camera = new THREE.PerspectiveCamera(35, w / h, 0.1, 100);
+    this.frameWord(w / h);
+    this.camera.lookAt(0, 0, 0);
+
+    if (!this.initGPGPU(positions)) return false;
+    this.initPoints(count);
+    this.initComposer(w, h, dpr);
+
+    this.bindEvents();
+    return true;
+  }
+
+  private initGPGPU(positions: Float32Array): boolean {
+    this.gpgpu = new GPUComputationRenderer(FBO_SIZE, FBO_SIZE, this.renderer);
+
+    this.gpgpu.setDataType(THREE.HalfFloatType);
+
+    const baseTex = this.gpgpu.createTexture();
+    (baseTex.image.data as Float32Array).set(positions);
+
+    const initTex = this.gpgpu.createTexture();
+    (initTex.image.data as Float32Array).set(positions);
+
+    this.posVar = this.gpgpu.addVariable("uParticles", GPGPU_COMPUTE, initTex);
+    this.gpgpu.setVariableDependencies(this.posVar, [this.posVar]);
+
+    const u = this.posVar.material.uniforms;
+    u.uTime = { value: 0 };
+    u.uDeltaTime = { value: 0 };
+    u.uBase = { value: baseTex };
+    u.uFlowFieldInfluence = { value: FLOW_INFLUENCE };
+    u.uFlowFieldStrength = { value: FLOW_STRENGTH };
+    u.uFlowFieldFrequency = { value: FLOW_FREQUENCY };
+    u.uMouse = { value: new THREE.Vector3(9999, 9999, 0) };
+    u.uMouseStrength = { value: MOUSE_STRENGTH };
+    u.uMouseSpeed = { value: 0 };
+
+    const err = this.gpgpu.init();
+    if (err) {
+
+      console.warn("[ascii-wordmark] GPGPU unsupported, skipping:", err);
+      return false;
+    }
+    return true;
+  }
+
+  private initPoints(count: number) {
+    const geo = new THREE.BufferGeometry();
+
+    const uvs = new Float32Array(count * 2);
+    const sizes = new Float32Array(count);
+    let i = 0;
+    for (let y = 0; y < FBO_SIZE; y++) {
+      for (let x = 0; x < FBO_SIZE; x++) {
+        uvs[i * 2] = (x + 0.5) / FBO_SIZE;
+        uvs[i * 2 + 1] = (y + 0.5) / FBO_SIZE;
+        sizes[i] = 0.6 + Math.random() * 0.8;
+        i++;
+      }
+    }
+
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute("aParticlesUv", new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
+    geo.setDrawRange(0, count);
+
+    this.pointsMat = new THREE.ShaderMaterial({
+      vertexShader: PARTICLE_VERT,
+      fragmentShader: PARTICLE_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uResolution: { value: new THREE.Vector2() },
+        uSize: { value: 4 },
+        uVisibility: { value: 0 },
+        uParticlesTexture: { value: null },
+      },
+    });
+
+    this.points = new THREE.Points(geo, this.pointsMat);
+    this.points.frustumCulled = false;
+    this.scene.add(this.points);
+  }
+
+  private initComposer(w: number, h: number, dpr: number) {
+    const bw = Math.max(2, Math.round(w * RENDER_SCALE));
+    const bh = Math.max(2, Math.round(h * RENDER_SCALE));
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+
+    const atlas = buildAtlas(RAMP);
+    const atlasTex = new THREE.CanvasTexture(atlas);
+    atlasTex.minFilter = THREE.LinearFilter;
+    atlasTex.magFilter = THREE.LinearFilter;
+
+    const cell = (bw * dpr) / ASCII_CELL_DIVISOR;
+
+    const ink = new THREE.Color(this.opts.inkColor);
+
+    this.trailPos = Array.from({ length: TRAIL_LEN }, () => new THREE.Vector2(9999, 9999));
+    this.trailAge = new Float32Array(TRAIL_LEN).fill(1);
+
+    this.asciiPass = new ShaderPass({
+      uniforms: {
+        tDiffuse: { value: null },
+        uResolution: { value: new THREE.Vector2(bw * dpr, bh * dpr) },
+        uAsciiPixelSize: { value: cell },
+        uAsciiTexture: { value: atlasTex },
+        uCharCount: { value: new THREE.Vector2(RAMP.length, 1) },
+        uAsciiContrast: { value: 1.4 },
+        uAsciiBrightness: { value: 0.12 },
+        uAsciiMin: { value: 0.0 },
+        uAsciiMax: { value: 1.0 },
+        uAspect: { value: w / h },
+        uInk: { value: new THREE.Vector3(ink.r, ink.g, ink.b) },
+        uTrail: { value: this.trailPos },
+        uTrailAge: { value: this.trailAge },
+        uTrailOn: { value: 0 },
+      },
+      vertexShader: ASCII_VERT,
+      fragmentShader: ASCII_FRAG,
+    });
+    this.asciiPass.renderToScreen = true;
+    this.composer.addPass(this.asciiPass);
+
+    this.pointsMat.uniforms.uResolution.value.set(w * dpr, h * dpr);
+  }
+
+  private bindEvents() {
+    const onPointerMove = (e: PointerEvent) => {
+      const r = this.host.getBoundingClientRect();
+
+      const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      const ny = -(((e.clientY - r.top) / r.height) * 2 - 1);
+      const v = new THREE.Vector3(nx, ny, 0.5).unproject(this.camera);
+      const dir = v.sub(this.camera.position).normalize();
+      const dist = -this.camera.position.z / dir.z;
+      this.mouse.copy(this.camera.position).add(dir.multiplyScalar(dist));
+
+      this.mouseUv.set((e.clientX - r.left) / r.width, 1 - (e.clientY - r.top) / r.height);
+      this.onCard = true;
+    };
+    const onPointerLeave = () => {
+      this.mouse.set(9999, 9999, 0);
+      this.mouseUv.set(9999, 9999);
+      this.onCard = false;
+    };
+
+    this.host.addEventListener("pointermove", onPointerMove);
+    this.host.addEventListener("pointerleave", onPointerLeave);
+    this.cleanupFns.push(() => {
+      this.host.removeEventListener("pointermove", onPointerMove);
+      this.host.removeEventListener("pointerleave", onPointerLeave);
+    });
+
+    const onVis = () => (document.hidden ? this.stop() : this.maybeStart());
+    document.addEventListener("visibilitychange", onVis);
+    this.cleanupFns.push(() => document.removeEventListener("visibilitychange", onVis));
+
+    this.io = new IntersectionObserver(
+      (es) => {
+        this.onScreen = es[0]?.isIntersecting ?? true;
+        this.onScreen ? this.maybeStart() : this.stop();
+      },
+      { threshold: 0.01 },
+    );
+    this.io.observe(this.host);
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(this.host);
+  }
+
+  private cleanupFns: (() => void)[] = [];
+
+  private frameWord(viewportAspect: number) {
+    const halfV = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+    const tanV = Math.tan(halfV);
+    const distForHeight = 1.0 / tanV;
+    const distForWidth = this.wordAspect / (tanV * viewportAspect);
+    const dist = Math.max(distForHeight, distForWidth) * this.WORD_MARGIN;
+    this.camera.position.set(0, 0, dist);
+  }
+
+  private resize() {
+    if (this.disposed) return;
+    const { clientWidth: w, clientHeight: h } = this.host;
+    if (w === 0 || h === 0) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.frameWord(w / h);
+    this.camera.updateProjectionMatrix();
+
+    const bw = Math.max(2, Math.round(w * RENDER_SCALE));
+    const bh = Math.max(2, Math.round(h * RENDER_SCALE));
+    this.asciiPass.uniforms.uResolution.value.set(bw * dpr, bh * dpr);
+    this.asciiPass.uniforms.uAsciiPixelSize.value = (bw * dpr) / ASCII_CELL_DIVISOR;
+    this.asciiPass.uniforms.uAspect.value = w / h;
+    this.pointsMat.uniforms.uResolution.value.set(w * dpr, h * dpr);
+  }
+
+  start() {
+    this.onScreen = true;
+    this.maybeStart();
+  }
+
+  private maybeStart() {
+    if (this.disposed || this.running || !this.onScreen || document.hidden) return;
+    this.running = true;
+    this.clock.getDelta();
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private advanceTrail(dt: number) {
+    const TRAIL_LIFE = 0.75;
+    for (let i = 0; i < TRAIL_LEN; i++) {
+      this.trailAge[i] = Math.min(1, this.trailAge[i] + dt / TRAIL_LIFE);
+    }
+    if (this.onCard) {
+
+      for (let i = TRAIL_LEN - 1; i > 0; i--) {
+        this.trailPos[i].copy(this.trailPos[i - 1]);
+        this.trailAge[i] = this.trailAge[i - 1];
+      }
+      this.trailPos[0].copy(this.mouseUv);
+      this.trailAge[0] = 0;
+    }
+
+    this.asciiPass.uniforms.uTrailAge.value = this.trailAge;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    const dt = Math.min(this.clock.getDelta(), 1 / 30);
+    const t = this.clock.elapsedTime;
+
+    this.mouseSpeed = this.mouse.distanceTo(this.prevMouse);
+    if (this.mouse.x > 9000) this.mouseSpeed = 0;
+    this.prevMouse.copy(this.mouse);
+
+    const cu = this.posVar.material.uniforms;
+    cu.uTime.value = t;
+    cu.uDeltaTime.value = dt;
+    cu.uMouse.value.copy(this.mouse);
+    cu.uMouseSpeed.value = this.mouseSpeed * MOUSE_SPEED_GAIN;
+    this.gpgpu.compute();
+
+    this.pointsMat.uniforms.uParticlesTexture.value =
+      this.gpgpu.getCurrentRenderTarget(this.posVar).texture;
+
+    this.visibility = Math.min(1, this.visibility + dt * 0.9);
+    this.pointsMat.uniforms.uVisibility.value = this.visibility;
+
+    const au = this.asciiPass.uniforms;
+    this.advanceTrail(dt);
+
+    this.trailOn += ((this.onCard ? 1 : 0) - this.trailOn) * Math.min(1, dt * 6);
+    au.uTrailOn.value = this.trailOn;
+
+    this.composer.render();
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  dispose() {
+    this.disposed = true;
+    this.stop();
+    this.cleanupFns.forEach((fn) => fn());
+    this.io?.disconnect();
+    this.ro?.disconnect();
+    this.points?.geometry.dispose();
+    this.pointsMat?.dispose();
+    this.asciiPass?.uniforms.uAsciiTexture.value?.dispose?.();
+    this.gpgpu?.dispose?.();
+    this.composer?.dispose?.();
+    this.renderer?.dispose();
+    this.renderer?.forceContextLoss?.();
+    if (this.renderer?.domElement.parentNode) {
+      this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+```
+
+
+6. Build this: a live ASCII particle field that spells a word: GPGPU flow-field particles simulated on the GPU, rendered as a grid of ASCII glyphs that drift and react to the cursor.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### ascii-wordmark/shaders.ts
+
+```ts
+export const GPGPU_COMPUTE =  `
+uniform float uTime;
+uniform float uDeltaTime;
+uniform float uFlowFieldInfluence;
+uniform float uFlowFieldStrength;
+uniform float uFlowFieldFrequency;
+
+uniform vec3  uMouse;
+uniform float uMouseStrength;
+uniform float uMouseSpeed;
+
+uniform sampler2D uBase;
+
+vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+float permute(float x){return floor(mod(((x*34.0)+1.0)*x, 289.0));}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+float taylorInvSqrt(float r){return 1.79284291400159 - 0.85373472095314 * r;}
+
+vec4 grad4(float j, vec4 ip){
+  const vec4 ones = vec4(1.0, 1.0, 1.0, -1.0);
+  vec4 p,s;
+  p.xyz = floor( fract (vec3(j) * ip.xyz) * 7.0) * ip.z - 1.0;
+  p.w = 1.5 - dot(abs(p.xyz), ones.xyz);
+  s = vec4(lessThan(p, vec4(0.0)));
+  p.xyz = p.xyz + (s.xyz*2.0 - 1.0) * s.www;
+  return p;
+}
+
+float simplexNoise4d(vec4 v){
+  const vec2  C = vec2( 0.138196601125010504, 0.309016994374947451);
+  vec4 i  = floor(v + dot(v, C.yyyy) );
+  vec4 x0 = v -   i + dot(i, C.xxxx);
+  vec4 i0;
+  vec3 isX = step( x0.yzw, x0.xxx );
+  vec3 isYZ = step( x0.zww, x0.yyz );
+  i0.x = isX.x + isX.y + isX.z;
+  i0.yzw = 1.0 - isX;
+  i0.y += isYZ.x + isYZ.y;
+  i0.zw += 1.0 - isYZ.xy;
+  i0.z += isYZ.z;
+  i0.w += 1.0 - isYZ.z;
+  vec4 i3 = clamp( i0, 0.0, 1.0 );
+  vec4 i2 = clamp( i0-1.0, 0.0, 1.0 );
+  vec4 i1 = clamp( i0-2.0, 0.0, 1.0 );
+  vec4 x1 = x0 - i1 + 1.0 * C.xxxx;
+  vec4 x2 = x0 - i2 + 2.0 * C.xxxx;
+  vec4 x3 = x0 - i3 + 3.0 * C.xxxx;
+  vec4 x4 = x0 - 1.0 + 4.0 * C.xxxx;
+  i = mod(i, 289.0);
+  float j0 = permute( permute( permute( permute(i.w) + i.z) + i.y) + i.x);
+  vec4 j1 = permute( permute( permute( permute (
+             i.w + vec4(i1.w, i2.w, i3.w, 1.0 ))
+           + i.z + vec4(i1.z, i2.z, i3.z, 1.0 ))
+           + i.y + vec4(i1.y, i2.y, i3.y, 1.0 ))
+           + i.x + vec4(i1.x, i2.x, i3.x, 1.0 ));
+  vec4 ip = vec4(1.0/294.0, 1.0/49.0, 1.0/7.0, 0.0) ;
+  vec4 p0 = grad4(j0,   ip);
+  vec4 p1 = grad4(j1.x, ip);
+  vec4 p2 = grad4(j1.y, ip);
+  vec4 p3 = grad4(j1.z, ip);
+  vec4 p4 = grad4(j1.w, ip);
+  vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+  p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+  p4 *= taylorInvSqrt(dot(p4,p4));
+  vec3 m0 = max(0.6 - vec3(dot(x0,x0), dot(x1,x1), dot(x2,x2)), 0.0);
+  vec2 m1 = max(0.6 - vec2(dot(x3,x3), dot(x4,x4)            ), 0.0);
+  m0 = m0 * m0;
+  m1 = m1 * m1;
+  return 49.0 * ( dot(m0*m0, vec3( dot( p0, x0 ), dot( p1, x1 ), dot( p2, x2 )))
+               + dot(m1*m1, vec2( dot( p3, x3 ), dot( p4, x4 ) ) ) ) ;
+}
+
+void main() {
+  float time = uTime * 0.2;
+  vec2 uv = gl_FragCoord.xy / resolution.xy;
+  vec4 particle = texture(uParticles, uv);
+  vec4 base = texture(uBase, uv);
+
+  float uRepelStrength = clamp(uMouseSpeed, 0.0, uMouseStrength);
+  vec3 particlePos = particle.xyz;
+  vec3 dir = normalize(particlePos - uMouse);
+  float dist = distance(uMouse, particlePos);
+  float repulsionForce = uRepelStrength / (dist * (dist + 1.0));
+  vec3 repulsion = dir * repulsionForce * 2.0;
+  particle.xyz += repulsion * uRepelStrength;
+
+  if (particle.a >= 1.0) {
+
+    particle.a = mod(particle.a, 1.0);
+    particle.xyz = base.xyz;
+  } else {
+
+    float strength = simplexNoise4d(vec4(base.xyz, time + 1.0));
+    float influence = (uFlowFieldInfluence - 0.5) * (- 2.0);
+    strength = smoothstep(influence, 1.0, strength);
+
+    vec3 flowField = vec3(
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 0.0, time)),
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 1.0, time)),
+      simplexNoise4d(vec4(particle.xyz * uFlowFieldFrequency + 2.0, time))
+    );
+    flowField = normalize(flowField);
+    particle.xyz += flowField * uDeltaTime * strength * uFlowFieldStrength;
+
+    particle.a += uDeltaTime * 0.3;
+    vec3 toTarget = base.xyz - particle.xyz;
+    particle.xyz += toTarget * uDeltaTime * 2.2;
+  }
+
+  gl_FragColor = particle;
+}
+`;
+
+export const PARTICLE_VERT =  `
+uniform vec2 uResolution;
+uniform float uSize;
+uniform float uVisibility;
+uniform sampler2D uParticlesTexture;
+
+attribute vec2 aParticlesUv;
+attribute float aSize;
+
+varying float vAlpha;
+
+void main() {
+  vec4 particle = texture2D(uParticlesTexture, aParticlesUv);
+
+  vec4 modelPosition = modelMatrix * vec4(particle.xyz, 1.0);
+  vec4 viewPosition = viewMatrix * modelPosition;
+  gl_Position = projectionMatrix * viewPosition;
+
+  vAlpha = uVisibility;
+  gl_PointSize = uSize * aSize * uResolution.y * 0.006;
+  gl_PointSize *= (1.0 / - viewPosition.z);
+}
+`;
+
+export const PARTICLE_FRAG =  `
+varying float vAlpha;
+void main() {
+
+  vec2 c = gl_PointCoord - 0.5;
+  float d = length(c);
+  if (d > 0.5) discard;
+  float a = smoothstep(0.5, 0.15, d) * vAlpha;
+
+  gl_FragColor = vec4(vec3(1.0), a);
+}
+`;
+
+export const ASCII_VERT =  `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+export const TRAIL_LEN = 24;
+
+export const ASCII_FRAG =  `
+uniform sampler2D tDiffuse;
+uniform vec2 uResolution;
+uniform float uAsciiPixelSize;
+uniform sampler2D uAsciiTexture;
+uniform vec2 uCharCount;
+uniform float uAsciiContrast;
+uniform float uAsciiBrightness;
+uniform float uAsciiMin;
+uniform float uAsciiMax;
+
+uniform float uAspect;
+uniform vec3  uInk;
+uniform vec2  uTrail[${TRAIL_LEN}];
+uniform float uTrailAge[${TRAIL_LEN}];
+uniform float uTrailOn;
+
+varying vec2 vUv;
+
+void main() {
+  vec2 normalizedPixelSize = uAsciiPixelSize / uResolution;
+  vec2 uvPixel = normalizedPixelSize * floor(vUv / normalizedPixelSize);
+  vec4 texColor = texture2D(tDiffuse, uvPixel);
+
+  float lumaRGB = dot(vec3(0.2126, 0.7152, 0.0722), texColor.rgb);
+  float luma = max(lumaRGB, texColor.a);
+
+  luma = (luma - uAsciiMin) / (uAsciiMax - uAsciiMin);
+  luma = clamp(luma, 0.0, 1.0);
+  luma = luma + uAsciiBrightness;
+  luma = (luma - 0.5) * uAsciiContrast + 0.5;
+  luma = clamp(luma, 0.0, 1.0);
+
+  vec2 cellUV = fract(vUv / normalizedPixelSize);
+  float charIndex = clamp(
+    floor(luma * (uCharCount.x - 1.0)),
+    0.0,
+    uCharCount.x - 1.0
+  );
+  vec2 asciiUV = vec2(
+    (charIndex + cellUV.x) / uCharCount.x,
+    cellUV.y
+  );
+  float character = texture2D(uAsciiTexture, asciiUV).r;
+
+  vec2 cellCenter = uvPixel + normalizedPixelSize * 0.5;
+
+  vec3 inkDeep = vec3(0.14, 0.16, 0.30);
+  vec3 inkLift = vec3(0.20, 0.24, 0.42);
+  vec3 baseColor = mix(inkDeep, inkLift, smoothstep(0.0, 1.0, cellCenter.x));
+
+  float trail = 0.0;
+  float headness = 0.0;
+  for (int i = 0; i < ${TRAIL_LEN}; i++) {
+    float age = uTrailAge[i];
+    if (age >= 1.0) continue;
+    vec2 d = (cellCenter - uTrail[i]) * vec2(uAspect, 1.0);
+    float rad = 0.16 + age * 0.10;
+    float g = smoothstep(rad, 0.0, length(d)) * (1.0 - age);
+    if (g > trail) { trail = g; headness = 1.0 - age; }
+  }
+  trail *= uTrailOn;
+
+  vec3 trailCool = vec3(0.29, 0.23, 1.0);
+  vec3 trailHot  = vec3(1.0, 0.32, 0.68);
+  vec3 trailColor = mix(trailCool, trailHot, headness);
+
+  vec3 glyphColor = mix(baseColor, trailColor, clamp(trail, 0.0, 1.0));
+
+  float ink = character * smoothstep(0.015, 0.18, luma);
+  ink = min(1.0, ink + trail * character * 0.3);
+
+  gl_FragColor = vec4(glyphColor * ink, ink);
+}
+`;
+
+```
+
+### ascii-wordmark/atlas.ts
+
+```ts
+export const RAMP = " .:-=+*#%VAULT";
+
+export function buildAtlas(ramp = RAMP, cell = 64): HTMLCanvasElement {
+  const n = ramp.length;
+  const c = document.createElement("canvas");
+  c.width = cell * n;
+  c.height = cell;
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.font = `${Math.floor(cell * 0.74)}px ui-monospace, "SF Mono", Menlo, monospace`;
+  for (let i = 0; i < n; i++) {
+    const ch = ramp[i];
+    if (ch !== " ") ctx.fillText(ch, i * cell + cell / 2, cell / 2 + cell * 0.04);
+  }
+  return c;
+}
+
+```
+
+### ascii-wordmark/word-points.ts
+
+```ts
+export interface WordPoints {
+  positions: Float32Array;
+  count: number;
+  aspect: number;
+}
+
+export function buildWordPoints(
+  word: string,
+  size: number,
+): WordPoints {
+  const count = size * size;
+
+  const W = 1024;
+  const H = 320;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  let fontSize = 240;
+  ctx.font = `800 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  const margin = 80;
+  const measured = ctx.measureText(word).width;
+  if (measured > W - margin) {
+    fontSize = Math.floor(fontSize * ((W - margin) / measured));
+    ctx.font = `800 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  }
+  ctx.fillText(word, W / 2, H / 2);
+
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  const lit: [number, number][] = [];
+  const stride = 2;
+  for (let y = 0; y < H; y += stride) {
+    for (let x = 0; x < W; x += stride) {
+      const a = data[(y * W + x) * 4 + 3];
+      if (a > 128) lit.push([x, y]);
+    }
+  }
+
+  if (lit.length === 0) {
+    for (let i = 0; i < 256; i++) lit.push([W / 2, H / 2]);
+  }
+
+  const aspect = W / H;
+  const positions = new Float32Array(count * 4);
+  for (let i = 0; i < count; i++) {
+
+    const p = lit[(Math.random() * lit.length) | 0];
+    const jx = (Math.random() - 0.5) * stride;
+    const jy = (Math.random() - 0.5) * stride;
+    const nx = ((p[0] + jx) / W - 0.5) * 2 * aspect;
+    const ny = -((p[1] + jy) / H - 0.5) * 2;
+    const nz = (Math.random() - 0.5) * 0.08;
+
+    positions[i * 4 + 0] = nx;
+    positions[i * 4 + 1] = ny;
+    positions[i * 4 + 2] = nz;
+    positions[i * 4 + 3] = Math.random();
+  }
+
+  return { positions, count, aspect };
+}
+
+```
+
+### ascii-wordmark/renderer.ts
+
+```ts
+import * as THREE from "three";
+import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import {
+  GPGPU_COMPUTE,
+  PARTICLE_VERT,
+  PARTICLE_FRAG,
+  ASCII_VERT,
+  ASCII_FRAG,
+  TRAIL_LEN,
+} from "./shaders";
+import { buildAtlas, RAMP } from "./atlas";
+import { buildWordPoints } from "./word-points";
+
+const FLOW_INFLUENCE = 0.43;
+const FLOW_STRENGTH = 1.09;
+const FLOW_FREQUENCY = 0.53;
+const MOUSE_STRENGTH = 0.08;
+const MOUSE_SPEED_GAIN = 1.5;
+
+const IS_TOUCH =
+  typeof window !== "undefined" &&
+  (window.matchMedia?.("(pointer: coarse)").matches ?? false);
+
+const FBO_SIZE = IS_TOUCH ? 128 : 200;
+const MAX_DPR = IS_TOUCH ? 1.5 : 2;
+const RENDER_SCALE = 0.5;
+const ASCII_CELL_DIVISOR = 100;
+
+export interface AsciiWordmarkOptions {
+  word: string;
+  inkColor: string;
+}
+
+export class AsciiWordmarkRenderer {
+  private host: HTMLElement;
+  private opts: AsciiWordmarkOptions;
+
+  private renderer!: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera!: THREE.PerspectiveCamera;
+  private composer!: EffectComposer;
+  private asciiPass!: ShaderPass;
+
+  private gpgpu!: GPUComputationRenderer;
+  private posVar!: ReturnType<GPUComputationRenderer["addVariable"]>;
+  private points!: THREE.Points;
+  private pointsMat!: THREE.ShaderMaterial;
+
+  private clock = new THREE.Clock();
+  private raf = 0;
+  private running = false;
+  private onScreen = true;
+  private disposed = false;
+
+  private mouse = new THREE.Vector3(9999, 9999, 0);
+  private prevMouse = new THREE.Vector3(9999, 9999, 0);
+  private mouseSpeed = 0;
+
+  private mouseUv = new THREE.Vector2(9999, 9999);
+  private onCard = false;
+
+  private trailPos: THREE.Vector2[] = [];
+  private trailAge: Float32Array = new Float32Array(TRAIL_LEN).fill(1);
+  private trailOn = 0;
+  private visibility = 0;
+  private wordAspect = 3;
+  private readonly WORD_MARGIN = 0.92;
+
+  private io?: IntersectionObserver;
+  private ro?: ResizeObserver;
+
+  constructor(host: HTMLElement, opts: AsciiWordmarkOptions) {
+    this.host = host;
+    this.opts = opts;
+  }
+
+  mount(): boolean {
+    const { clientWidth: w, clientHeight: h } = this.host;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+
+    this.renderer = new THREE.WebGLRenderer({
+      alpha: true,
+      antialias: false,
+      powerPreference: "high-performance",
+      failIfMajorPerformanceCaveat: false,
+    });
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
+    this.renderer.setClearColor(0x000000, 0);
+    this.host.appendChild(this.renderer.domElement);
+    Object.assign(this.renderer.domElement.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+
+      touchAction: "pan-y",
+      userSelect: "none",
+      WebkitUserSelect: "none",
+    });
+
+    const { positions, count, aspect } = buildWordPoints(this.opts.word, FBO_SIZE);
+    this.wordAspect = aspect;
+
+    this.camera = new THREE.PerspectiveCamera(35, w / h, 0.1, 100);
+    this.frameWord(w / h);
+    this.camera.lookAt(0, 0, 0);
+
+    if (!this.initGPGPU(positions)) return false;
+    this.initPoints(count);
+    this.initComposer(w, h, dpr);
+
+    this.bindEvents();
+    return true;
+  }
+
+  private initGPGPU(positions: Float32Array): boolean {
+    this.gpgpu = new GPUComputationRenderer(FBO_SIZE, FBO_SIZE, this.renderer);
+
+    this.gpgpu.setDataType(THREE.HalfFloatType);
+
+    const baseTex = this.gpgpu.createTexture();
+    (baseTex.image.data as Float32Array).set(positions);
+
+    const initTex = this.gpgpu.createTexture();
+    (initTex.image.data as Float32Array).set(positions);
+
+    this.posVar = this.gpgpu.addVariable("uParticles", GPGPU_COMPUTE, initTex);
+    this.gpgpu.setVariableDependencies(this.posVar, [this.posVar]);
+
+    const u = this.posVar.material.uniforms;
+    u.uTime = { value: 0 };
+    u.uDeltaTime = { value: 0 };
+    u.uBase = { value: baseTex };
+    u.uFlowFieldInfluence = { value: FLOW_INFLUENCE };
+    u.uFlowFieldStrength = { value: FLOW_STRENGTH };
+    u.uFlowFieldFrequency = { value: FLOW_FREQUENCY };
+    u.uMouse = { value: new THREE.Vector3(9999, 9999, 0) };
+    u.uMouseStrength = { value: MOUSE_STRENGTH };
+    u.uMouseSpeed = { value: 0 };
+
+    const err = this.gpgpu.init();
+    if (err) {
+
+      console.warn("[ascii-wordmark] GPGPU unsupported, skipping:", err);
+      return false;
+    }
+    return true;
+  }
+
+  private initPoints(count: number) {
+    const geo = new THREE.BufferGeometry();
+
+    const uvs = new Float32Array(count * 2);
+    const sizes = new Float32Array(count);
+    let i = 0;
+    for (let y = 0; y < FBO_SIZE; y++) {
+      for (let x = 0; x < FBO_SIZE; x++) {
+        uvs[i * 2] = (x + 0.5) / FBO_SIZE;
+        uvs[i * 2 + 1] = (y + 0.5) / FBO_SIZE;
+        sizes[i] = 0.6 + Math.random() * 0.8;
+        i++;
+      }
+    }
+
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute("aParticlesUv", new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
+    geo.setDrawRange(0, count);
+
+    this.pointsMat = new THREE.ShaderMaterial({
+      vertexShader: PARTICLE_VERT,
+      fragmentShader: PARTICLE_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uResolution: { value: new THREE.Vector2() },
+        uSize: { value: 4 },
+        uVisibility: { value: 0 },
+        uParticlesTexture: { value: null },
+      },
+    });
+
+    this.points = new THREE.Points(geo, this.pointsMat);
+    this.points.frustumCulled = false;
+    this.scene.add(this.points);
+  }
+
+  private initComposer(w: number, h: number, dpr: number) {
+    const bw = Math.max(2, Math.round(w * RENDER_SCALE));
+    const bh = Math.max(2, Math.round(h * RENDER_SCALE));
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+
+    const atlas = buildAtlas(RAMP);
+    const atlasTex = new THREE.CanvasTexture(atlas);
+    atlasTex.minFilter = THREE.LinearFilter;
+    atlasTex.magFilter = THREE.LinearFilter;
+
+    const cell = (bw * dpr) / ASCII_CELL_DIVISOR;
+
+    const ink = new THREE.Color(this.opts.inkColor);
+
+    this.trailPos = Array.from({ length: TRAIL_LEN }, () => new THREE.Vector2(9999, 9999));
+    this.trailAge = new Float32Array(TRAIL_LEN).fill(1);
+
+    this.asciiPass = new ShaderPass({
+      uniforms: {
+        tDiffuse: { value: null },
+        uResolution: { value: new THREE.Vector2(bw * dpr, bh * dpr) },
+        uAsciiPixelSize: { value: cell },
+        uAsciiTexture: { value: atlasTex },
+        uCharCount: { value: new THREE.Vector2(RAMP.length, 1) },
+        uAsciiContrast: { value: 1.4 },
+        uAsciiBrightness: { value: 0.12 },
+        uAsciiMin: { value: 0.0 },
+        uAsciiMax: { value: 1.0 },
+        uAspect: { value: w / h },
+        uInk: { value: new THREE.Vector3(ink.r, ink.g, ink.b) },
+        uTrail: { value: this.trailPos },
+        uTrailAge: { value: this.trailAge },
+        uTrailOn: { value: 0 },
+      },
+      vertexShader: ASCII_VERT,
+      fragmentShader: ASCII_FRAG,
+    });
+    this.asciiPass.renderToScreen = true;
+    this.composer.addPass(this.asciiPass);
+
+    this.pointsMat.uniforms.uResolution.value.set(w * dpr, h * dpr);
+  }
+
+  private bindEvents() {
+    const onPointerMove = (e: PointerEvent) => {
+      const r = this.host.getBoundingClientRect();
+
+      const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+      const ny = -(((e.clientY - r.top) / r.height) * 2 - 1);
+      const v = new THREE.Vector3(nx, ny, 0.5).unproject(this.camera);
+      const dir = v.sub(this.camera.position).normalize();
+      const dist = -this.camera.position.z / dir.z;
+      this.mouse.copy(this.camera.position).add(dir.multiplyScalar(dist));
+
+      this.mouseUv.set((e.clientX - r.left) / r.width, 1 - (e.clientY - r.top) / r.height);
+      this.onCard = true;
+    };
+    const onPointerLeave = () => {
+      this.mouse.set(9999, 9999, 0);
+      this.mouseUv.set(9999, 9999);
+      this.onCard = false;
+    };
+
+    this.host.addEventListener("pointermove", onPointerMove);
+    this.host.addEventListener("pointerleave", onPointerLeave);
+    this.cleanupFns.push(() => {
+      this.host.removeEventListener("pointermove", onPointerMove);
+      this.host.removeEventListener("pointerleave", onPointerLeave);
+    });
+
+    const onVis = () => (document.hidden ? this.stop() : this.maybeStart());
+    document.addEventListener("visibilitychange", onVis);
+    this.cleanupFns.push(() => document.removeEventListener("visibilitychange", onVis));
+
+    this.io = new IntersectionObserver(
+      (es) => {
+        this.onScreen = es[0]?.isIntersecting ?? true;
+        this.onScreen ? this.maybeStart() : this.stop();
+      },
+      { threshold: 0.01 },
+    );
+    this.io.observe(this.host);
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(this.host);
+  }
+
+  private cleanupFns: (() => void)[] = [];
+
+  private frameWord(viewportAspect: number) {
+    const halfV = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+    const tanV = Math.tan(halfV);
+    const distForHeight = 1.0 / tanV;
+    const distForWidth = this.wordAspect / (tanV * viewportAspect);
+    const dist = Math.max(distForHeight, distForWidth) * this.WORD_MARGIN;
+    this.camera.position.set(0, 0, dist);
+  }
+
+  private resize() {
+    if (this.disposed) return;
+    const { clientWidth: w, clientHeight: h } = this.host;
+    if (w === 0 || h === 0) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.frameWord(w / h);
+    this.camera.updateProjectionMatrix();
+
+    const bw = Math.max(2, Math.round(w * RENDER_SCALE));
+    const bh = Math.max(2, Math.round(h * RENDER_SCALE));
+    this.asciiPass.uniforms.uResolution.value.set(bw * dpr, bh * dpr);
+    this.asciiPass.uniforms.uAsciiPixelSize.value = (bw * dpr) / ASCII_CELL_DIVISOR;
+    this.asciiPass.uniforms.uAspect.value = w / h;
+    this.pointsMat.uniforms.uResolution.value.set(w * dpr, h * dpr);
+  }
+
+  start() {
+    this.onScreen = true;
+    this.maybeStart();
+  }
+
+  private maybeStart() {
+    if (this.disposed || this.running || !this.onScreen || document.hidden) return;
+    this.running = true;
+    this.clock.getDelta();
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private advanceTrail(dt: number) {
+    const TRAIL_LIFE = 0.75;
+    for (let i = 0; i < TRAIL_LEN; i++) {
+      this.trailAge[i] = Math.min(1, this.trailAge[i] + dt / TRAIL_LIFE);
+    }
+    if (this.onCard) {
+
+      for (let i = TRAIL_LEN - 1; i > 0; i--) {
+        this.trailPos[i].copy(this.trailPos[i - 1]);
+        this.trailAge[i] = this.trailAge[i - 1];
+      }
+      this.trailPos[0].copy(this.mouseUv);
+      this.trailAge[0] = 0;
+    }
+
+    this.asciiPass.uniforms.uTrailAge.value = this.trailAge;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    const dt = Math.min(this.clock.getDelta(), 1 / 30);
+    const t = this.clock.elapsedTime;
+
+    this.mouseSpeed = this.mouse.distanceTo(this.prevMouse);
+    if (this.mouse.x > 9000) this.mouseSpeed = 0;
+    this.prevMouse.copy(this.mouse);
+
+    const cu = this.posVar.material.uniforms;
+    cu.uTime.value = t;
+    cu.uDeltaTime.value = dt;
+    cu.uMouse.value.copy(this.mouse);
+    cu.uMouseSpeed.value = this.mouseSpeed * MOUSE_SPEED_GAIN;
+    this.gpgpu.compute();
+
+    this.pointsMat.uniforms.uParticlesTexture.value =
+      this.gpgpu.getCurrentRenderTarget(this.posVar).texture;
+
+    this.visibility = Math.min(1, this.visibility + dt * 0.9);
+    this.pointsMat.uniforms.uVisibility.value = this.visibility;
+
+    const au = this.asciiPass.uniforms;
+    this.advanceTrail(dt);
+
+    this.trailOn += ((this.onCard ? 1 : 0) - this.trailOn) * Math.min(1, dt * 6);
+    au.uTrailOn.value = this.trailOn;
+
+    this.composer.render();
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  dispose() {
+    this.disposed = true;
+    this.stop();
+    this.cleanupFns.forEach((fn) => fn());
+    this.io?.disconnect();
+    this.ro?.disconnect();
+    this.points?.geometry.dispose();
+    this.pointsMat?.dispose();
+    this.asciiPass?.uniforms.uAsciiTexture.value?.dispose?.();
+    this.gpgpu?.dispose?.();
+    this.composer?.dispose?.();
+    this.renderer?.dispose();
+    this.renderer?.forceContextLoss?.();
+    if (this.renderer?.domElement.parentNode) {
+      this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+```
+
+
+7. Build this: a perspective field of small images drifting behind text: each image sits at a random position and a depth (z under CSS perspective), continuously auto-drifts vertically with parallax by depth, grows as it descends and shrinks going up, and wraps infinitely (exits one edge, re-enters the other). Far images are dimmed by a white overlay. Plain DOM transforms, no WebGL.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### image-galaxy/engine.ts
+
+```ts
+const lerp = (a: number, b: number, t: number) => (1 - t) * a + t * b;
+
+const CONFIG = {
+  speed: 1.1,
+  ease: 0.16,
+  scaleEase: 0.25,
+  scrollMultiplier: 0.9,
+  scaleMin: 0.5,
+  scaleMax: 1.4,
+};
+
+const Z_POOL = [-200, -150, -100, -50, 0, 50, 100, 150, 200];
+
+const SPEED_POOL = [0.55, 0.75, 1, 1.3, 1.6];
+
+export interface GalaxyParticle {
+  x: number;
+  y: number;
+  speed: number;
+  z: number;
+  opacity: number;
+}
+
+export function buildParticles(n: number): GalaxyParticle[] {
+
+  const cols = Math.max(3, Math.round(Math.sqrt(n) * 1.4));
+  const left = 8;
+  const span = 100 - left * 2;
+  const step = cols > 1 ? span / (cols - 1) : 0;
+  const rows = Math.ceil(n / cols);
+
+  const slots = Array.from({ length: n }, (_, i) => i).sort(
+    () => 0.5 - Math.random(),
+  );
+
+  return Array.from({ length: n }, (_, i) => {
+    const z = Z_POOL[i % Z_POOL.length];
+    const opacity = z < 0 ? Math.max(0.6, 1 + z / 400) : 1;
+
+    const slot = slots[i];
+    const col = slot % cols;
+    const row = Math.floor(slot / cols);
+
+    const x = left + col * step + (Math.random() - 0.5) * step * 0.5;
+
+    const y = ((row + 0.5) / rows) * 100 + (Math.random() - 0.5) * (100 / rows) * 0.6;
+
+    return {
+      x: Math.max(2, Math.min(96, x)),
+      y: ((y % 100) + 100) % 100,
+      speed: SPEED_POOL[i % SPEED_POOL.length],
+      z,
+      opacity,
+    };
+  });
+}
+
+interface Node {
+  el: HTMLElement;
+  overlay: HTMLElement | null;
+  speed: number;
+  z: number;
+  extra: number;
+  height: number;
+  top: number;
+  position: number;
+  currentScale: number;
+  isBefore: boolean;
+  isAfter: boolean;
+}
+
+export class ImageGalaxy {
+  private container: HTMLElement;
+  private nodes: Node[] = [];
+  private defs: GalaxyParticle[];
+
+  private scroll = { current: 0, target: 0, last: 0 };
+  private directionSign = 1;
+  private direction: "up" | "down" = "down";
+  private containerHeight = 0;
+  private containerOffsetHeight = 0;
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private lastTime = 0;
+
+  constructor(
+    container: HTMLElement,
+    images: HTMLElement[],
+    overlays: (HTMLElement | null)[],
+    defs?: GalaxyParticle[],
+  ) {
+    this.container = container;
+    this.defs = defs ?? buildParticles(images.length);
+    this.nodes = images.map((el, i) => ({
+      el,
+      overlay: overlays[i] ?? null,
+      speed: 1,
+      z: 0,
+      extra: 0,
+      height: 0,
+      top: 0,
+      position: 0,
+      currentScale: 1,
+      isBefore: false,
+      isAfter: false,
+    }));
+    this.layout();
+  }
+
+  layout() {
+    const rect = this.container.getBoundingClientRect();
+    const small = window.innerWidth < 700;
+    this.nodes.forEach((node, i) => {
+      const d = this.defs[i];
+      if (!d) {
+        node.el.style.display = "none";
+        return;
+      }
+      if (node.overlay) node.overlay.style.opacity = `${1 - d.opacity}`;
+
+      const left = small ? (i % 4) * 25 + (d.x % 20) : d.x;
+      node.el.style.left = `${left}%`;
+      node.el.style.top = `${d.y}%`;
+      node.speed = d.speed;
+      node.z = d.z;
+      node.el.style.transform = "translate3d(0, 0px, 0)";
+      const box = node.el.getBoundingClientRect();
+      node.extra = 0;
+      node.height = box.height;
+      node.top = box.top - rect.top;
+      node.position = 0;
+      node.currentScale = 1;
+    });
+    this.containerHeight = this.container.clientHeight;
+    this.containerOffsetHeight = this.containerHeight * 0.1;
+    this.scroll = { current: 0, target: 0, last: 0 };
+  }
+
+  addScroll(velocity: number, direction: number) {
+    const v = Math.max(-60, Math.min(60, velocity));
+    this.scroll.target += v * CONFIG.scrollMultiplier;
+    this.direction = direction > 0 ? "down" : "up";
+    if (direction !== 0) this.directionSign = Math.sign(direction);
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.running = true;
+    this.lastTime = 0;
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private tick = (now: number) => {
+    if (!this.running) return;
+
+    const dt = this.lastTime ? Math.min(2, (now - this.lastTime) / 16.667) : 1;
+    this.lastTime = now;
+    this.update(dt);
+    this.raf = requestAnimationFrame(this.tick);
+  };
+
+  private update(dt: number) {
+    this.scroll.target += CONFIG.speed * dt * this.directionSign;
+    this.scroll.current = lerp(this.scroll.current, this.scroll.target, CONFIG.ease);
+    this.direction = this.scroll.current < this.scroll.last ? "down" : "up";
+
+    for (const t of this.nodes) {
+      t.position = -this.scroll.current * t.speed - t.extra;
+      const bottom = t.position + t.top + t.height;
+      t.isBefore = bottom < -this.containerOffsetHeight;
+      t.isAfter = bottom > this.containerHeight + this.containerOffsetHeight;
+
+      if (this.direction === "up" && t.isBefore) {
+        t.extra = t.extra - this.containerHeight - this.containerOffsetHeight;
+        t.isBefore = false;
+        t.isAfter = false;
+      }
+      if (this.direction === "down" && t.isAfter) {
+        t.extra = t.extra + this.containerHeight;
+        t.isBefore = false;
+        t.isAfter = false;
+      }
+
+      const top = t.position + t.top;
+      const f = Math.max(0, Math.min(1, top / this.containerHeight));
+      const targetScale = CONFIG.scaleMin + f * (CONFIG.scaleMax - CONFIG.scaleMin);
+      t.currentScale = lerp(t.currentScale, targetScale, CONFIG.scaleEase);
+
+      t.el.style.transform = `translate3d(0, ${t.position}px, ${t.z}px) scale(${t.currentScale})`;
+    }
+
+    this.scroll.last = this.scroll.current;
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.nodes = [];
+  }
+}
+
+```
+
+
+8. Build this: a word rendered as frosted glass with labeled collaborator cursors flying around it. The frosted word is three stacked layers: a sharp copy masked to fade out toward the bottom, a blurred copy masked the opposite way, and a rounded glass-chip overlay (faint white gradient fill, light top-brighter border, layered inset + drop shadows), tilted a hair with a soft radial glow behind. The cursors are Figma-style pointer arrows with colored name pills that drift on looping elliptical paths and scatter away from the real pointer when it enters, easing back when it leaves. Plain DOM + CSS, no framework.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### cursors/FrostedWord.tsx
+
+```ts
+"use client";
+
+export function FrostedWord({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <span className={`relative inline-block ${className}`}>
+      {}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-1/2 -z-[1] h-[130px] w-[540px] max-w-[130%] -translate-x-1/2 -translate-y-1/2"
+        style={{
+          background:
+            "radial-gradient(ellipse 100% 100% at 50% 50%, var(--bg-page) 0%, transparent 70%)",
+          filter: "blur(30px)",
+        }}
+      />
+      {}
+      <span
+        className="relative inline-block"
+        style={{ transform: "translateX(-1px) translateY(-2px) rotate(-1deg)" }}
+      >
+        {}
+        <span
+          aria-hidden
+          className="absolute inset-0 text-[var(--text-primary)] opacity-[0.14]"
+          style={{ filter: "blur(9px)" }}
+        >
+          {children}
+        </span>
+        {/* deep chromatic twin: a further, softer offset in the opposite direction
+            from the near twin — a second refraction plane for more depth */}
+        <span
+          aria-hidden
+          className="absolute inset-0 text-[var(--text-primary)] opacity-[0.16]"
+          style={{
+            transform: "translate(-1.5px, 3px)",
+            filter: "blur(5px)",
+            maskImage: "linear-gradient(186deg, transparent 20%, black 100%)",
+            WebkitMaskImage: "linear-gradient(186deg, transparent 20%, black 100%)",
+          }}
+        >
+          {children}
+        </span>
+        {}
+        <span
+          className="relative z-10"
+          style={{
+            maskImage:
+              "linear-gradient(186deg, black 0%, black 40%, transparent 100%)",
+            WebkitMaskImage:
+              "linear-gradient(186deg, black 0%, black 40%, transparent 100%)",
+          }}
+        >
+          {children}
+        </span>
+        {/* blurred layer: fades in toward the bottom */}
+        <span
+          aria-hidden
+          className="absolute inset-0"
+          style={{
+            filter: "blur(2px)",
+            maskImage:
+              "linear-gradient(186deg, transparent 0%, black 60%, black 100%)",
+            WebkitMaskImage:
+              "linear-gradient(186deg, transparent 0%, black 60%, black 100%)",
+          }}
+        >
+          {children}
+        </span>
+        {}
+        <span
+          aria-hidden
+          className="absolute inset-0 text-[var(--text-primary)] opacity-[0.28]"
+          style={{
+            transform: "translate(1.5px, 2px)",
+            filter: "blur(3.5px)",
+            maskImage: "linear-gradient(186deg, transparent 30%, black 100%)",
+            WebkitMaskImage: "linear-gradient(186deg, transparent 30%, black 100%)",
+          }}
+        >
+          {children}
+        </span>
+        {/* top sheen: a bright specular highlight only on the upper third */}
+        <span
+          aria-hidden
+          className="absolute inset-0 opacity-70"
+          style={{
+            color: "rgba(255,255,255,0.9)",
+            maskImage: "linear-gradient(180deg, black 0%, transparent 30%)",
+            WebkitMaskImage: "linear-gradient(180deg, black 0%, transparent 30%)",
+          }}
+        >
+          {children}
+        </span>
+        {}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute"
+          style={{
+            inset: "-4px -8px",
+            background:
+              "linear-gradient(180deg, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.14) 38%, rgba(255,255,255,0.08) 62%, rgba(255,255,255,0.24) 100%)",
+            border: "1px solid rgba(0,0,0,0.06)",
+            borderTopColor: "rgba(255,255,255,0.75)",
+            borderRadius: "10px",
+            boxShadow:
+              "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 1px rgba(0,0,0,0.05), inset 0 0 0 3px rgba(255,255,255,0.14), inset 0 0 0 4px rgba(0,0,0,0.045), inset 0 8px 16px rgba(255,255,255,0.18), 0 1px 3px rgba(0,0,0,0.07), 0 6px 16px rgba(0,0,0,0.07)",
+          }}
+        />
+        {}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute"
+          style={{
+            inset: "-4px -8px",
+            borderRadius: "10px",
+            background:
+              "linear-gradient(180deg, rgba(255,255,255,0.7), transparent 12%)",
+            mixBlendMode: "overlay",
+          }}
+        />
+      </span>
+    </span>
+  );
+}
+
+```
+
+### cursors/engine.ts
+
+```ts
+const ARROW_PATH =
+  "M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86a.5.5 0 0 1 .35-.15h6.87c.48 0 .72-.58.38-.92L5.94 2.47a.5.5 0 0 0-.44.74Z";
+
+export interface CursorDef {
+  name: string;
+  color: string;
+}
+
+interface CursorNode {
+  root: HTMLDivElement;
+  blush: HTMLDivElement;
+  color: string;
+
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  phase: number;
+  speed: number;
+
+  x: number;
+  y: number;
+  tx: number;
+  ty: number;
+}
+
+const TWO_PI = Math.PI * 2;
+
+export class FlyingCursors {
+  private host: HTMLElement;
+  private defs: CursorDef[];
+  private nodes: CursorNode[] = [];
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private t = 0;
+
+  private pointer = { x: -9999, y: -9999, active: false };
+
+  private ro?: ResizeObserver;
+  private cleanup: (() => void)[] = [];
+
+  constructor(host: HTMLElement, defs: CursorDef[]) {
+    this.host = host;
+    this.defs = defs;
+    this.build();
+    this.bindEvents();
+    this.layout();
+  }
+
+  private build() {
+    for (const def of this.defs) {
+
+      const blush = document.createElement("div");
+      const SIZE = 300;
+      Object.assign(blush.style, {
+        position: "absolute",
+        left: `${-SIZE / 2}px`,
+        top: `${-SIZE / 2}px`,
+        width: `${SIZE}px`,
+        height: `${SIZE}px`,
+        borderRadius: "50%",
+        background: `radial-gradient(circle, ${def.color} 0%, transparent 74%)`,
+        opacity: "0.72",
+        filter: "blur(26px)",
+        pointerEvents: "none",
+        willChange: "transform",
+        mixBlendMode: "soft-light",
+        zIndex: "2",
+      });
+      this.host.appendChild(blush);
+
+      const root = document.createElement("div");
+      Object.assign(root.style, {
+        position: "absolute",
+        left: "0",
+        top: "0",
+        pointerEvents: "none",
+        willChange: "transform",
+        zIndex: "3",
+      });
+
+      root.innerHTML = `
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             style="display:block; filter:drop-shadow(0 2px 3px rgba(0,0,0,0.22))">
+          <path d="${ARROW_PATH}" fill="${def.color}" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <span style="
+          position:absolute; left:16px; top:17px; white-space:nowrap;
+          padding:1.5px 6px; border-radius:8px; border-top-left-radius:2px;
+          font-size:9.5px; font-weight:600; letter-spacing:-0.01em;
+          line-height:1.35; color:#fff; background:${def.color};
+          box-shadow:0 2px 6px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.22);
+          font-family:var(--font-neue-montreal), ui-sans-serif, system-ui, sans-serif;
+        ">${def.name}</span>
+      `;
+      this.host.appendChild(root);
+      this.nodes.push({
+        root,
+        blush,
+        color: def.color,
+        cx: 0.5,
+        cy: 0.5,
+        rx: 0.3,
+        ry: 0.3,
+        phase: 0,
+        speed: 1,
+        x: 0,
+        y: 0,
+        tx: 0,
+        ty: 0,
+      });
+    }
+  }
+
+  private bindEvents() {
+    const onMove = (e: PointerEvent) => {
+      const r = this.host.getBoundingClientRect();
+      this.pointer.x = e.clientX - r.left;
+      this.pointer.y = e.clientY - r.top;
+      this.pointer.active = true;
+    };
+    const onLeave = () => {
+      this.pointer.active = false;
+    };
+    this.host.addEventListener("pointermove", onMove);
+    this.host.addEventListener("pointerleave", onLeave);
+    this.cleanup.push(() => {
+      this.host.removeEventListener("pointermove", onMove);
+      this.host.removeEventListener("pointerleave", onLeave);
+    });
+
+    this.ro = new ResizeObserver(() => this.layout());
+    this.ro.observe(this.host);
+  }
+
+  private layout() {
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    if (!w || !h) return;
+    const n = this.nodes.length;
+    this.nodes.forEach((node, i) => {
+      node.cx = (0.32 + 0.36 * ((i + 0.5) / n)) * w;
+      node.cy = (0.34 + 0.32 * (i % 2)) * h;
+      node.rx = (0.16 + 0.06 * (i % 2)) * w;
+      node.ry = (0.2 + 0.05 * ((i + 1) % 2)) * h;
+      node.phase = (i / n) * TWO_PI;
+      node.speed = 0.5 + 0.18 * i;
+    });
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.running = true;
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    this.t += 0.006;
+
+    for (const node of this.nodes) {
+
+      const a = this.t * node.speed + node.phase;
+      let bx = node.cx + Math.cos(a) * node.rx;
+      let by = node.cy + Math.sin(a * 1.15) * node.ry;
+
+      if (this.pointer.active) {
+        const dx = bx - this.pointer.x;
+        const dy = by - this.pointer.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const push = Math.max(0, 1 - dist / 220) * 120;
+        bx += (dx / dist) * push;
+        by += (dy / dist) * push;
+      }
+
+      node.tx = bx;
+      node.ty = by;
+
+      node.x += (node.tx - node.x) * 0.12;
+      node.y += (node.ty - node.y) * 0.12;
+      node.root.style.transform = `translate3d(${node.x.toFixed(1)}px, ${node.y.toFixed(1)}px, 0)`;
+
+      node.blush.style.transform = `translate3d(${node.x.toFixed(1)}px, ${node.y.toFixed(1)}px, 0)`;
+    }
+
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.cleanup.forEach((fn) => fn());
+    this.ro?.disconnect();
+    this.nodes.forEach((n) => {
+      n.root.parentNode?.removeChild(n.root);
+      n.blush.parentNode?.removeChild(n.blush);
+    });
+    this.nodes = [];
+  }
+}
+
+```
+
+
+9. Build this: a 3D gun (any glTF model) floating over a scene, wrapped in a golden loot beam like a Fortnite legendary drop. Load the glTF (it may be a SkinnedMesh, so bind the outline to the same skeleton), keep the model's original texture and add a thin bright-yellow SILHOUETTE outline (drei-style screen-space back-face hull offset along the clip-space normal, so the line is constant width from any angle). The loot beam is a single tall additive quad drawn entirely in a fragment shader: a few soft vertical gaussian columns with graded brightness, a soft envelope tying them into one shaft, a vertical fade (bright at the gun, gone at the top), living flowing-noise flicker + a slow pulse + two bright energy bands rising up it, and a gentle sway that grows with height. Add a concentrated golden radial glow plane behind the model, a bit of light, a gentle bob, a very weak cursor magnetism (the model leans a hair toward the pointer, the beam leans + the glow distorts slightly), and an optional hover-swell looping sound gated behind the first user gesture. three.js, framework-free.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### gold-scar/engine.ts
+
+```ts
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { mediaUrl } from "../../lib/video-sources";
+import { isMuted } from "../../lib/sound";
+
+const MODEL_URL = mediaUrl("/vault/gold-scar/scar.glb");
+const SOUND_URL = mediaUrl("/vault/gold-scar/chest.mp3");
+
+const MAGNET_EASE = 0.05;
+
+export class GoldScar {
+  private host: HTMLElement;
+  private renderer: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera: THREE.PerspectiveCamera;
+
+  private pivot = new THREE.Group();
+  private model: THREE.Group | null = null;
+  private aura?: THREE.Mesh;
+  private backGlow?: THREE.Mesh;
+  private outlineMats: THREE.ShaderMaterial[] = [];
+  private baseY = 0;
+
+  private restX = 0;
+  private restY = 0;
+  private curX = 0;
+  private curY = 0;
+  private pointer = { x: 0, y: 0, inside: false };
+  private smoothPointerX = 0;
+
+  private snd: HTMLAudioElement | null = null;
+  private hoverInt = 0;
+
+  private coarse =
+    typeof window !== "undefined" &&
+    !window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  private tapPulse = 0;
+
+  private modelReady = false;
+  private bgReady = false;
+  private revealed = false;
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private clock = new THREE.Clock();
+
+  private ro?: ResizeObserver;
+  private cleanup: (() => void)[] = [];
+
+  constructor(host: HTMLElement) {
+    this.host = host;
+    const w = host.clientWidth || 1;
+    const h = host.clientHeight || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setSize(w, h);
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.1;
+    const canvas = this.renderer.domElement;
+    Object.assign(canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      cursor: "grab",
+      touchAction: "pan-y",
+
+      opacity: "0",
+      transition: "opacity 450ms var(--ease-out, ease-out)",
+    });
+    host.appendChild(canvas);
+
+    this.camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 100);
+    this.camera.position.set(0, 0, 6);
+
+    this.scene.add(this.pivot);
+    this.addLights();
+    this.addBackGlow();
+    this.addBeam();
+    this.loadModel();
+    this.bindEvents();
+  }
+
+  private addLights() {
+    this.scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+
+    const key = new THREE.DirectionalLight(0xfff4d8, 4.0);
+    key.position.set(2, 3, 5);
+    this.scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0xffffff, 2.4);
+    fill.position.set(0, 0, 6);
+    this.scene.add(fill);
+
+    const rim = new THREE.DirectionalLight(0xffe9a8, 1.6);
+    rim.position.set(-3, 1, -2);
+    this.scene.add(rim);
+  }
+
+  private addBackGlow() {
+    const size = 256;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const ctx = c.getContext("2d")!;
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+
+    g.addColorStop(0, "rgba(255,215,40,0.95)");
+    g.addColorStop(0.22, "rgba(255,200,25,0.55)");
+    g.addColorStop(0.5, "rgba(255,190,20,0.12)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    const geo = new THREE.PlaneGeometry(2.4, 1.2);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.55,
+    });
+    const glow = new THREE.Mesh(geo, mat);
+    glow.position.set(0.1, 0.0, -0.5);
+    this.backGlow = glow;
+    this.scene.add(glow);
+  }
+
+  private addBeam() {
+    const geo = new THREE.PlaneGeometry(4.5, 6, 1, 1);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: 1 },
+        uPointer: { value: 0 },
+        uCore: { value: new THREE.Color("#ffe63a") },
+        uGold: { value: new THREE.Color("#ffd21e") },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        precision highp float;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uPointer;
+        uniform vec3 uCore;
+        uniform vec3 uGold;
+        varying vec2 vUv;
+
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+        float noise(vec2 p){
+          vec2 i = floor(p), f = fract(p);
+          f = f*f*(3.0-2.0*f);
+          float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+          return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+        }
+
+        void main() {
+          float t = uTime;
+          float y = vUv.y;
+
+          float sway = sin(t * 0.7 + y * 2.0) * 0.035 * y
+                     + sin(t * 1.7 + y * 5.0) * 0.012 * y;
+          float x = (vUv.x - 0.5) - sway - uPointer * 0.025 * y;
+
+          float base = smoothstep(0.0, 0.06, y);
+          float top  = 1.0 - smoothstep(0.55, 1.0, y);
+          float vert = base * top;
+
+          float widen = 1.0 + y * 0.30;
+          float envelope = smoothstep(0.20 * widen, 0.0, abs(x)) * 0.4;
+
+          float cols = 0.0;
+          cols += 0.30 * exp(-pow((x + 0.12) / (0.030 * widen), 2.0));
+          cols += 0.75 * exp(-pow((x + 0.05) / (0.032 * widen), 2.0));
+          cols += 1.00 * exp(-pow((x - 0.01) / (0.034 * widen), 2.0));
+          cols += 0.30 * exp(-pow((x - 0.08) / (0.030 * widen), 2.0));
+          cols += 0.30 * exp(-pow((x - 0.15) / (0.028 * widen), 2.0));
+
+          float flow = noise(vec2(x * 6.0, y * 5.0 - t * 1.1));
+          float flicker = 0.74 + 0.26 * flow;
+          float pulse = 0.9 + 0.1 * sin(t * 1.3);
+
+          float r1 = sin((fract(y - t * 0.28) ) * 3.14159);
+          float r2 = sin((fract(y - t * 0.16 + 0.5)) * 3.14159);
+          float risers = (pow(max(r1,0.0), 6.0) + pow(max(r2,0.0), 6.0) * 0.7) * 0.35;
+
+          float core = cols;
+          float beam = (cols + envelope) * vert * flicker * pulse;
+          beam += risers * cols * vert;
+
+          float pool = smoothstep(0.30, 0.0, length(vec2(x * 1.6, y - 0.02))) * (1.0 - smoothstep(0.0, 0.28, y));
+          beam += pool * 0.5;
+
+          beam *= uIntensity * 0.6;
+
+          vec3 col = mix(uGold, uCore, clamp(core, 0.0, 1.0));
+          float a = clamp(beam, 0.0, 1.0);
+          gl_FragColor = vec4(col * beam, a);
+        }`,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.FrontSide,
+    });
+    this.aura = new THREE.Mesh(geo, mat);
+
+    this.aura.position.set(0.1, 3.0, -1.5);
+    this.aura.renderOrder = 0;
+    this.scene.add(this.aura);
+  }
+
+  private loadModel() {
+    const loader = new GLTFLoader();
+    loader.setCrossOrigin("anonymous");
+    loader.setMeshoptDecoder(MeshoptDecoder);
+    loader.load(
+      MODEL_URL,
+      (gltf) => {
+        if (this.disposed) return;
+        const model = gltf.scene;
+
+        const meshes: THREE.Mesh[] = [];
+        model.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+        });
+
+        const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+        for (const mesh of meshes) {
+          const skinned = mesh as THREE.SkinnedMesh;
+          const outlineGeo = toCreasedNormals(mesh.geometry, Math.PI / 3);
+          const isSkinned = !!skinned.isSkinnedMesh && !!skinned.skeleton;
+          const mat = this.makeOutlineMaterial(size, isSkinned);
+          let outline: THREE.Mesh;
+          if (isSkinned) {
+            const so = new THREE.SkinnedMesh(outlineGeo, mat);
+            so.bind(skinned.skeleton, skinned.bindMatrix);
+            outline = so;
+          } else {
+            outline = new THREE.Mesh(outlineGeo, mat);
+          }
+          outline.renderOrder = -1;
+          mesh.add(outline);
+          this.outlineMats.push(mat);
+        }
+
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size3 = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size3.x, size3.y, size3.z) || 1;
+        model.position.sub(center);
+        const inner = new THREE.Group();
+        inner.add(model);
+        const s = 1.55 / maxDim;
+        inner.scale.setScalar(s);
+        this.pivot.add(inner);
+        this.model = model;
+
+        this.pivot.position.set(0.1, 0.08, 0);
+        this.baseY = this.pivot.position.y;
+        this.restY = this.curY = 4.37;
+        this.restX = this.curX = 0.147;
+        this.modelReady = true;
+        this.maybeReveal();
+      },
+      undefined,
+      () => {
+
+        this.modelReady = true;
+        this.maybeReveal();
+      },
+    );
+  }
+
+  markBackdropReady() {
+    this.bgReady = true;
+    this.maybeReveal();
+  }
+
+  private maybeReveal() {
+    if (this.revealed || this.disposed) return;
+    if (!this.modelReady || !this.bgReady) return;
+    this.revealed = true;
+    this.renderer.render(this.scene, this.camera);
+
+    requestAnimationFrame(() => {
+      this.renderer.domElement.style.opacity = "1";
+    });
+  }
+
+  private makeOutlineMaterial(size: THREE.Vector2, skinned: boolean): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color("#ffef7a") },
+        uThickness: { value: 4.0 },
+        uSize: { value: size.clone() },
+      },
+      vertexShader: `
+        #include <common>
+        #include <skinning_pars_vertex>
+        uniform float uThickness;
+        uniform vec2 uSize;
+        void main() {
+          #include <beginnormal_vertex>
+          #include <skinbase_vertex>
+          #include <skinnormal_vertex>
+          #include <begin_vertex>
+          #include <skinning_vertex>
+          #include <project_vertex>
+
+          vec4 clipN = projectionMatrix * modelViewMatrix * vec4(objectNormal, 0.0);
+          vec2 offset = normalize(clipN.xy) * uThickness / uSize * gl_Position.w * 2.0;
+          gl_Position.xy += offset;
+        }`,
+      fragmentShader: `
+        uniform vec3 uColor;
+        void main() { gl_FragColor = vec4(uColor, 1.0); }`,
+      side: THREE.BackSide,
+      defines: skinned ? { USE_SKINNING: "" } : {},
+    });
+  }
+
+  private bindEvents() {
+    const host = this.host;
+
+    const onMove = (e: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      this.pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.pointer.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+      this.pointer.inside = true;
+    };
+    const onLeave = () => {
+      this.pointer.inside = false;
+    };
+
+    const onTap = () => {
+      if (this.coarse) this.tapPulse = 1;
+    };
+
+    host.addEventListener("pointermove", onMove);
+    host.addEventListener("pointerleave", onLeave);
+    host.addEventListener("pointerdown", onTap);
+    this.cleanup.push(() => {
+      host.removeEventListener("pointermove", onMove);
+      host.removeEventListener("pointerleave", onLeave);
+      host.removeEventListener("pointerdown", onTap);
+    });
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(host);
+  }
+
+  private resize() {
+    if (this.disposed) return;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    if (!w || !h) return;
+    this.renderer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    for (const m of this.outlineMats) m.uniforms.uSize.value.copy(size);
+  }
+
+  private initSound() {
+    if (this.snd) return;
+    this.snd = new Audio(SOUND_URL);
+    this.snd.loop = true;
+    this.snd.volume = 0;
+    this.snd.crossOrigin = "anonymous";
+  }
+
+  private updateSound() {
+    if (!this.snd) return;
+
+    const peak = this.coarse ? 0.4 : 0.9;
+    const target = isMuted() ? 0 : this.hoverInt * peak;
+    this.snd.volume += (target - this.snd.volume) * 0.08;
+    if (target > 0.01 && this.snd.paused) this.snd.play().catch(() => {});
+    if (this.snd.volume < 0.01 && !this.snd.paused) this.snd.pause();
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.initSound();
+    this.running = true;
+    this.clock.getDelta();
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    if (this.snd && !this.snd.paused) this.snd.pause();
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    const t = this.clock.getElapsedTime();
+
+    const PULL = 0.40;
+    const leanY = this.pointer.inside ? this.pointer.x * PULL : 0;
+    const leanX = this.pointer.inside ? -this.pointer.y * PULL * 0.6 : 0;
+    this.curY += (this.restY + leanY - this.curY) * MAGNET_EASE;
+    this.curX += (this.restX + leanX - this.curX) * MAGNET_EASE;
+    this.pivot.rotation.x = this.curX;
+    this.pivot.rotation.y = this.curY;
+    this.pivot.position.y = this.baseY + Math.sin(t * 0.9) * 0.022;
+
+    let want = 0;
+    if (this.coarse) {
+      this.tapPulse *= 0.985;
+      if (this.tapPulse < 0.001) this.tapPulse = 0;
+      want = this.tapPulse;
+    } else if (this.pointer.inside) {
+      const dist = Math.hypot(this.pointer.x, this.pointer.y);
+      want = Math.max(0.25, 1 - dist * 0.7);
+    }
+    this.hoverInt += (want - this.hoverInt) * 0.05;
+
+    const pTargetX = this.pointer.inside ? this.pointer.x : 0;
+    this.smoothPointerX += (pTargetX - this.smoothPointerX) * 0.07;
+
+    if (this.aura) {
+      const u = (this.aura.material as THREE.ShaderMaterial).uniforms;
+      u.uTime.value = t;
+      u.uIntensity.value = 1.0 + this.hoverInt * 0.35 + Math.sin(t * 0.8) * 0.05;
+      u.uPointer.value = this.smoothPointerX;
+    }
+
+    if (this.backGlow) {
+      const m = this.backGlow.material as THREE.MeshBasicMaterial;
+      m.opacity = 0.5 + Math.sin(t * 1.1) * 0.05 + this.hoverInt * 0.14;
+      const breathe = 1.0 + Math.sin(t * 0.9) * 0.02;
+      const sx = breathe + this.smoothPointerX * 0.06;
+      const sy = breathe - this.smoothPointerX * 0.04;
+      this.backGlow.scale.set(sx, sy, 1);
+    }
+
+    this.updateSound();
+
+    if (this.revealed) this.renderer.render(this.scene, this.camera);
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  renderStill() {
+    if (!this.revealed) return;
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.cleanup.forEach((fn) => fn());
+    this.ro?.disconnect();
+    if (this.snd) {
+      this.snd.pause();
+      this.snd.src = "";
+      this.snd = null;
+    }
+    this.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose?.();
+        const m = mesh.material as THREE.Material | THREE.Material[];
+        Array.isArray(m) ? m.forEach((x) => x.dispose()) : m?.dispose?.();
+      }
+    });
+    this.renderer.dispose();
+    this.renderer.forceContextLoss?.();
+    const canvas = this.renderer.domElement;
+    canvas.parentNode?.removeChild(canvas);
+  }
+}
+
+```
+
+
+10. Build this: a cloud of images orbiting on an invisible sphere in 3D: each image is a textured plane scattered at a random point on a sphere, all inside one group that slowly auto-rotates (and you can drag to spin). Every plane is billboarded to always face the camera (its quaternion = the inverse of the group's), planes nearer the camera scale up (depth), and the hovered plane scales up further, all eased. Raycast for hover. Pure three.js meshes, no shaders.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### image-sphere/engine.ts
+
+```ts
+import * as THREE from "three";
+
+const RADIUS = 180;
+const PLANE_SIZE = 50;
+const AUTO_ROT_Y = 0.0005;
+const AUTO_ROT_X = 0.0002;
+const DRAG_EASE = 0.2;
+const HOVER_SCALE = 1.2;
+const SCALE_EASE = 0.1;
+const OPACITY_EASE = 0.12;
+const INERTIA_DECAY = 0.94;
+const FLICK_SCALE = 0.9;
+
+const CLICK_SLOP = 6;
+const FOCUS_EASE = 0.14;
+const FOCUS_DISTANCE = 300;
+const FOCUS_FILL = 0.62;
+const BACKDROP_DIM = 0.16;
+
+export interface ImageSphereOptions {
+  distance?: number;
+  fov?: number;
+}
+
+type PlaneMesh = THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+export class ImageSphere {
+  private host: HTMLElement;
+  private renderer: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private camera: THREE.PerspectiveCamera;
+  private group = new THREE.Group();
+  private planes: PlaneMesh[] = [];
+
+  private raycaster = new THREE.Raycaster();
+  private mouse = new THREE.Vector2(-2, -2);
+  private hovered: PlaneMesh | null = null;
+  private focused: PlaneMesh | null = null;
+
+  private rotationX = 0;
+  private rotationY = 0;
+  private currentRotationX = 0;
+  private currentRotationY = 0;
+  private baseRotationX = 0;
+  private baseRotationY = 0;
+
+  private dragging = false;
+  private startX = 0;
+  private startY = 0;
+
+  private velX = 0;
+  private velY = 0;
+  private lastDX = 0;
+  private lastDY = 0;
+
+  private invQuat = new THREE.Quaternion();
+  private worldPos = new THREE.Vector3();
+  private homePos = new THREE.Vector3();
+  private centerPos = new THREE.Vector3();
+  private tmpPos = new THREE.Vector3();
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+
+  private ro?: ResizeObserver;
+  private cleanup: (() => void)[] = [];
+
+  constructor(host: HTMLElement, imageUrls: string[], opts: ImageSphereOptions = {}) {
+    this.host = host;
+    const w = host.clientWidth || 1;
+    const h = host.clientHeight || 1;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setSize(w, h);
+    const canvas = this.renderer.domElement;
+    Object.assign(canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      cursor: "grab",
+    });
+    host.appendChild(canvas);
+
+    this.camera = new THREE.PerspectiveCamera(opts.fov ?? 25, w / h, 0.1, 2000);
+    this.camera.position.z = opts.distance ?? 520;
+    this.scene.add(this.group);
+
+    this.loadPlanes(imageUrls);
+    this.bindEvents();
+  }
+
+  private loadPlanes(urls: string[]) {
+    const loader = new THREE.TextureLoader();
+    loader.crossOrigin = "anonymous";
+    urls.forEach((url) => {
+      loader.load(url, (tex) => {
+        if (this.disposed) return;
+        tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+        tex.minFilter = THREE.LinearMipMapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.colorSpace = THREE.SRGBColorSpace;
+
+        const aspect = (tex.image.width || 1) / (tex.image.height || 1);
+        const geo = new THREE.PlaneGeometry(PLANE_SIZE * aspect, PLANE_SIZE);
+        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+
+        mat.depthWrite = false;
+        const plane = new THREE.Mesh(geo, mat) as PlaneMesh;
+
+        plane.userData = { isHovered: false, opacity: 0, focus: 0, aspect };
+        mat.opacity = 0;
+
+        const phi = (Math.random() * 2 - 1) * Math.PI;
+        const theta = Math.random() * Math.PI * 2;
+        const r = RADIUS + (Math.random() - 0.5) * 80;
+        plane.position.set(
+          r * Math.sin(phi) * Math.cos(theta),
+          r * Math.sin(phi) * Math.sin(theta),
+          r * Math.cos(phi),
+        );
+
+        plane.userData.home = plane.position.clone();
+
+        this.group.add(plane);
+        this.planes.push(plane);
+
+        if (!this.running) this.renderStill();
+      });
+    });
+  }
+
+  private bindEvents() {
+    const host = this.host;
+    const localMouse = (clientX: number, clientY: number) => {
+      const rect = host.getBoundingClientRect();
+      this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      this.mouse.y = -(((clientY - rect.top) / rect.height) * 2 - 1);
+    };
+
+    let downX = 0;
+    let downY = 0;
+    const onDown = (e: PointerEvent) => {
+      this.dragging = true;
+      this.startX = e.clientX;
+      this.startY = e.clientY;
+      downX = e.clientX;
+      downY = e.clientY;
+      this.velX = this.velY = 0;
+      this.lastDX = this.lastDY = 0;
+      this.renderer.domElement.style.cursor = "grabbing";
+    };
+    const onMove = (e: PointerEvent) => {
+      localMouse(e.clientX, e.clientY);
+      if (this.dragging) {
+        const dx = e.clientX - this.startX;
+        const dy = e.clientY - this.startY;
+        this.rotationY += dx * 1.0;
+        this.rotationX -= dy * 1.0;
+        this.lastDX = dx;
+        this.lastDY = dy;
+        this.startX = e.clientX;
+        this.startY = e.clientY;
+      }
+    };
+    const release = () => {
+      if (!this.dragging) return;
+      this.dragging = false;
+
+      this.velY = this.lastDX * FLICK_SCALE;
+      this.velX = -this.lastDY * FLICK_SCALE;
+      this.renderer.domElement.style.cursor = "grab";
+    };
+    const onUp = (e: PointerEvent) => {
+      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+      release();
+
+      if (moved <= CLICK_SLOP && this.running) {
+
+        this.velX = this.velY = 0;
+        localMouse(e.clientX, e.clientY);
+        const hit = this.pick();
+        if (this.focused) this.focused = hit === this.focused ? null : hit;
+        else this.focused = hit;
+      }
+    };
+    const onLeave = () => {
+      release();
+      this.mouse.set(-2, -2);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && this.focused) this.focused = null;
+    };
+    window.addEventListener("keydown", onKey);
+    this.cleanup.push(() => window.removeEventListener("keydown", onKey));
+
+    host.addEventListener("pointerdown", onDown);
+    host.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    host.addEventListener("pointerleave", onLeave);
+    this.cleanup.push(() => {
+      host.removeEventListener("pointerdown", onDown);
+      host.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      host.removeEventListener("pointerleave", onLeave);
+    });
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(host);
+  }
+
+  private resize() {
+    if (this.disposed) return;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    if (!w || !h) return;
+    this.renderer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  private pick(): PlaneMesh | null {
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const hits = this.raycaster.intersectObjects(this.planes, false);
+    return (hits.length > 0 ? hits[0].object : null) as PlaneMesh | null;
+  }
+
+  private hoverDetection() {
+    const next = this.pick();
+    if (next !== this.hovered) {
+      if (this.hovered) this.hovered.userData.isHovered = false;
+      this.hovered = next;
+      if (this.hovered) this.hovered.userData.isHovered = true;
+    }
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.running = true;
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+
+    if (!this.dragging && (this.velX !== 0 || this.velY !== 0)) {
+      this.rotationY += this.velY;
+      this.rotationX -= this.velX;
+      this.velX *= INERTIA_DECAY;
+      this.velY *= INERTIA_DECAY;
+      if (Math.abs(this.velX) < 0.01) this.velX = 0;
+      if (Math.abs(this.velY) < 0.01) this.velY = 0;
+    }
+
+    this.baseRotationY += AUTO_ROT_Y;
+    this.baseRotationX += AUTO_ROT_X;
+    this.currentRotationX += (this.rotationX - this.currentRotationX) * DRAG_EASE;
+    this.currentRotationY += (this.rotationY - this.currentRotationY) * DRAG_EASE;
+    this.group.rotation.x = this.baseRotationX + this.currentRotationX * 0.002;
+    this.group.rotation.y = this.baseRotationY + this.currentRotationY * 0.002;
+
+    if (!this.dragging && !this.focused) this.hoverDetection();
+    else if (this.focused && this.hovered) {
+      this.hovered.userData.isHovered = false;
+      this.hovered = null;
+    }
+    const anyFocused = this.focused !== null;
+
+    this.centerPos.set(0, 0, this.camera.position.z - FOCUS_DISTANCE);
+    const viewH = 2 * FOCUS_DISTANCE * Math.tan((this.camera.fov * Math.PI) / 360);
+    const focusScale = (viewH * FOCUS_FILL) / PLANE_SIZE;
+
+    this.invQuat.copy(this.group.quaternion).invert();
+    for (const plane of this.planes) {
+      plane.quaternion.copy(this.invQuat);
+
+      const focusTarget = plane === this.focused ? 1 : 0;
+      const f = plane.userData.focus + (focusTarget - plane.userData.focus) * FOCUS_EASE;
+      plane.userData.focus = f;
+
+      if (f > 0.0005) {
+        this.tmpPos.copy(this.centerPos);
+        this.group.worldToLocal(this.tmpPos);
+        plane.position.copy(plane.userData.home).lerp(this.tmpPos, f);
+      } else if (plane.position.x !== plane.userData.home.x || plane.position.z !== plane.userData.home.z) {
+        plane.position.copy(plane.userData.home);
+      }
+
+      plane.getWorldPosition(this.worldPos);
+      const depth = this.worldPos.z;
+
+      const zScale = 0.8 + depth / 2000;
+      let target = plane.userData.isHovered ? zScale * HOVER_SCALE : zScale;
+      target = target + (focusScale - target) * f;
+      const s = plane.scale.x + (target - plane.scale.x) * SCALE_EASE;
+      plane.scale.set(s, s, s);
+
+      let wantOpacity = 1;
+      if (anyFocused) wantOpacity = BACKDROP_DIM + (1 - BACKDROP_DIM) * f;
+      const o = plane.userData.opacity + (wantOpacity - plane.userData.opacity) * OPACITY_EASE;
+      plane.userData.opacity = o;
+      plane.material.opacity = o;
+
+      plane.renderOrder = f > 0.5 ? 1 : 0;
+    }
+
+    this.renderer.render(this.scene, this.camera);
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  renderStill() {
+    this.invQuat.copy(this.group.quaternion).invert();
+    for (const plane of this.planes) {
+      plane.quaternion.copy(this.invQuat);
+      plane.getWorldPosition(this.worldPos);
+      const zScale = 0.8 + this.worldPos.z / 2000;
+      plane.scale.set(zScale, zScale, zScale);
+      plane.userData.opacity = 1;
+      plane.material.opacity = 1;
+    }
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.cleanup.forEach((fn) => fn());
+    this.ro?.disconnect();
+    for (const plane of this.planes) {
+      plane.geometry.dispose();
+      const mat = plane.material as THREE.MeshBasicMaterial;
+      mat.map?.dispose();
+      mat.dispose();
+    }
+    this.renderer.dispose();
+    this.renderer.forceContextLoss?.();
+    const canvas = this.renderer.domElement;
+    canvas.parentNode?.removeChild(canvas);
+  }
+}
+
+```
+
+
+11. Build this: a short lowercase sentence (e.g. "design is how it works") laid out as adjacent SOLID-COLOR tiles packed edge-to-edge into one seamless horizontal bar — each word in its own rectangle, auto-sized to the word with even padding, uniform height, no gaps, the whole bar rounded as one unit. Each tile carries a bold, saturated, slightly-clashing swatch (near-black, red, lilac, green, violet, yellow…) with an auto-contrast text color baked in (white on the dark swatches, near-black on the bright ones) — no muted filler. On reveal the tiles FLY IN to assemble the bar: each wipes open left-to-right via clip-path (clip-path, NOT scaleX, so the text never distorts) with a small rise + fade, staggered. Then it idly SHUFFLES: each tile re-rolls to a different swatch on its own timer (color transitions eased), and hovering a tile re-rolls it immediately. Set in a tight grotesque. Plain DOM/CSS: a flex row of spans + a rAF loop, no canvas, no framework. Reduced-motion shows the assembled bar, static.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### design-tiles/palette.ts
+
+```ts
+export const WORDS = ["design", "is", "how", "it", "works"];
+
+export type Swatch = { bg: string; fg: string };
+
+export const SWATCHES: Swatch[] = [
+  { bg: "#0a0a0a", fg: "#ffffff" },
+  { bg: "#ff2e20", fg: "#0a0a0a" },
+  { bg: "#f0c2f7", fg: "#0a0a0a" },
+  { bg: "#22e58b", fg: "#0a0a0a" },
+  { bg: "#7c4dff", fg: "#ffffff" },
+  { bg: "#ffe14d", fg: "#0a0a0a" },
+  { bg: "#18b6ff", fg: "#0a0a0a" },
+  { bg: "#ff7a1a", fg: "#0a0a0a" },
+  { bg: "#ff4fa3", fg: "#0a0a0a" },
+];
+
+export function randomSwatch(exclude?: Swatch): Swatch {
+  if (SWATCHES.length < 2 || !exclude) {
+    return SWATCHES[(Math.random() * SWATCHES.length) | 0];
+  }
+  let s = exclude;
+  while (s === exclude) s = SWATCHES[(Math.random() * SWATCHES.length) | 0];
+  return s;
+}
+
+export function randomSwatchAvoiding(used: Swatch[]): Swatch {
+  const free = SWATCHES.filter((s) => !used.includes(s));
+  const pool = free.length > 0 ? free : SWATCHES;
+  return pool[(Math.random() * pool.length) | 0];
+}
+
+export const INITIAL: Swatch[] = [
+  SWATCHES[0],
+  SWATCHES[1],
+  SWATCHES[2],
+  SWATCHES[3],
+  SWATCHES[4],
+];
+
+```
+
+### design-tiles/engine.ts
+
+```ts
+import { WORDS, INITIAL, randomSwatchAvoiding, type Swatch } from "./palette";
+import { measureWord, REF_FS, BASELINE_Y, type WordMetrics } from "./measure";
+
+const SVGNS = "http://www.w3.org/2000/svg";
+
+const FLY_STAGGER = 130;
+const FLY_MS = 760;
+const SHUFFLE_MIN = 1300;
+const SHUFFLE_MAX = 3200;
+const COLOR_MS = 520;
+
+const PAD_Y = 6;
+const PAD_X = 2;
+
+const BAND_ASCENT = 82;
+const BAND_DESCENT = 26;
+
+type LetterRect = {
+  el: SVGRectElement;
+  x0: number;
+  x1: number;
+  baseY: number;
+  baseH: number;
+  hovered: boolean;
+};
+
+type Tile = {
+  outer: HTMLSpanElement;
+  svg: SVGSVGElement;
+  rects: LetterRect[];
+  textEl: SVGTextElement;
+  word: string;
+  swatch: Swatch;
+  nextShuffle: number;
+};
+
+export class DesignTiles {
+  private host: HTMLElement;
+  private root: HTMLDivElement;
+  private bar: HTMLDivElement;
+  private tiles: Tile[] = [];
+  private fontFamily = "sans-serif";
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private revealed = false;
+  private now = 0;
+
+  private ro?: ResizeObserver;
+  private cleanup: (() => void)[] = [];
+
+  constructor(host: HTMLElement) {
+    this.host = host;
+
+    const root = document.createElement("div");
+    Object.assign(root.style, {
+      position: "absolute",
+      inset: "0",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontFamily: "var(--font-kyoto), var(--font-neue-montreal), system-ui, sans-serif",
+      userSelect: "none",
+    });
+    root.setAttribute("aria-label", WORDS.join(" "));
+
+    this.fontFamily =
+      getComputedStyle(root).fontFamily || "var(--font-kyoto), sans-serif";
+
+    const bar = document.createElement("div");
+
+    Object.assign(bar.style, { display: "flex", alignItems: "center" });
+
+    WORDS.forEach((word, i) => {
+      const sw = INITIAL[i] ?? randomSwatchAvoiding([]);
+
+      const outer = document.createElement("span");
+      Object.assign(outer.style, {
+        display: "grid",
+        gridTemplateColumns: "0fr",
+
+        transition: `grid-template-columns ${FLY_MS}ms cubic-bezier(.16,1,.3,1)`,
+      });
+      const clip = document.createElement("span");
+      clip.style.overflow = "hidden";
+
+      const svg = document.createElementNS(SVGNS, "svg");
+      Object.assign(svg.style, {
+        display: "block",
+
+        height: "clamp(1.6rem, 4vw, 2.9rem)",
+        opacity: "0",
+        transition: `opacity ${Math.round(FLY_MS * 0.8)}ms ease`,
+      });
+
+      const gBg = document.createElementNS(SVGNS, "g");
+      const textEl = document.createElementNS(SVGNS, "text");
+      textEl.setAttribute("font-family", this.fontFamily);
+      textEl.setAttribute("font-weight", "500");
+      textEl.setAttribute("font-size", String(REF_FS));
+      textEl.setAttribute("dominant-baseline", "alphabetic");
+      textEl.style.fill = sw.fg;
+      textEl.style.transition = `fill ${COLOR_MS}ms ease`;
+      textEl.textContent = word;
+
+      svg.appendChild(gBg);
+      svg.appendChild(textEl);
+      clip.appendChild(svg);
+      outer.appendChild(clip);
+      bar.appendChild(outer);
+
+      this.tiles.push({
+        outer,
+        svg,
+        rects: [],
+        textEl,
+        word,
+        swatch: sw,
+        nextShuffle: 0,
+      });
+    });
+
+    root.appendChild(bar);
+    host.appendChild(root);
+    this.root = root;
+    this.bar = bar;
+
+    this.layout();
+    this.bindEvents();
+  }
+
+  private layout() {
+    for (const tile of this.tiles) {
+      const m = measureWord(tile.word, this.fontFamily, "500");
+
+      for (const r of tile.rects) r.el.remove();
+      tile.rects = [];
+      if (!m) {
+
+        this.buildFallback(tile);
+        continue;
+      }
+      this.buildRects(tile, m);
+    }
+  }
+
+  private buildRects(tile: Tile, m: WordMetrics) {
+    const gBg = tile.svg.firstChild as SVGGElement;
+
+    const bandTop = BASELINE_Y - BAND_ASCENT;
+    const bandBottom = BASELINE_Y + BAND_DESCENT;
+
+    for (let i = 0; i < m.glyphs.length; i++) {
+      const g = m.glyphs[i];
+      if (g.ch === " ") continue;
+      const top = Math.max(bandTop, g.top - PAD_Y);
+      const bottom = Math.min(bandBottom, g.bottom + PAD_Y);
+
+      const next = m.glyphs[i + 1];
+      const right = next ? next.x : g.x + g.w;
+      const left = g.x - (i === 0 ? PAD_X : 0);
+      const width = right - left + PAD_X;
+      const rect = document.createElementNS(SVGNS, "rect");
+      rect.setAttribute("x", String(left));
+      rect.setAttribute("y", String(top));
+      rect.setAttribute("width", String(width));
+      rect.setAttribute("height", String(bottom - top));
+      rect.style.fill = tile.swatch.bg;
+
+      rect.style.transition = `fill ${COLOR_MS}ms ease, y 160ms ease, height 160ms ease`;
+      gBg.appendChild(rect);
+      tile.rects.push({
+        el: rect,
+        x0: left,
+        x1: left + width,
+        baseY: top,
+        baseH: bottom - top,
+        hovered: false,
+      });
+    }
+
+    tile.textEl.setAttribute("x", "0");
+    tile.textEl.setAttribute("y", String(BASELINE_Y));
+    const vbX = -PAD_X;
+    const vbW = m.width + PAD_X * 2;
+    const vbY = bandTop;
+    const vbH = bandBottom - bandTop;
+    tile.svg.setAttribute("viewBox", `${vbX} ${vbY} ${vbW} ${vbH}`);
+    tile.svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+
+    tile.svg.removeAttribute("width");
+    tile.svg.removeAttribute("height");
+    tile.svg.style.width = "auto";
+  }
+
+  private buildFallback(tile: Tile) {
+    const gBg = tile.svg.firstChild as SVGGElement;
+    const rect = document.createElementNS(SVGNS, "rect");
+    rect.setAttribute("x", "0");
+    rect.setAttribute("y", "0");
+    rect.setAttribute("width", "100");
+    rect.setAttribute("height", "100");
+    rect.style.fill = tile.swatch.bg;
+    gBg.appendChild(rect);
+    tile.rects.push({ el: rect, x0: 0, x1: 100, baseY: 0, baseH: 100, hovered: false });
+    tile.svg.setAttribute("viewBox", "0 0 100 100");
+  }
+
+  private bindEvents() {
+    this.tiles.forEach((tile) => {
+
+      const onEnter = () => this.recolor(tile);
+      tile.svg.addEventListener("pointerenter", onEnter);
+
+      const onMove = (e: PointerEvent) => this.hoverLetter(tile, e);
+      const onLeave = () => this.clearHover(tile);
+      tile.svg.addEventListener("pointermove", onMove);
+      tile.svg.addEventListener("pointerleave", onLeave);
+      this.cleanup.push(() => {
+        tile.svg.removeEventListener("pointerenter", onEnter);
+        tile.svg.removeEventListener("pointermove", onMove);
+        tile.svg.removeEventListener("pointerleave", onLeave);
+      });
+    });
+
+    this.ro = new ResizeObserver(() => this.layout());
+    this.ro.observe(this.host);
+  }
+
+  private hoverLetter(tile: Tile, e: PointerEvent) {
+    const rect = tile.svg.getBoundingClientRect();
+    if (rect.width < 1) return;
+    const vb = tile.svg.viewBox.baseVal;
+    const scale = vb.width / rect.width;
+    const grow = 2 * scale;
+    const px = vb.x + ((e.clientX - rect.left) / rect.width) * vb.width;
+
+    for (const r of tile.rects) {
+      const isHit = px >= r.x0 && px < r.x1;
+      if (isHit === r.hovered) continue;
+      r.hovered = isHit;
+      if (isHit) {
+        r.el.style.y = `${r.baseY - grow / 2}px`;
+        r.el.style.height = `${r.baseH + grow}px`;
+      } else {
+        r.el.style.y = `${r.baseY}px`;
+        r.el.style.height = `${r.baseH}px`;
+      }
+    }
+  }
+
+  private clearHover(tile: Tile) {
+    for (const r of tile.rects) {
+      if (!r.hovered) continue;
+      r.hovered = false;
+      r.el.style.y = `${r.baseY}px`;
+      r.el.style.height = `${r.baseH}px`;
+    }
+  }
+
+  private recolor(tile: Tile) {
+    const used = this.tiles.filter((t) => t !== tile).map((t) => t.swatch);
+    const sw = randomSwatchAvoiding(used);
+    tile.swatch = sw;
+    for (const r of tile.rects) r.el.style.fill = sw.bg;
+    tile.textEl.style.fill = sw.fg;
+  }
+
+  refreshFont() {
+    this.fontFamily = getComputedStyle(this.root).fontFamily || this.fontFamily;
+    for (const tile of this.tiles) tile.textEl.setAttribute("font-family", this.fontFamily);
+    this.layout();
+  }
+
+  private reveal() {
+    if (this.revealed) return;
+    this.revealed = true;
+    this.tiles.forEach((tile, i) => {
+      const delay = i * FLY_STAGGER;
+      const t = window.setTimeout(() => {
+        tile.outer.style.gridTemplateColumns = "1fr";
+        tile.svg.style.opacity = "1";
+      }, delay);
+      this.cleanup.push(() => window.clearTimeout(t));
+    });
+    const assembledAt = this.tiles.length * FLY_STAGGER + FLY_MS;
+    this.tiles.forEach((tile) => {
+      tile.nextShuffle =
+        performance.now() + assembledAt + SHUFFLE_MIN + Math.random() * (SHUFFLE_MAX - SHUFFLE_MIN);
+    });
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.running = true;
+    this.reveal();
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    this.now = performance.now();
+    for (const tile of this.tiles) {
+      if (tile.nextShuffle === 0) continue;
+      if (this.now >= tile.nextShuffle) {
+        this.recolor(tile);
+        tile.nextShuffle = this.now + SHUFFLE_MIN + Math.random() * (SHUFFLE_MAX - SHUFFLE_MIN);
+      }
+    }
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  renderStill() {
+    this.revealed = true;
+    this.tiles.forEach((tile) => {
+      tile.outer.style.transition = "none";
+      tile.outer.style.gridTemplateColumns = "1fr";
+      tile.svg.style.transition = "none";
+      tile.svg.style.opacity = "1";
+    });
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.ro?.disconnect();
+    this.cleanup.forEach((fn) => fn());
+    this.root.parentNode?.removeChild(this.root);
+    void this.bar;
+  }
+}
+
+```
+
+
+12. Build this: a scatter of die-cut VINYL WORD STICKERS you can grab and FLING around, each word set in a DIFFERENT font (a mini type specimen). The sticker look is generated on canvas, not baked into art: render the word to an offscreen canvas, then DILATE its silhouette outward by the border width (stamp the filled word in white many times around a ring of that radius — this grows an even outline that follows the true letter shapes, counters and all), fill that white = the die-cut base, draw the colored word on top, and put ONE soft drop shadow under the whole thing so it lifts off the page. Each sticker is an absolutely-positioned canvas at a scattered position + slight rotation. Drag with the pointer (cursor grab→grabbing), track pointer velocity, and on release THROW it with momentum: integrate position each frame, decay by friction, add a little spin, and BOUNCE off the card edges (flip + damp velocity) until it settles; a tap (no drag) gives a small wobble. Framework-free: a canvas renderer + a rAF physics loop, no canvas/physics library. Warm the (webfont) faces before rendering so the die-cut hugs the real glyphs, not a fallback. Reduced-motion shows a static scatter.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### word-stickers/stickers.ts
+
+```ts
+export interface StickerDef {
+  word: string;
+  font: string;
+  weight: number;
+  fill: string;
+  outline: string;
+  x: number;
+  y: number;
+  rot: number;
+}
+
+const FONT = "var(--font-mondwest)";
+
+export const STICKERS: StickerDef[] = [
+  { word: "wow", font: FONT, weight: 400, outline: "#ff2e6e", fill: "#2b0b4f", x: 0.17, y: 0.28, rot: 0 },
+  { word: "design", font: FONT, weight: 400, outline: "#7c4dff", fill: "#eaff5a", x: 0.66, y: 0.24, rot: 0 },
+  { word: "vault", font: FONT, weight: 400, outline: "#00b3a4", fill: "#ff3d6e", x: 0.82, y: 0.7, rot: 0 },
+  { word: "yes!", font: FONT, weight: 400, outline: "#ff7a1a", fill: "#0a2f6b", x: 0.3, y: 0.74, rot: 0 },
+  { word: "arlan", font: FONT, weight: 400, outline: "#ffd21e", fill: "#c81e5b", x: 0.52, y: 0.55, rot: 0 },
+  { word: "ship it", font: FONT, weight: 400, outline: "#1668ff", fill: "#7dffb0", x: 0.2, y: 0.55, rot: 0 },
+];
+
+```
+
+### word-stickers/sticker-render.ts
+
+```ts
+export interface RenderedSticker {
+  canvas: HTMLCanvasElement;
+  width: number;
+  height: number;
+}
+
+export interface RenderOpts {
+  word: string;
+  font: string;
+  weight: number;
+  fill: string;
+  outline: string;
+  fontSizePx: number;
+  border?: number;
+  dpr?: number;
+}
+
+export function renderSticker(opts: RenderOpts): RenderedSticker {
+  const dpr = opts.dpr ?? Math.min(window.devicePixelRatio || 1, 2);
+  const size = opts.fontSizePx;
+  const border = opts.border ?? Math.max(6, Math.round(size * 0.16));
+  const fontStr = `${opts.weight} ${size}px ${opts.font}`;
+
+  const meas = document.createElement("canvas").getContext("2d")!;
+  meas.font = fontStr;
+  const m = meas.measureText(opts.word);
+  const ascent = m.actualBoundingBoxAscent || size * 0.8;
+  const descent = m.actualBoundingBoxDescent || size * 0.2;
+  const textW = m.width;
+  const textH = ascent + descent;
+
+  const pad = border + 4;
+  const cssW = Math.ceil(textW + pad * 2);
+  const cssH = Math.ceil(textH + pad * 2);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(cssW * dpr);
+  canvas.height = Math.ceil(cssH * dpr);
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+  ctx.textBaseline = "alphabetic";
+  ctx.font = fontStr;
+
+  const bx = pad;
+  const by = pad + ascent;
+
+  const base = document.createElement("canvas");
+  base.width = canvas.width;
+  base.height = canvas.height;
+  const bctx = base.getContext("2d")!;
+  bctx.scale(dpr, dpr);
+  bctx.font = fontStr;
+  bctx.textBaseline = "alphabetic";
+  bctx.fillStyle = opts.outline;
+
+  for (let r = border; r > 0.5; r -= 1) {
+    const stamps = Math.max(16, Math.ceil(r * 3));
+    for (let a = 0; a < stamps; a++) {
+      const ang = (a / stamps) * Math.PI * 2;
+      bctx.fillText(opts.word, bx + Math.cos(ang) * r, by + Math.sin(ang) * r);
+    }
+  }
+
+  bctx.fillText(opts.word, bx, by);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(base, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  ctx.fillStyle = opts.fill;
+  ctx.font = fontStr;
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(opts.word, bx, by);
+
+  return { canvas, width: cssW, height: cssH };
+}
+
+```
+
+### word-stickers/engine.ts
+
+```ts
+import { STICKERS, type StickerDef } from "./stickers";
+import { renderSticker } from "./sticker-render";
+import { StickerGL } from "./gl-sticker";
+
+function resolveFamily(cssFamily: string): string {
+  const probe = document.createElement("span");
+  probe.style.fontFamily = cssFamily;
+  probe.style.position = "absolute";
+  probe.style.visibility = "hidden";
+  probe.textContent = "Ag";
+  document.body.appendChild(probe);
+  const fam = getComputedStyle(probe).fontFamily || "sans-serif";
+  document.body.removeChild(probe);
+  return fam;
+}
+
+const FRICTION = 0.92;
+const BOUNCE = 0.55;
+const MIN_VEL = 0.05;
+const THROW_SCALE = 0.7;
+const GRAB_SCALE = 1.12;
+const SCALE_EASE = 0.12;
+const DRAG_EASE = 0.1;
+const PEEL_EASE = 0.1;
+
+const APPEAR_EASE = 0.09;
+const APPEAR_STAGGER_MS = 140;
+
+const PEEL_ELEVATION = 0.4;
+const PEEL_PULLBACK = 0.16;
+
+interface Item {
+  def: StickerDef;
+  art: HTMLCanvasElement;
+  hit: HTMLDivElement;
+  tex: WebGLTexture | null;
+  w: number;
+  h: number;
+  x: number;
+  y: number;
+  tx: number;
+  ty: number;
+  vx: number;
+  vy: number;
+  scale: number;
+  dragging: boolean;
+
+  peel: number;
+  grabU: number;
+  grabV: number;
+  anchorU: number;
+  anchorV: number;
+  offX: number;
+  offY: number;
+
+  appear: number;
+  appearAt: number;
+}
+
+export class WordStickers {
+  private host: HTMLElement;
+  private items: Item[] = [];
+  private W = 1;
+  private H = 1;
+  private dpr = 1;
+
+  private gl: StickerGL | null = null;
+  private useGL = false;
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private laidOut = false;
+  private entranceStarted = false;
+  private now = 0;
+
+  private drag: {
+    item: Item;
+    dx: number;
+    dy: number;
+    lastX: number;
+    lastY: number;
+    moved: number;
+    pointerId: number;
+  } | null = null;
+
+  private ro?: ResizeObserver;
+  private cleanup: (() => void)[] = [];
+
+  constructor(host: HTMLElement) {
+    this.host = host;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.measure();
+
+    const gl = new StickerGL();
+    if (gl.available) {
+      this.gl = gl;
+      this.useGL = true;
+      gl.resize(this.W, this.H, this.dpr);
+      host.appendChild(gl.canvas);
+    }
+
+    for (const def of STICKERS) {
+      const fontSizePx = this.stickerFontPx();
+      const r = renderSticker({
+        word: def.word,
+        font: resolveFamily(def.font),
+        weight: def.weight,
+        fill: def.fill,
+        outline: def.outline,
+        fontSizePx,
+      });
+
+      const art = r.canvas;
+      let tex: WebGLTexture | null = null;
+      if (this.useGL && this.gl) {
+        tex = this.gl.makeTexture(art, r.width, r.height).tex;
+      } else {
+
+        Object.assign(art.style, {
+          position: "absolute",
+          width: `${r.width}px`,
+          height: `${r.height}px`,
+          left: "0",
+          top: "0",
+          pointerEvents: "none",
+        });
+        art.setAttribute("aria-hidden", "true");
+        host.appendChild(art);
+      }
+
+      const hit = document.createElement("div");
+      Object.assign(hit.style, {
+        position: "absolute",
+        left: "0",
+        top: "0",
+        width: `${r.width}px`,
+        height: `${r.height}px`,
+        cursor: "grab",
+        touchAction: "none",
+      });
+      hit.setAttribute("aria-hidden", "true");
+      host.appendChild(hit);
+
+      const item: Item = {
+        def,
+        art,
+        hit,
+        tex,
+        w: r.width,
+        h: r.height,
+        x: def.x * this.W - r.width / 2,
+        y: def.y * this.H - r.height / 2,
+        tx: 0,
+        ty: 0,
+        vx: 0,
+        vy: 0,
+        scale: 1,
+        dragging: false,
+        peel: 0,
+        grabU: 0.5,
+        grabV: 0.5,
+        anchorU: 0.5,
+        anchorV: 0.5,
+        offX: 0,
+        offY: 0,
+        appear: 0,
+        appearAt: 0,
+      };
+      item.tx = item.x;
+      item.ty = item.y;
+      this.clampInside(item);
+      this.placeItem(item);
+      this.items.push(item);
+      this.bindDrag(item);
+    }
+
+    this.ro = new ResizeObserver(() => this.onResize());
+    this.ro.observe(host);
+  }
+
+  private measure() {
+    this.W = this.host.clientWidth || 1;
+    this.H = this.host.clientHeight || 1;
+  }
+
+  private stickerFontPx() {
+    const w = this.W > 40 ? this.W : 640;
+    return Math.max(32, Math.min(66, w * 0.088));
+  }
+
+  private onResize() {
+    const prevW = this.W;
+    const prevH = this.H;
+    this.measure();
+    if (this.W < 2 || this.H < 2) return;
+    this.gl?.resize(this.W, this.H, this.dpr);
+    const sx = this.W / (prevW || 1);
+    const sy = this.H / (prevH || 1);
+    for (const it of this.items) {
+      it.x *= sx;
+      it.y *= sy;
+      it.tx = it.x;
+      it.ty = it.y;
+    }
+    this.rerenderAll();
+  }
+
+  private effScale(it: Item) {
+    const a = it.appearAt > 0 ? it.appear : 1;
+    return it.scale * a;
+  }
+
+  private placeItem(it: Item) {
+    const s = this.effScale(it);
+    const t = `translate(${it.x}px, ${it.y}px)${s !== 1 ? ` scale(${s})` : ""}`;
+    it.hit.style.transform = t;
+    if (!this.useGL) it.art.style.transform = t;
+  }
+
+  private clampInside(it: Item) {
+    it.x = Math.max(0, Math.min(this.W - it.w, it.x));
+    it.y = Math.max(0, Math.min(this.H - it.h, it.y));
+  }
+
+  private bindDrag(it: Item) {
+    const onDown = (e: PointerEvent) => {
+      e.preventDefault();
+      this.host.appendChild(it.hit);
+      it.dragging = true;
+      it.vx = it.vy = 0;
+      it.hit.style.cursor = "grabbing";
+      it.hit.style.zIndex = "10";
+
+      const r = this.rect();
+
+      const gx = (e.clientX - r.left - it.x) / it.w;
+      const gy = (e.clientY - r.top - it.y) / it.h;
+      it.grabU = Math.min(1, Math.max(0, gx));
+      it.grabV = Math.min(1, Math.max(0, gy));
+
+      it.anchorU = 1 - it.grabU;
+      it.anchorV = 1 - it.grabV;
+
+      this.drag = {
+        item: it,
+        dx: e.clientX - r.left - it.x,
+        dy: e.clientY - r.top - it.y,
+        lastX: e.clientX,
+        lastY: e.clientY,
+        moved: 0,
+        pointerId: e.pointerId,
+      };
+      it.hit.setPointerCapture?.(e.pointerId);
+    };
+    it.hit.addEventListener("pointerdown", onDown);
+    this.cleanup.push(() => it.hit.removeEventListener("pointerdown", onDown));
+
+    const onMove = (e: PointerEvent) => {
+      if (!this.drag || this.drag.item !== it) return;
+      const r = this.rect();
+      it.tx = e.clientX - r.left - this.drag.dx;
+      it.ty = e.clientY - r.top - this.drag.dy;
+      this.drag.moved += Math.hypot(e.clientX - this.drag.lastX, e.clientY - this.drag.lastY);
+      this.drag.lastX = e.clientX;
+      this.drag.lastY = e.clientY;
+    };
+    it.hit.addEventListener("pointermove", onMove);
+    this.cleanup.push(() => it.hit.removeEventListener("pointermove", onMove));
+
+    const onUp = (e: PointerEvent) => {
+      if (!this.drag || this.drag.item !== it) return;
+      it.dragging = false;
+      it.hit.style.cursor = "grab";
+      it.hit.style.zIndex = "";
+      it.vx *= THROW_SCALE;
+      it.vy *= THROW_SCALE;
+      it.hit.releasePointerCapture?.(e.pointerId);
+      this.drag = null;
+    };
+    it.hit.addEventListener("pointerup", onUp);
+    it.hit.addEventListener("pointercancel", onUp);
+    this.cleanup.push(() => {
+      it.hit.removeEventListener("pointerup", onUp);
+      it.hit.removeEventListener("pointercancel", onUp);
+    });
+  }
+
+  private rect() {
+    return this.host.getBoundingClientRect();
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    const prevW = this.W;
+    this.measure();
+    if (!this.laidOut || Math.abs(this.W - prevW) > 2) {
+      this.layout();
+      this.laidOut = true;
+    }
+
+    if (!this.entranceStarted) {
+      this.entranceStarted = true;
+      const order = [...this.items].sort((a, b) => a.def.x - b.def.x);
+      const t0 = performance.now() + 150;
+      order.forEach((it, i) => (it.appearAt = t0 + i * APPEAR_STAGGER_MS));
+    }
+    this.running = true;
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private layout() {
+    if (this.W < 2 || this.H < 2) return;
+    this.gl?.resize(this.W, this.H, this.dpr);
+    this.rerenderAll();
+    for (const it of this.items) {
+      it.x = it.def.x * this.W - it.w / 2;
+      it.y = it.def.y * this.H - it.h / 2;
+      it.tx = it.x;
+      it.ty = it.y;
+      it.vx = it.vy = 0;
+      it.scale = 1;
+      this.clampInside(it);
+      this.placeItem(it);
+    }
+    this.drawGL();
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    this.now = performance.now();
+
+    for (const it of this.items) {
+
+      if (it.appearAt > 0 && this.now >= it.appearAt && it.appear < 1) {
+        it.appear += (1 - it.appear) * APPEAR_EASE;
+        if (it.appear > 0.999) it.appear = 1;
+      }
+
+      const targetScale = it.dragging ? GRAB_SCALE : 1;
+      if (Math.abs(targetScale - it.scale) > 0.001) it.scale += (targetScale - it.scale) * SCALE_EASE;
+
+      const peelTarget = it.dragging ? 1 : 0;
+      if (Math.abs(peelTarget - it.peel) > 0.001) it.peel += (peelTarget - it.peel) * PEEL_EASE;
+
+      if (it.dragging) {
+
+        const nx = it.x + (it.tx - it.x) * DRAG_EASE;
+        const ny = it.y + (it.ty - it.y) * DRAG_EASE;
+        it.vx = nx - it.x;
+        it.vy = ny - it.y;
+        it.x = nx;
+        it.y = ny;
+        this.placeItem(it);
+        continue;
+      }
+
+      const appearing = it.appearAt > 0 && it.appear < 1;
+      const moving = Math.abs(it.vx) >= MIN_VEL || Math.abs(it.vy) >= MIN_VEL;
+      if (!moving && it.peel < 0.001 && Math.abs(it.scale - 1) < 0.001 && !appearing) continue;
+
+      it.x += it.vx;
+      it.y += it.vy;
+      if (it.x < 0) { it.x = 0; it.vx = -it.vx * BOUNCE; }
+      else if (it.x > this.W - it.w) { it.x = this.W - it.w; it.vx = -it.vx * BOUNCE; }
+      if (it.y < 0) { it.y = 0; it.vy = -it.vy * BOUNCE; }
+      else if (it.y > this.H - it.h) { it.y = this.H - it.h; it.vy = -it.vy * BOUNCE; }
+      it.vx *= FRICTION;
+      it.vy *= FRICTION;
+      this.placeItem(it);
+    }
+
+    this.drawGL();
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  private drawGL() {
+    if (!this.useGL || !this.gl) return;
+    this.gl.beginFrame();
+    for (const it of this.items) {
+      if (!it.tex) continue;
+      this.gl.drawSticker({
+        x: it.x,
+        y: it.y,
+        w: it.w,
+        h: it.h,
+        scale: this.effScale(it),
+        grabU: it.grabU,
+        grabV: it.grabV,
+        anchorU: it.anchorU,
+        anchorV: it.anchorV,
+        fraction: it.peel,
+        elevation: PEEL_ELEVATION,
+        pullback: PEEL_PULLBACK,
+        dragOffX: 0,
+        dragOffY: 0,
+        tex: it.tex,
+      });
+    }
+  }
+
+  renderStill() {
+    for (const it of this.items) {
+      it.vx = it.vy = 0;
+      it.scale = 1;
+      it.peel = 0;
+      it.appear = 1;
+      this.placeItem(it);
+    }
+    this.entranceStarted = true;
+    this.drawGL();
+  }
+
+  refreshFonts() {
+    this.measure();
+    this.gl?.resize(this.W, this.H, this.dpr);
+    this.rerenderAll();
+    this.drawGL();
+  }
+
+  private rerenderAll() {
+    const fontSizePx = this.stickerFontPx();
+    for (const it of this.items) {
+      const r = renderSticker({
+        word: it.def.word,
+        font: resolveFamily(it.def.font),
+        weight: it.def.weight,
+        fill: it.def.fill,
+        outline: it.def.outline,
+        fontSizePx,
+      });
+      it.w = r.width;
+      it.h = r.height;
+      it.hit.style.width = `${r.width}px`;
+      it.hit.style.height = `${r.height}px`;
+      if (this.useGL && this.gl) {
+        it.tex = this.gl.makeTexture(r.canvas, r.width, r.height).tex;
+      } else {
+        const ctx = it.art.getContext("2d")!;
+        it.art.width = r.canvas.width;
+        it.art.height = r.canvas.height;
+        it.art.style.width = `${r.width}px`;
+        it.art.style.height = `${r.height}px`;
+        ctx.clearRect(0, 0, it.art.width, it.art.height);
+        ctx.drawImage(r.canvas, 0, 0);
+      }
+      this.clampInside(it);
+      this.placeItem(it);
+    }
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.cleanup.forEach((fn) => fn());
+    this.ro?.disconnect();
+    for (const it of this.items) {
+      it.hit.parentNode?.removeChild(it.hit);
+      if (!this.useGL) it.art.parentNode?.removeChild(it.art);
+    }
+    this.gl?.canvas.parentNode?.removeChild(this.gl.canvas);
+    this.gl?.destroy();
+  }
+}
+
+```
+
+
+13. Build this: a display-only card that cycles through vivid, uniquely-colored panels one at a time — each panel a bold background with a short line of serif text in a contrasting (also unique) color. The signature is a WebGL MASK-REVEAL-BLUR of the whole line at once: render the sentence to an offscreen canvas (wrapped, centered), upload it as a texture, and draw it on a fullscreen quad through a fragment shader driven by uProgress (0=hidden, 1=revealed) and uMaxBlur (~7 texels). In the shader, a soft noise-perturbed diagonal front sweeps across the line as uProgress rises (smoothstep dissolve, not a hard wipe), and each pixel is sampled with a multi-tap blur whose radius = uMaxBlur*(1-reveal) — so the line dissolves in through a cloudy front while un-blurring into focus. Animate uProgress 0→1 fast on enter, hold, then 1→0 out, cross-fade the panel background color, and reveal the next sentence. Loop. Framework-free WebGL (one shader, one quad) + a rAF loop; falls back to a CSS blur/opacity fade if WebGL is unavailable. Reduced-motion shows the line fully resolved.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### blur-reveal/panels.ts
+
+```ts
+export interface Panel {
+  line: string;
+  bg: string;
+  fg: string;
+}
+
+export const PANELS: Panel[] = [
+  { line: "make it obvious", bg: "#0b3d3a", fg: "#f7c948" },
+  { line: "then make it fast", bg: "#ff4d4d", fg: "#fff0e6" },
+  { line: "sweat the details", bg: "#1b1440", fg: "#a78bfa" },
+  { line: "ship it anyway", bg: "#f2e9d8", fg: "#c2410c" },
+  { line: "keep it honest", bg: "#0891b2", fg: "#fef9c3" },
+  { line: "cut what is dull", bg: "#18181b", fg: "#f472b6" },
+];
+
+```
+
+### blur-reveal/text-texture.ts
+
+```ts
+export interface TextTexture {
+  canvas: HTMLCanvasElement;
+  cssW: number;
+  cssH: number;
+}
+
+export interface TextOpts {
+  line: string;
+  font: string;
+  fill: string;
+  cardW: number;
+  cardH: number;
+  dpr?: number;
+}
+
+export function renderText(o: TextOpts): TextTexture {
+  const dpr = o.dpr ?? Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = Math.max(1, Math.round(o.cardW));
+  const cssH = Math.max(1, Math.round(o.cardH));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+
+  ctx.fillStyle = o.fill;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const maxW = cssW * 0.86;
+  let fontSize = Math.min(58, cssW * 0.1);
+  for (let i = 0; i < 24; i++) {
+    ctx.font = `500 ${fontSize}px ${o.font}`;
+    if (ctx.measureText(o.line).width <= maxW || fontSize <= 16) break;
+    fontSize -= 2;
+  }
+  ctx.fillText(o.line, cssW / 2, cssH / 2);
+
+  return { canvas, cssW, cssH };
+}
+
+```
+
+### blur-reveal/reveal-shader.ts
+
+```ts
+export const REVEAL_VERT =  `
+  attribute vec2 aPosition;
+  attribute vec2 aUV;
+  varying vec2 vUV;
+  void main(){
+    vUV = aUV;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+  }
+`;
+
+export const REVEAL_FRAG =  `
+  precision highp float;
+  uniform sampler2D uTex;
+  uniform vec2  uTexel;
+  uniform float uProgress;
+  uniform float uMaxBlur;
+  uniform vec3  uEdge;
+  uniform float uTime;
+  uniform float uAspect;
+  uniform float uSeed;
+  varying vec2 vUV;
+
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+  float noise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    float a = hash(i), b = hash(i+vec2(1,0)), c = hash(i+vec2(0,1)), d = hash(i+vec2(1,1));
+    return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+  }
+
+  vec4 blurTex(vec2 uv, float radius){
+    if (radius < 0.35) return texture2D(uTex, uv);
+    vec2 r1 = uTexel * radius;
+    vec2 r2 = uTexel * radius * 2.0;
+    vec4 sum = texture2D(uTex, uv) * 1.0;
+    float wsum = 1.0;
+
+    for (int i = 0; i < 8; i++){
+      float a = float(i) * 0.785398;
+      vec2 dir = vec2(cos(a), sin(a));
+      sum += texture2D(uTex, uv + dir * r1) * 0.75; wsum += 0.75;
+      sum += texture2D(uTex, uv + dir * r2) * 0.5;  wsum += 0.5;
+    }
+    return sum / wsum;
+  }
+
+  float fbm(vec2 p){
+    float v = 0.0, amp = 0.5;
+    for (int i = 0; i < 4; i++){
+      v += amp * noise(p);
+      p *= 2.03;
+      amp *= 0.5;
+    }
+    return v;
+  }
+
+  void main(){
+
+    if (uProgress >= 0.999) { gl_FragColor = texture2D(uTex, vUV); return; }
+
+    float p = uProgress * 1.3;
+
+    vec2 sd = vec2(uSeed * 1.7, uSeed * -1.3);
+    vec2 rc = (vUV - 0.5) * vec2(uAspect, 1.0);
+    rc += vec2(sin(uSeed * 2.3), cos(uSeed * 1.9)) * 0.12;
+    float radial = length(rc) * 0.9;
+    vec2 warp = vec2(fbm(vUV * 3.2 + sd + uTime * 0.05 + 11.0),
+                     fbm(vUV * 3.2 - sd - uTime * 0.04 - 7.0)) - 0.5;
+    float turb = fbm(vUV * 5.5 + warp * 1.7 + sd + uTime * 0.06);
+    float mask = mix(radial, turb, 0.7);
+
+    float reveal = smoothstep(p + 0.34, p - 0.34, mask);
+    if (reveal <= 0.0) discard;
+
+    float blurAmt = smoothstep(p - 0.5, p + 0.34, mask);
+
+    vec2 drift = (-rc * 0.010 + vec2(0.0, 0.006)) * blurAmt;
+    float grow = 1.0 + 0.03 * blurAmt;
+    vec2 suv = (vUV - 0.5) / grow + 0.5 + drift;
+
+    float radius = blurAmt * uMaxBlur;
+    vec4 tex = blurTex(suv, radius);
+
+    float fw = 0.30;
+    float flare = smoothstep(p - fw, p, mask) * smoothstep(p + fw, p, mask);
+    flare *= 1.0 - smoothstep(0.8, 1.0, uProgress);
+
+    vec4 wide = blurTex(suv, uMaxBlur * 1.3);
+    float halo = wide.a;
+
+    vec3 rgb = tex.rgb;
+
+    vec3 glow = mix(uEdge, vec3(1.0), 0.3);
+    rgb += glow * flare * (tex.a * 0.6 + halo * 0.5);
+    float alpha = max(tex.a * reveal, halo * flare * 0.5);
+
+    gl_FragColor = vec4(rgb, alpha);
+  }
+`;
+
+```
+
+### blur-reveal/gl.ts
+
+```ts
+import { REVEAL_VERT, REVEAL_FRAG } from "./reveal-shader";
+
+export class RevealGL {
+  readonly canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext;
+  private prog: WebGLProgram;
+  private quad: WebGLBuffer;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+  private aPos = 0;
+  private aUV = 0;
+  private tex: WebGLTexture | null = null;
+  private texW = 1;
+  private texH = 1;
+  private ok = false;
+
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+    });
+    const gl = this.canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
+    if (!gl) {
+      this.gl = null as unknown as WebGLRenderingContext;
+      this.prog = null as unknown as WebGLProgram;
+      this.quad = null as unknown as WebGLBuffer;
+      return;
+    }
+    this.gl = gl;
+    this.prog = this.build(REVEAL_VERT, REVEAL_FRAG);
+    this.aPos = gl.getAttribLocation(this.prog, "aPosition");
+    this.aUV = gl.getAttribLocation(this.prog, "aUV");
+    for (const u of ["uTex", "uTexel", "uProgress", "uMaxBlur", "uEdge", "uTime", "uAspect", "uSeed"]) {
+      this.loc[u] = gl.getUniformLocation(this.prog, u);
+    }
+
+    const data = new Float32Array([
+      -1, -1, 0, 1,
+       1, -1, 1, 1,
+      -1,  1, 0, 0,
+       1,  1, 1, 0,
+    ]);
+    this.quad = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.ok = true;
+  }
+
+  get available() {
+    return this.ok;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "shader compile failed");
+      }
+      return sh;
+    };
+    const p = gl.createProgram()!;
+    gl.attachShader(p, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(p) || "program link failed");
+    }
+    return p;
+  }
+
+  setTexture(art: HTMLCanvasElement) {
+    if (!this.ok) return;
+    const gl = this.gl;
+    if (this.tex) gl.deleteTexture(this.tex);
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    this.tex = tex;
+    this.texW = art.width;
+    this.texH = art.height;
+  }
+
+  resize(w: number, h: number, dpr: number) {
+    this.canvas.width = Math.max(1, Math.round(w * dpr));
+    this.canvas.height = Math.max(1, Math.round(h * dpr));
+    if (this.ok) this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  draw(
+    progress: number,
+    maxBlur: number,
+    edge: [number, number, number],
+    time: number,
+    aspect: number,
+    seed: number,
+  ) {
+    if (!this.ok || !this.tex) return;
+    const gl = this.gl;
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.enableVertexAttribArray(this.aPos);
+    gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(this.aUV);
+    gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.uniform1i(this.loc.uTex, 0);
+    gl.uniform2f(this.loc.uTexel, 1 / this.texW, 1 / this.texH);
+    gl.uniform1f(this.loc.uProgress, progress);
+    gl.uniform1f(this.loc.uMaxBlur, maxBlur);
+    gl.uniform3f(this.loc.uEdge, edge[0], edge[1], edge[2]);
+    gl.uniform1f(this.loc.uTime, time);
+    gl.uniform1f(this.loc.uAspect, aspect);
+    gl.uniform1f(this.loc.uSeed, seed);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  destroy() {
+    if (!this.ok) return;
+    const gl = this.gl;
+    if (this.tex) gl.deleteTexture(this.tex);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  }
+}
+
+```
+
+### blur-reveal/engine.ts
+
+```ts
+import { PANELS } from "./panels";
+import { RevealGL } from "./gl";
+import { renderText } from "./text-texture";
+
+const HOLD_MS = 900;
+const OUT_HOLD_MS = 40;
+const BG_MS = 320;
+const MAX_BLUR = 18;
+
+const K_IN = 42;
+const K_OUT = 60;
+const DAMP = 1.0;
+
+const REVEALED_AT = 0.992;
+const GONE_AT = 0.02;
+
+function resolveFamily(cssFamily: string): string {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden";
+  probe.style.fontFamily = cssFamily;
+  probe.textContent = "Ag";
+  document.body.appendChild(probe);
+  const fam = getComputedStyle(probe).fontFamily || "serif";
+  document.body.removeChild(probe);
+  return fam;
+}
+
+function springStep(
+  pos: number,
+  vel: number,
+  target: number,
+  k: number,
+  damp: number,
+  dt: number,
+): [number, number] {
+  const c = 2 * Math.sqrt(k) * damp;
+  const accel = -k * (pos - target) - c * vel;
+  const v = vel + accel * dt;
+  const x = pos + v * dt;
+  return [x, v];
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+export class BlurReveal {
+  private host: HTMLElement;
+  private stage: HTMLDivElement;
+  private gl: RevealGL | null = null;
+  private useGL = false;
+  private fallback: HTMLDivElement | null = null;
+  private fontFamily = "serif";
+
+  private index = 0;
+  private W = 1;
+  private H = 1;
+  private dpr = 1;
+
+  private raf = 0;
+  private running = false;
+  private disposed = false;
+  private now = 0;
+  private last = 0;
+  private clock = 0;
+
+  private phase: "in" | "hold" | "out" = "in";
+  private phaseStart = 0;
+  private progress = 0;
+  private vel = 0;
+  private target = 1;
+  private edge: [number, number, number] = [1, 1, 1];
+  private seed = Math.random() * 100;
+
+  private ro?: ResizeObserver;
+
+  constructor(host: HTMLElement) {
+    this.host = host;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.measure();
+
+    const stage = document.createElement("div");
+    Object.assign(stage.style, {
+      position: "absolute",
+      inset: "0",
+      background: PANELS[0].bg,
+      transition: `background-color ${BG_MS}ms ease`,
+      overflow: "hidden",
+      fontFamily: "var(--font-neue-corp), system-ui, sans-serif",
+    });
+    host.appendChild(stage);
+    this.stage = stage;
+    this.fontFamily = resolveFamily("var(--font-neue-corp), system-ui, sans-serif");
+
+    const gl = new RevealGL();
+    if (gl.available) {
+      this.gl = gl;
+      this.useGL = true;
+      gl.resize(this.W, this.H, this.dpr);
+      stage.appendChild(gl.canvas);
+    }
+
+    this.ro = new ResizeObserver(() => this.onResize());
+    this.ro.observe(host);
+  }
+
+  private measure() {
+    this.W = this.host.clientWidth || 1;
+    this.H = this.host.clientHeight || 1;
+  }
+
+  private onResize() {
+    this.measure();
+    if (this.W < 2 || this.H < 2) return;
+    this.gl?.resize(this.W, this.H, this.dpr);
+    this.mountPanel(this.index);
+  }
+
+  refreshFont() {
+    this.fontFamily = resolveFamily("var(--font-neue-corp), system-ui, sans-serif");
+    this.mountPanel(this.index);
+  }
+
+  private mountPanel(i: number) {
+    const p = PANELS[i];
+    this.stage.style.background = p.bg;
+    this.edge = hexToRgb(p.fg);
+    if (this.useGL && this.gl) {
+      const t = renderText({
+        line: p.line,
+        font: this.fontFamily,
+        fill: p.fg,
+        cardW: this.W,
+        cardH: this.H,
+        dpr: this.dpr,
+      });
+      this.gl.setTexture(t.canvas);
+    } else {
+      this.mountFallback(p.line, p.fg);
+    }
+  }
+
+  private mountFallback(line: string, fg: string) {
+    if (!this.fallback) {
+      const el = document.createElement("div");
+      Object.assign(el.style, {
+        position: "absolute",
+        inset: "0",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "8% 10%",
+        fontStyle: "italic",
+        fontWeight: "500",
+        fontSize: "clamp(1.9rem, 7vw, 4rem)",
+        textAlign: "center",
+        transition: "opacity 300ms ease, filter 300ms ease",
+      });
+      this.stage.appendChild(el);
+      this.fallback = el;
+    }
+    this.fallback.textContent = line;
+    this.fallback.style.color = fg;
+  }
+
+  start() {
+    if (this.running || this.disposed) return;
+    this.running = true;
+    this.mountPanel(this.index);
+    this.phase = "in";
+    this.phaseStart = performance.now();
+    this.last = this.phaseStart;
+    this.progress = 0;
+    this.vel = 0;
+    this.target = 1;
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private loop = () => {
+    if (!this.running) return;
+    this.now = performance.now();
+
+    const dt = Math.min(0.05, Math.max(0.001, (this.now - this.last) / 1000));
+    this.last = this.now;
+    this.clock += dt;
+
+    const k = this.target > 0.5 ? K_IN : K_OUT;
+    [this.progress, this.vel] = springStep(this.progress, this.vel, this.target, k, DAMP, dt);
+
+    if (this.phase === "in") {
+
+      if (this.progress >= REVEALED_AT) {
+        this.phase = "hold";
+        this.phaseStart = this.now;
+      }
+    } else if (this.phase === "hold") {
+      if (this.now - this.phaseStart >= HOLD_MS) {
+        this.phase = "out";
+        this.phaseStart = this.now;
+        this.target = 0;
+      }
+    } else {
+
+      if (this.progress <= GONE_AT && this.now - this.phaseStart >= OUT_HOLD_MS) {
+        this.index = (this.index + 1) % PANELS.length;
+        this.seed = Math.random() * 100;
+        this.mountPanel(this.index);
+        this.phase = "in";
+        this.phaseStart = this.now;
+        this.progress = 0;
+        this.vel = 0;
+        this.target = 1;
+      }
+    }
+
+    const clampP = Math.max(0, Math.min(1, this.progress));
+    if (this.useGL && this.gl) {
+      this.gl.draw(clampP, MAX_BLUR, this.edge, this.clock, this.W / Math.max(1, this.H), this.seed);
+    } else if (this.fallback) {
+
+      this.fallback.style.opacity = String(clampP);
+      this.fallback.style.filter = `blur(${(1 - clampP) * 10}px)`;
+    }
+
+    this.raf = requestAnimationFrame(this.loop);
+  };
+
+  renderStill() {
+    this.measure();
+    this.gl?.resize(this.W, this.H, this.dpr);
+    this.mountPanel(this.index);
+    this.progress = 1;
+    if (this.useGL && this.gl) this.gl.draw(1, 0, this.edge, 0, this.W / Math.max(1, this.H), this.seed);
+    else if (this.fallback) { this.fallback.style.opacity = "1"; this.fallback.style.filter = "none"; }
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.ro?.disconnect();
+    this.gl?.destroy();
+    this.stage.parentNode?.removeChild(this.stage);
+  }
+}
+
+```
+
+
+14. Build this: a stylized portrait that CYCLES through several art styles of the SAME photo (LEGO, Minecraft, Roblox) and melts back to the REAL photo along a soft cursor trail. You supply the real photo plus one AI-restyled version per style, all framing the same pose. The card auto-cycles the styles (each held ~2.8s then a quick ~0.4s crossfade), the background + a cursor-following glow take each style's colour and crossfade with it, the tile does a gentle 3D tilt + parallax toward the cursor, and when idle an autonomous virtual cursor wanders the face so it keeps revealing on its own. Two WebGL passes per frame. (1) A persistent cursor-trail buffer on a small ping-pong half-float render target: each frame the cursor paints a soft noise-warped spot into the red channel (distance-to-pointer through smoothstep, perturbed by Perlin noise); the buffer decays and neighbour taps erode it so a trail lingers and fades. (2) The display pass: crossfade the current + next style textures (cover-fit, center-crop), read the trail buffer, and where it is hot the reveal snaps to a grid of MERGED rounded-corner blocks (a union of rounded-box SDFs per revealed cell, blocks bounce in on the front) that mix to the crisp real photo. Framework-free WebGL1 (two programs, a full-screen triangle, a half-float ping-pong pair) + a rAF loop; the tile tilt, glow and background colour are reported to the host each frame and applied with CSS. Reduced-motion renders one static frame.
+
+First make the images. Take a clear photo of yourself, then ask an AI image model (e.g. ChatGPT / an image model) to restyle that SAME photo into each style, keeping the pose and framing. The exact prompts used here were literally:
+  - "make me a lego"
+  - "make me a minecraft"
+  - "make me a roblox"
+You end up with your real photo + one restyled image per style, all the same square crop. Those are the textures the effect below cycles and reveals.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### lego/shaders.ts
+
+```ts
+const CNOISE3 = `
+vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+vec3 fade(vec3 t) {return t*t*t*(t*(t*6.0-15.0)+10.0);}
+float cnoise(vec3 P){
+  vec3 Pi0 = floor(P); vec3 Pi1 = Pi0 + vec3(1.0);
+  Pi0 = mod(Pi0, 289.0); Pi1 = mod(Pi1, 289.0);
+  vec3 Pf0 = fract(P); vec3 Pf1 = Pf0 - vec3(1.0);
+  vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+  vec4 iy = vec4(Pi0.yy, Pi1.yy);
+  vec4 iz0 = Pi0.zzzz; vec4 iz1 = Pi1.zzzz;
+  vec4 ixy = permute(permute(ix) + iy);
+  vec4 ixy0 = permute(ixy + iz0); vec4 ixy1 = permute(ixy + iz1);
+  vec4 gx0 = ixy0 / 7.0; vec4 gy0 = fract(floor(gx0) / 7.0) - 0.5;
+  gx0 = fract(gx0); vec4 gz0 = vec4(0.5) - abs(gx0) - abs(gy0);
+  vec4 sz0 = step(gz0, vec4(0.0));
+  gx0 -= sz0 * (step(0.0, gx0) - 0.5); gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+  vec4 gx1 = ixy1 / 7.0; vec4 gy1 = fract(floor(gx1) / 7.0) - 0.5;
+  gx1 = fract(gx1); vec4 gz1 = vec4(0.5) - abs(gx1) - abs(gy1);
+  vec4 sz1 = step(gz1, vec4(0.0));
+  gx1 -= sz1 * (step(0.0, gx1) - 0.5); gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+  vec3 g000 = vec3(gx0.x,gy0.x,gz0.x); vec3 g100 = vec3(gx0.y,gy0.y,gz0.y);
+  vec3 g010 = vec3(gx0.z,gy0.z,gz0.z); vec3 g110 = vec3(gx0.w,gy0.w,gz0.w);
+  vec3 g001 = vec3(gx1.x,gy1.x,gz1.x); vec3 g101 = vec3(gx1.y,gy1.y,gz1.y);
+  vec3 g011 = vec3(gx1.z,gy1.z,gz1.z); vec3 g111 = vec3(gx1.w,gy1.w,gz1.w);
+  vec4 norm0 = taylorInvSqrt(vec4(dot(g000,g000), dot(g010,g010), dot(g100,g100), dot(g110,g110)));
+  g000 *= norm0.x; g010 *= norm0.y; g100 *= norm0.z; g110 *= norm0.w;
+  vec4 norm1 = taylorInvSqrt(vec4(dot(g001,g001), dot(g011,g011), dot(g101,g101), dot(g111,g111)));
+  g001 *= norm1.x; g011 *= norm1.y; g101 *= norm1.z; g111 *= norm1.w;
+  float n000 = dot(g000, Pf0);
+  float n100 = dot(g100, vec3(Pf1.x, Pf0.yz));
+  float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+  float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+  float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+  float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+  float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+  float n111 = dot(g111, Pf1);
+  vec3 fade_xyz = fade(Pf0);
+  vec4 n_z = mix(vec4(n000,n100,n010,n110), vec4(n001,n101,n011,n111), fade_xyz.z);
+  vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
+  return 2.2 * mix(n_yz.x, n_yz.y, fade_xyz.x);
+}
+`;
+
+export const FULL_VERT = `
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+export const TRAIL_FRAG = `
+precision highp float;
+${CNOISE3}
+varying vec2 vUv;
+uniform vec2 uResolution;
+uniform sampler2D uMap;
+uniform vec2  uPointer;
+uniform float uActive;
+uniform float uDt;
+uniform float uTime;
+uniform float uSize;
+
+void main() {
+  vec2 uv = vUv;
+  vec2 texel = vec2(1.0) / uResolution;
+
+  vec2 t = texel * (uDt * 16.0);
+  float c1 = texture2D(uMap, uv + t).r;
+  float c2 = texture2D(uMap, uv - t).r;
+  float c3 = texture2D(uMap, uv + t * vec2(-1.0, 1.0)).r;
+  float c4 = texture2D(uMap, uv + t * vec2(1.0, -1.0)).r;
+  float faded = min(min(c1, c2), min(c3, c4)) * (1.0 - uDt * 0.35);
+
+  float d = distance(uv, uPointer);
+  d += cnoise(vec3(uv * 2.0, uTime * 0.6)) * 0.45 * uSize;
+  float paint = smoothstep(uSize, uSize * 0.2, d) * uActive;
+
+  float v = max(faded, paint);
+  gl_FragColor = vec4(v, 0.0, 0.0, 1.0);
+}
+`;
+
+export const LEGO_FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uStyleA;
+uniform sampler2D uStyleB;
+uniform float uStyleMix;
+uniform float uZoomA;
+uniform float uZoomB;
+uniform sampler2D uReal;
+uniform sampler2D uTrail;
+uniform vec2  uCover;
+uniform vec2  uRealShift;
+uniform float uRealZoom;
+uniform vec2  uParallax;
+
+vec2 cover(vec2 uv) { return (uv - 0.5) * uCover / 1.12 + 0.5 + uParallax; }
+
+const float REVEAL_GRID = 24.0;
+
+float sdRoundBox(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+float cellVal(vec2 gc) {
+  vec2 uv = (gc + 0.5) / REVEAL_GRID;
+  return texture2D(uTrail, uv).r;
+}
+
+float cellOn(float v) { return step(0.5, v); }
+
+float cellPop(float v) {
+
+  return smoothstep(0.5, 0.62, v) * (1.0 - smoothstep(0.62, 0.82, v));
+}
+
+float smin(float a, float b, float k) {
+  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+void main() {
+
+  float push = uStyleMix * (1.0 - uStyleMix) * 4.0;
+  float pz = 1.0 + 0.025 * push;
+  vec2 uvA = cover((vUv - 0.5) / (uZoomA * pz) + 0.5);
+  vec2 uvB = cover((vUv - 0.5) / (uZoomB * pz) + 0.5);
+
+  vec3 style = mix(texture2D(uStyleA, uvA).rgb, texture2D(uStyleB, uvB).rgb, uStyleMix);
+
+  vec2 realUV = cover((vUv - 0.5) / uRealZoom + 0.5) + uRealShift;
+  vec3 realCrisp = texture2D(uReal, realUV).rgb;
+
+  vec2 g = vUv * REVEAL_GRID;
+  vec2 base = floor(g);
+  float sd = 1e9;
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      vec2 gc = base + vec2(float(i), float(j));
+      float v = cellVal(gc);
+      if (cellOn(v) > 0.5) {
+        vec2 c = gc + 0.5;
+
+        float hs = 0.62 + 0.14 * cellPop(v);
+        float d = sdRoundBox(g - c, vec2(hs), 0.3);
+        sd = smin(sd, d, 0.16);
+      }
+    }
+  }
+
+  float m = 1.0 - smoothstep(-0.06, 0.06, sd);
+
+  vec3 outc = mix(style, realCrisp, m);
+
+  float e = 0.03;
+  float sdx = 1e9, sdy = 1e9;
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      vec2 gc = base + vec2(float(i), float(j));
+      float v = cellVal(gc);
+      if (cellOn(v) > 0.5) {
+        vec2 c = gc + 0.5;
+        float hs = 0.62 + 0.14 * cellPop(v);
+        sdx = smin(sdx, sdRoundBox(g + vec2(e, 0.0) - c, vec2(hs), 0.3), 0.16);
+        sdy = smin(sdy, sdRoundBox(g + vec2(0.0, e) - c, vec2(hs), 0.3), 0.16);
+      }
+    }
+  }
+  vec2 nrm = normalize(vec2(sdx - sd, sdy - sd) + 1e-6);
+  float lightBias = dot(nrm, normalize(vec2(-1.0, 1.0)));
+
+  float band = smoothstep(0.0, -0.05, sd) * smoothstep(-0.16, -0.05, sd);
+  outc *= 1.0 - band * 0.26 * clamp(-lightBias, 0.0, 1.0);
+  outc += band * 0.13 * clamp(lightBias, 0.0, 1.0) * m;
+
+  gl_FragColor = vec4(outc, 1.0);
+}
+`;
+
+```
+
+### lego/engine.ts
+
+```ts
+import { FULL_VERT, TRAIL_FRAG, LEGO_FRAG } from "./shaders";
+import { mediaUrl } from "../../lib/video-sources";
+
+const REAL_URL = mediaUrl("/lego/real.webp");
+
+type Style = {
+  url: string;
+  bg: [number, number, number];
+  glow: [number, number, number];
+  zoom?: number;
+};
+const STYLES: Style[] = [
+
+  { url: mediaUrl("/lego/lego.webp"), bg: [253, 246, 216], glow: [255, 222, 80], zoom: 1.12 },
+
+  { url: mediaUrl("/lego/minecraft.webp"), bg: [231, 244, 224], glow: [126, 211, 90] },
+
+  { url: mediaUrl("/lego/roblox.webp"), bg: [240, 238, 240], glow: [226, 78, 78] },
+];
+const STYLE_HOLD = 2.8;
+const STYLE_FADE = 0.28;
+
+export type LegoFrameState = {
+  tiltX: number;
+  tiltY: number;
+  glowX: number;
+  glowY: number;
+  glowI: number;
+  bg: string;
+  glowColor: string;
+};
+
+const TRAIL_RES = 220;
+const TRAIL_SIZE = 0.13;
+const TRAIL_SIZE_AUTO = 0.2;
+
+const REAL_ZOOM = 1.12;
+
+const REAL_SHIFT: [number, number] = [-0.01, 0.05];
+
+export class LegoReveal {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+  private display: WebGLProgram | null = null;
+  private trail: WebGLProgram | null = null;
+  private dLoc: Record<string, WebGLUniformLocation | null> = {};
+  private tLoc: Record<string, WebGLUniformLocation | null> = {};
+  private quad: WebGLBuffer | null = null;
+
+  private styleTex: (WebGLTexture | null)[] = STYLES.map(() => null);
+  private realTex: WebGLTexture | null = null;
+  private blackTex: WebGLTexture | null = null;
+  private styleAR = 1;
+
+  private styleIdx = 0;
+  private styleClock = 0;
+  private styleMix = 0;
+
+  private rtA: { fb: WebGLFramebuffer; tex: WebGLTexture } | null = null;
+  private rtB: { fb: WebGLFramebuffer; tex: WebGLTexture } | null = null;
+  private hasTrail = false;
+
+  private raf = 0;
+  private running = false;
+  private visible = false;
+  private painted = false;
+  private destroyed = false;
+  private last = 0;
+  private time = 0;
+  private idle = 3;
+
+  private w = 0;
+  private h = 0;
+  private dpr = 1;
+
+  private px = 0.5;
+  private py = 0.5;
+  private tpx = 0.5;
+  private tpy = 0.5;
+  private active = 0;
+
+  private autoActive = 0;
+  private revealSize = TRAIL_SIZE;
+
+  private parx = 0;
+  private pary = 0;
+
+  private tiltX = 0;
+  private tiltY = 0;
+  private glowX = 0.5;
+  private glowY = 0.5;
+  private glowI = 0;
+  private onFrame?: (s: LegoFrameState) => void;
+
+  onReady?: () => void;
+
+  ok = false;
+
+  constructor(host: HTMLElement, onFrame?: (s: LegoFrameState) => void) {
+    this.host = host;
+    this.onFrame = onFrame;
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      opacity: "0",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+    this.gl = gl;
+    gl.clearColor(0.06, 0.06, 0.07, 1);
+
+    try {
+      this.display = this.build(FULL_VERT, LEGO_FRAG);
+      this.trail = this.build(FULL_VERT, TRAIL_FRAG);
+    } catch {
+      this.gl = null;
+      return;
+    }
+
+    for (const u of ["uStyleA", "uStyleB", "uStyleMix", "uZoomA", "uZoomB", "uReal", "uTrail", "uCover", "uRealShift", "uRealZoom", "uParallax"]) {
+      this.dLoc[u] = gl.getUniformLocation(this.display, u);
+    }
+    for (const u of ["uResolution", "uMap", "uPointer", "uActive", "uDt", "uTime", "uSize"]) {
+      this.tLoc[u] = gl.getUniformLocation(this.trail, u);
+    }
+
+    const aPosD = gl.getAttribLocation(this.display, "aPosition");
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aPosD);
+    gl.vertexAttribPointer(aPosD, 2, gl.FLOAT, false, 0, 0);
+
+    this.setupTrail();
+
+    const ph = this.placeholder([40, 40, 45, 255]);
+    this.styleTex = STYLES.map(() => ph);
+    this.realTex = ph;
+    this.blackTex = this.placeholder([0, 0, 0, 255]);
+
+    this.loadTexture(STYLES[0].url, (t, ar) => {
+      this.styleTex[0] = t;
+      this.styleAR = ar;
+      this.onReady?.();
+      this.onReady = undefined;
+      if (!this.running) this.renderOnce();
+    });
+    for (let i = 1; i < STYLES.length; i++) {
+      const idx = i;
+      this.loadTexture(STYLES[idx].url, (t) => {
+        this.styleTex[idx] = t;
+      });
+    }
+    this.loadTexture(REAL_URL, (t) => {
+      this.realTex = t;
+      if (!this.running) this.renderOnce();
+    });
+
+    this.canvas.addEventListener("pointermove", this.onMove);
+    this.canvas.addEventListener("pointerenter", this.onEnter);
+    this.canvas.addEventListener("pointerleave", this.onLeave);
+
+    this.resize();
+    this.ok = true;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "compile failed");
+      }
+      return sh;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog) || "link failed");
+    }
+    return prog;
+  }
+
+  private placeholder(rgba: number[]): WebGLTexture | null {
+    const gl = this.gl;
+    if (!gl) return null;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(rgba));
+    return t;
+  }
+
+  private setupTrail() {
+    const gl = this.gl!;
+    const ext = gl.getExtension("OES_texture_half_float");
+    gl.getExtension("OES_texture_half_float_linear");
+    const type = ext ? ext.HALF_FLOAT_OES : gl.UNSIGNED_BYTE;
+    const make = () => {
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, TRAIL_RES, TRAIL_RES, 0, gl.RGBA, type, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const fb = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return ok ? { fb, tex } : null;
+    };
+    const a = make();
+    const b = make();
+    if (a && b) {
+      this.rtA = a;
+      this.rtB = b;
+      this.hasTrail = true;
+
+      for (const rt of [a, b]) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fb);
+        gl.viewport(0, 0, TRAIL_RES, TRAIL_RES);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.clearColor(0.06, 0.06, 0.07, 1);
+    }
+  }
+
+  private loadTexture(url: string, done: (t: WebGLTexture, ar: number) => void) {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const gl = this.gl;
+      if (!gl || this.destroyed) return;
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      done(tex, (img.naturalWidth || 1) / (img.naturalHeight || 1));
+    };
+    img.src = url;
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.canvas.getBoundingClientRect();
+    this.tpx = (e.clientX - r.left) / r.width;
+    this.tpy = 1 - (e.clientY - r.top) / r.height;
+    this.active = 1;
+    this.wake();
+  };
+  private onEnter = () => {
+    this.active = 1;
+    this.wake();
+  };
+  private onLeave = () => {
+    this.active = 0;
+  };
+
+  private wake() {
+    if (this.visible && !this.running) this.startLoop();
+  }
+
+  resize() {
+    const r = this.host.getBoundingClientRect();
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = r.width;
+    this.h = r.height;
+    const cw = Math.max(1, Math.round(this.w * this.dpr));
+    const ch = Math.max(1, Math.round(this.h * this.dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+      this.gl?.viewport(0, 0, cw, ch);
+      if (!this.running) this.renderOnce();
+    }
+  }
+
+  private coverScale(imgAR: number): [number, number] {
+    const cardAR = this.w / Math.max(1, this.h);
+    if (cardAR > imgAR) return [1, imgAR / cardAR];
+    return [cardAR / imgAR, 1];
+  }
+
+  setVisible(v: boolean) {
+    if (!this.ok) return;
+    this.visible = v;
+    if (v) {
+      this.resize();
+      this.startLoop();
+    } else {
+      this.pause();
+    }
+  }
+
+  private startLoop() {
+    if (!this.ok || this.running) return;
+    this.running = true;
+    this.resize();
+    this.last = 0;
+    const loop = (now: number) => {
+      if (!this.running) return;
+      this.frame(now);
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  private pause() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  renderStill() {
+    this.resize();
+    this.renderDisplay();
+  }
+
+  private renderOnce() {
+    if (this.running) return;
+    requestAnimationFrame(() => this.renderDisplay());
+  }
+
+  private frame(now: number) {
+    const dt = this.last ? Math.min(0.05, (now - this.last) / 1000) : 0.016;
+    this.last = now;
+    this.time += dt;
+    this.idle = this.active ? 0 : this.idle + dt;
+
+    this.styleClock += dt;
+    if (this.styleClock < STYLE_HOLD) {
+      this.styleMix = 0;
+    } else if (this.styleClock < STYLE_HOLD + STYLE_FADE) {
+
+      const t = (this.styleClock - STYLE_HOLD) / STYLE_FADE;
+      this.styleMix = t * t * t * (t * (t * 6 - 15) + 10);
+    } else {
+
+      this.styleIdx = (this.styleIdx + 1) % STYLES.length;
+      this.styleClock = 0;
+      this.styleMix = 0;
+    }
+
+    const auto = Math.min(1, Math.max(0, this.idle - 0.4) / 0.9);
+    const T = this.time;
+
+    const FX = 0.5;
+    const FY = 0.66;
+    const ax =
+      FX +
+      0.16 * Math.sin(T * 1.15) +
+      0.09 * Math.sin(T * 2.6 + 1.0) +
+      0.05 * Math.cos(T * 4.1 + 0.4);
+    const ay =
+      FY +
+      0.13 * Math.cos(T * 0.95 + 2.1) +
+      0.07 * Math.sin(T * 2.2 + 0.5) +
+      0.04 * Math.cos(T * 3.7 + 1.7);
+
+    const cx = this.active ? this.tpx : this.tpx * (1 - auto) + ax * auto;
+    const cy = this.active ? this.tpy : this.tpy * (1 - auto) + ay * auto;
+
+    const rev = Math.max(this.active, auto);
+
+    this.revealSize = TRAIL_SIZE + (TRAIL_SIZE_AUTO - TRAIL_SIZE) * (auto * (1 - this.active));
+
+    this.px += (cx - this.px) * 0.4;
+    this.py += (cy - this.py) * 0.4;
+    this.autoActive = rev;
+
+    const P = 0.02 + (0.07 - 0.02) * (auto * (1 - this.active));
+    const targX = -(this.px - 0.5) * 2.0 * P * Math.max(rev, this.active);
+    const targY = (this.py - 0.5) * 2.0 * P * Math.max(rev, this.active);
+    this.parx += (targX - this.parx) * 0.045;
+    this.pary += (targY - this.pary) * 0.045;
+
+    const MAXDEG = 7.0 + 5.0 * (auto * (1 - this.active));
+    const targRY = (this.px - 0.5) * 2.0 * MAXDEG;
+    const targRX = (this.py - 0.5) * 2.0 * MAXDEG;
+    this.tiltY += (targRY - this.tiltY) * 0.06;
+    this.tiltX += (targRX - this.tiltX) * 0.06;
+
+    const gTargX = this.px;
+    const gTargY = 1.0 - this.py;
+    this.glowX += (gTargX - this.glowX) * 0.08;
+    this.glowY += (gTargY - this.glowY) * 0.08;
+
+    const gTargI = 0.28 + 0.72 * rev + 0.4 * this.active;
+    this.glowI += (gTargI - this.glowI) * 0.09;
+
+    const cur = STYLES[this.styleIdx];
+    const nxt = STYLES[(this.styleIdx + 1) % STYLES.length];
+    const rgb = (a: [number, number, number], b: [number, number, number]) => {
+      const m = this.styleMix;
+      const r = Math.round(a[0] + (b[0] - a[0]) * m);
+      const g = Math.round(a[1] + (b[1] - a[1]) * m);
+      const bl = Math.round(a[2] + (b[2] - a[2]) * m);
+      return `rgb(${r}, ${g}, ${bl})`;
+    };
+
+    this.onFrame?.({
+      tiltX: this.tiltX,
+      tiltY: this.tiltY,
+      glowX: this.glowX,
+      glowY: this.glowY,
+      glowI: this.glowI,
+      bg: rgb(cur.bg, nxt.bg),
+      glowColor: rgb(cur.glow, nxt.glow),
+    });
+
+    if (this.hasTrail) this.stepTrail(dt);
+    this.renderDisplay();
+
+  }
+
+  private stepTrail(dt: number) {
+    const gl = this.gl!;
+    if (!this.rtA || !this.rtB) return;
+    gl.useProgram(this.trail);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.rtB.fb);
+    gl.viewport(0, 0, TRAIL_RES, TRAIL_RES);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.rtA.tex);
+    gl.uniform1i(this.tLoc.uMap, 0);
+    gl.uniform2f(this.tLoc.uResolution, TRAIL_RES, TRAIL_RES);
+    gl.uniform2f(this.tLoc.uPointer, this.px, this.py);
+    gl.uniform1f(this.tLoc.uActive, this.autoActive);
+    gl.uniform1f(this.tLoc.uDt, dt);
+    gl.uniform1f(this.tLoc.uTime, this.time);
+    gl.uniform1f(this.tLoc.uSize, this.revealSize);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const t = this.rtA;
+    this.rtA = this.rtB;
+    this.rtB = t;
+  }
+
+  private renderDisplay() {
+    const gl = this.gl;
+    if (!gl || !this.display) return;
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.display);
+
+    const texA = this.styleTex[this.styleIdx] ?? this.blackTex;
+    const texB = this.styleTex[(this.styleIdx + 1) % STYLES.length] ?? texA;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texA);
+    gl.uniform1i(this.dLoc.uStyleA, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texB);
+    gl.uniform1i(this.dLoc.uStyleB, 1);
+    gl.uniform1f(this.dLoc.uStyleMix, this.styleMix);
+    gl.uniform1f(this.dLoc.uZoomA, STYLES[this.styleIdx].zoom ?? 1);
+    gl.uniform1f(this.dLoc.uZoomB, STYLES[(this.styleIdx + 1) % STYLES.length].zoom ?? 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.realTex);
+    gl.uniform1i(this.dLoc.uReal, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.hasTrail && this.rtA ? this.rtA.tex : this.blackTex);
+    gl.uniform1i(this.dLoc.uTrail, 3);
+    const [cx, cy] = this.coverScale(this.styleAR);
+    gl.uniform2f(this.dLoc.uCover, cx, cy);
+    gl.uniform2f(this.dLoc.uRealShift, REAL_SHIFT[0], REAL_SHIFT[1]);
+    gl.uniform1f(this.dLoc.uRealZoom, REAL_ZOOM);
+    gl.uniform2f(this.dLoc.uParallax, this.parx, this.pary);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (!this.painted) {
+      this.painted = true;
+      this.canvas.style.opacity = "1";
+    }
+  }
+
+  destroy() {
+    this.destroyed = true;
+    this.visible = false;
+    this.pause();
+    this.canvas.removeEventListener("pointermove", this.onMove);
+    this.canvas.removeEventListener("pointerenter", this.onEnter);
+    this.canvas.removeEventListener("pointerleave", this.onLeave);
+    const gl = this.gl;
+    if (gl) {
+      const uniq = new Set<WebGLTexture>();
+      [...this.styleTex, this.realTex, this.blackTex, this.rtA?.tex ?? null, this.rtB?.tex ?? null].forEach(
+        (t) => t && uniq.add(t),
+      );
+      uniq.forEach((t) => gl.deleteTexture(t));
+      [this.rtA?.fb, this.rtB?.fb].forEach((f) => f && gl.deleteFramebuffer(f));
+      if (this.quad) gl.deleteBuffer(this.quad);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+15. Build this: a display-only card with two small Kyoto-serif text blocks in OPPOSITE CORNERS (top-left + bottom-right) that MATERIALIZE THROUGH A WEBGL MASK REVEAL — the same cloudy fbm dissolve + localized un-blur the blur-reveal card uses. The two corner blocks are drawn to one offscreen 2D-canvas texture (warm-gray monochrome ink on a putty plate) and uploaded to a fragment shader. Reveal: a purely 2D fractal noise field (domain-warped fbm, no column wipe) with a soft radial bias sweeps a feathered front across the plane so the text dissolves in as wispy tendrils blooming from center; where the front is passing, the texture is sampled with a multi-tap ring blur whose radius decays to zero behind it, so each part un-blurs into focus as it is uncovered, plus a subtle drift+grow so emerging text settles into place. A per-cycle seed offsets the noise so no two reveals dissolve the same. Progress is driven by a critically-damped SPRING toward a target (1 in/hold, 0 out; the exit spring is stiffer, so it clears quicker than it arrives); phase machine reveal -> hold -> clear -> swap-next-pair -> repeat, rotating a small pool of phrase pairs so different words appear each cycle. The whole plate leans subtly toward the cursor via one SHARED texture-space parallax offset (not per-letter), eased, pointer-only (rests still with no cursor). Framework-free WebGL1 + a rAF loop; DPR-capped, pauses offscreen / when hidden; reduced-motion renders one static resolved frame; falls back gracefully if WebGL is absent.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### text-reveal/reveal-gl.ts
+
+```ts
+const VERT =  `
+  attribute vec2 aPosition;
+  attribute vec2 aUV;
+  varying vec2 vUV;
+  void main(){
+    vUV = aUV;
+    gl_Position = vec4(aPosition, 0.0, 1.0);
+  }
+`;
+
+const FRAG =  `
+  precision highp float;
+  uniform sampler2D uTex;
+  uniform vec2  uTexel;
+  uniform float uProgress;
+  uniform float uMaxBlur;
+  uniform vec3  uEdge;
+  uniform float uTime;
+  uniform float uAspect;
+  uniform float uSeed;
+  uniform vec2  uParTL;
+  uniform vec2  uParBR;
+  uniform vec2  uCursor;
+  uniform float uHover;
+  uniform float uReverse;
+  varying vec2 vUV;
+
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+  float noise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    float a = hash(i), b = hash(i+vec2(1,0)), c = hash(i+vec2(0,1)), d = hash(i+vec2(1,1));
+    return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+  }
+
+  vec4 blurTex(vec2 uv, float radius){
+    if (radius < 0.35) return texture2D(uTex, uv);
+    vec2 r1 = uTexel * radius;
+    vec2 r2 = uTexel * radius * 2.0;
+    vec4 sum = texture2D(uTex, uv) * 1.0;
+    float wsum = 1.0;
+    for (int i = 0; i < 8; i++){
+      float a = float(i) * 0.785398;
+      vec2 dir = vec2(cos(a), sin(a));
+      sum += texture2D(uTex, uv + dir * r1) * 0.75; wsum += 0.75;
+      sum += texture2D(uTex, uv + dir * r2) * 0.5;  wsum += 0.5;
+    }
+    return sum / wsum;
+  }
+
+  float fbm(vec2 p){
+    float v = 0.0, amp = 0.5;
+    for (int i = 0; i < 4; i++){
+      v += amp * noise(p);
+      p *= 2.03;
+      amp *= 0.5;
+    }
+    return v;
+  }
+
+  void main(){
+
+    float region = smoothstep(0.35, 0.65, (vUV.x + vUV.y) * 0.5);
+    vec2 par = mix(uParTL, uParBR, region);
+    vec2 baseUV = vUV + par;
+
+    if (uProgress >= 0.999) { gl_FragColor = texture2D(uTex, baseUV); return; }
+
+    float p = uProgress * 1.3;
+
+    vec2 sd = vec2(uSeed * 1.7, uSeed * -1.3);
+    vec2 rc = (vUV - 0.5) * vec2(uAspect, 1.0);
+
+    float diag = (vUV.x + vUV.y) * 0.5;
+    diag = smoothstep(0.18, 0.82, diag);
+
+    diag = mix(diag, 1.0 - diag, uReverse);
+    diag += (fbm(vUV * 1.3 + sd) - 0.5) * 0.08;
+
+    vec2 warp = vec2(fbm(vUV * 3.2 + sd + uTime * 0.05 + 11.0),
+                     fbm(vUV * 3.2 - sd - uTime * 0.04 - 7.0)) - 0.5;
+    float turb = fbm(vUV * 5.5 + warp * 1.7 + sd + uTime * 0.06);
+
+    float stipple = noise(vUV * vec2(uAspect, 1.0) * 46.0 + sd * 3.0);
+
+    float mask = mix(diag, turb, 0.28);
+    mask = mix(mask, stipple, 0.14);
+
+    vec2 cur = (vUV - uCursor) * vec2(uAspect, 1.0);
+    float near = 1.0 - smoothstep(0.0, 0.32, length(cur));
+    mask -= near * uHover * 0.28;
+
+    float reveal = smoothstep(p + 0.22, p - 0.22, mask);
+    if (reveal <= 0.0) discard;
+
+    float blurAmt = smoothstep(p - 0.34, p + 0.22, mask);
+
+    vec2 drift = (-rc * 0.010 + vec2(0.0, 0.006)) * blurAmt;
+    float grow = 1.0 + 0.03 * blurAmt;
+    vec2 suv = (baseUV - 0.5) / grow + 0.5 + drift;
+
+    float radius = blurAmt * uMaxBlur;
+    vec4 tex = blurTex(suv, radius);
+
+    float fw = 0.30;
+    float flare = smoothstep(p - fw, p, mask) * smoothstep(p + fw, p, mask);
+    flare *= 1.0 - smoothstep(0.8, 1.0, uProgress);
+
+    float ab = flare * 2.0 * uTexel.x * uMaxBlur;
+    if (ab > 0.0001) {
+      tex.r = blurTex(suv + vec2(ab, 0.0), radius).r;
+      tex.b = blurTex(suv - vec2(ab, 0.0), radius).b;
+    }
+
+    vec4 wide = blurTex(suv, uMaxBlur * 1.3);
+    float halo = wide.a;
+
+    vec3 rgb = tex.rgb;
+    vec3 glow = mix(uEdge, vec3(1.0), 0.3);
+    rgb += glow * flare * (tex.a * 0.6 + halo * 0.5);
+    float alpha = max(tex.a * reveal, halo * flare * 0.5);
+
+    gl_FragColor = vec4(rgb, alpha);
+  }
+`;
+
+export class RevealGL {
+  readonly canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext;
+  private prog: WebGLProgram;
+  private quad: WebGLBuffer;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+  private aPos = 0;
+  private aUV = 0;
+  private tex: WebGLTexture | null = null;
+  private texW = 1;
+  private texH = 1;
+  private ok = false;
+
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+    });
+    const gl = this.canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
+    if (!gl) {
+      this.gl = null as unknown as WebGLRenderingContext;
+      this.prog = null as unknown as WebGLProgram;
+      this.quad = null as unknown as WebGLBuffer;
+      return;
+    }
+    this.gl = gl;
+    this.prog = this.build(VERT, FRAG);
+    this.aPos = gl.getAttribLocation(this.prog, "aPosition");
+    this.aUV = gl.getAttribLocation(this.prog, "aUV");
+    for (const u of [
+      "uTex", "uTexel", "uProgress", "uMaxBlur", "uEdge", "uTime", "uAspect", "uSeed",
+      "uParTL", "uParBR", "uCursor", "uHover", "uReverse",
+    ]) {
+      this.loc[u] = gl.getUniformLocation(this.prog, u);
+    }
+    const data = new Float32Array([
+      -1, -1, 0, 1,
+       1, -1, 1, 1,
+      -1,  1, 0, 0,
+       1,  1, 1, 0,
+    ]);
+    this.quad = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.ok = true;
+  }
+
+  get available() {
+    return this.ok;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "shader compile failed");
+      }
+      return sh;
+    };
+    const p = gl.createProgram()!;
+    gl.attachShader(p, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(p) || "program link failed");
+    }
+    return p;
+  }
+
+  setTexture(art: HTMLCanvasElement) {
+    if (!this.ok) return;
+    const gl = this.gl;
+    if (this.tex) gl.deleteTexture(this.tex);
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    this.tex = tex;
+    this.texW = art.width;
+    this.texH = art.height;
+  }
+
+  resize(w: number, h: number, dpr: number) {
+    this.canvas.width = Math.max(1, Math.round(w * dpr));
+    this.canvas.height = Math.max(1, Math.round(h * dpr));
+    if (this.ok) this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  draw(
+    progress: number,
+    maxBlur: number,
+    edge: [number, number, number],
+    time: number,
+    aspect: number,
+    seed: number,
+    parTL: [number, number],
+    parBR: [number, number],
+    cursor: [number, number],
+    hover: number,
+    reverse: number,
+  ) {
+    if (!this.ok || !this.tex) return;
+    const gl = this.gl;
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.enableVertexAttribArray(this.aPos);
+    gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(this.aUV);
+    gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.uniform1i(this.loc.uTex, 0);
+    gl.uniform2f(this.loc.uTexel, 1 / this.texW, 1 / this.texH);
+    gl.uniform1f(this.loc.uProgress, progress);
+    gl.uniform1f(this.loc.uMaxBlur, maxBlur);
+    gl.uniform3f(this.loc.uEdge, edge[0], edge[1], edge[2]);
+    gl.uniform1f(this.loc.uTime, time);
+    gl.uniform1f(this.loc.uAspect, aspect);
+    gl.uniform1f(this.loc.uSeed, seed);
+    gl.uniform2f(this.loc.uParTL, parTL[0], parTL[1]);
+    gl.uniform2f(this.loc.uParBR, parBR[0], parBR[1]);
+    gl.uniform2f(this.loc.uCursor, cursor[0], cursor[1]);
+    gl.uniform1f(this.loc.uHover, hover);
+    gl.uniform1f(this.loc.uReverse, reverse);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  destroy() {
+    if (!this.ok) return;
+    const gl = this.gl;
+    if (this.tex) gl.deleteTexture(this.tex);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  }
+}
+
+export interface CornerText {
+  top: string[];
+  bottom: string[];
+  font: string;
+  fill: string;
+  cardW: number;
+  cardH: number;
+  dpr?: number;
+}
+
+export function renderCornerText(o: CornerText): HTMLCanvasElement {
+  const dpr = o.dpr ?? Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = Math.max(1, Math.round(o.cardW));
+  const cssH = Math.max(1, Math.round(o.cardH));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = o.fill;
+  ctx.textBaseline = "top";
+
+  const pad = Math.round(cssW * 0.035);
+
+  const maxLineW = cssW * 0.52;
+  const allLines = [...o.top, ...o.bottom];
+  let fontSize = Math.max(24, Math.min(40, cssW * 0.03));
+  for (let i = 0; i < 24; i++) {
+    ctx.font = `500 ${fontSize}px ${o.font}`;
+    const widest = Math.max(...allLines.map((l) => ctx.measureText(l).width));
+    if (widest <= maxLineW || fontSize <= 15) break;
+    fontSize -= 1;
+  }
+  const lineH = fontSize * 1.42;
+  ctx.font = `500 ${fontSize}px ${o.font}`;
+
+  ctx.textAlign = "left";
+  o.top.forEach((line, i) => {
+    ctx.fillText(line, pad, pad + i * lineH);
+  });
+
+  ctx.textAlign = "right";
+  const bottomBlockH = o.bottom.length * lineH;
+  const startY = cssH - pad - bottomBlockH;
+  o.bottom.forEach((line, i) => {
+    ctx.fillText(line, cssW - pad, startY + i * lineH);
+  });
+
+  return canvas;
+}
+
+```
+
+### text-reveal/TextRevealCard.tsx
+
+```ts
+"use client";
+
+import { useEffect, useRef } from "react";
+import { RevealGL, renderCornerText } from "./reveal-gl";
+
+const TEXT_PAIRS: { top: string[]; bottom: string[] }[] = [
+  {
+    top: ["The text fades in on its own,", "one corner at a time."],
+    bottom: ["Then it clears the same way,", "and quietly starts over."],
+  },
+  {
+    top: ["Type can move like weather,", "rolling in from an edge."],
+    bottom: ["It gathers, holds for a beat,", "then rolls back out again."],
+  },
+  {
+    top: ["Small things, done really well,", "read as calm, not loud."],
+    bottom: ["Motion with a clear direction", "always feels intentional."],
+  },
+];
+
+const BG = "#fdfdfb";
+const INK = "#242320";
+const EDGE = "#f2f1ec";
+
+const WHITE_WASH = [
+  "radial-gradient(55% 75% at 18% 12%, rgba(255,255,255,0.95), transparent 60%)",
+  "radial-gradient(48% 66% at 82% 22%, rgba(255,255,255,0.80), transparent 62%)",
+  "radial-gradient(65% 55% at 50% 0%,  rgba(255,255,255,0.70), transparent 55%)",
+  "radial-gradient(42% 52% at 8% 85%,  rgba(255,255,255,0.75), transparent 60%)",
+  "radial-gradient(52% 60% at 92% 88%, rgba(255,255,255,0.65), transparent 62%)",
+  "radial-gradient(38% 38% at 65% 55%, rgba(255,255,255,0.55), transparent 70%)",
+  "radial-gradient(85% 46% at 50% 100%,rgba(255,255,255,0.55), transparent 55%)",
+  "radial-gradient(28% 28% at 30% 45%, rgba(255,255,255,0.45), transparent 72%)",
+].join(", ");
+
+const GRAIN_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns='http:`,
+  );
+
+const HOLD_MS = 320;
+const OUT_HOLD_MS = 80;
+const MAX_BLUR = 16;
+const K_IN = 16;
+const K_OUT = 22;
+const DAMP = 1.12;
+
+const REVEALED_AT = 0.95;
+const GONE_AT = 0.02;
+const PARALLAX_AMP = 0.006;
+
+const TL_ANCHOR: [number, number] = [0.16, 0.18];
+const BR_ANCHOR: [number, number] = [0.84, 0.82];
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function resolveFamily(cssFamily: string): string {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden";
+  probe.style.fontFamily = cssFamily;
+  probe.textContent = "Ag";
+  document.body.appendChild(probe);
+  const fam = getComputedStyle(probe).fontFamily || "serif";
+  document.body.removeChild(probe);
+  return fam;
+}
+
+function springStep(pos: number, vel: number, target: number, k: number, damp: number, dt: number): [number, number] {
+  const c = 2 * Math.sqrt(k) * damp;
+  const accel = -k * (pos - target) - c * vel;
+  const v = vel + accel * dt;
+  return [pos + v * dt, v];
+}
+
+export function TextRevealCard({ bare = false }: { bare?: boolean } = {}) {
+  void bare;
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let W = host.clientWidth || 1;
+    let H = host.clientHeight || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let fontFamily = resolveFamily("var(--font-kyoto), Georgia, serif");
+    const edge = hexToRgb(EDGE);
+
+    const gl = new RevealGL();
+    const useGL = gl.available;
+    if (useGL) {
+      gl.resize(W, H, dpr);
+      host.appendChild(gl.canvas);
+    }
+
+    let index = 0;
+    let seed = 1.7;
+
+    const mount = () => {
+      if (!useGL) return;
+      const pair = TEXT_PAIRS[index];
+      const art = renderCornerText({
+        top: pair.top,
+        bottom: pair.bottom,
+        font: fontFamily,
+        fill: INK,
+        cardW: W,
+        cardH: H,
+        dpr,
+      });
+      gl.setTexture(art);
+    };
+    mount();
+
+    let pTgtX = 0.5, pTgtY = 0.5;
+    let pCurX = 0.5, pCurY = 0.5;
+    let cursorUV: [number, number] = [-1, -1];
+    let hoverTgt = 0, hoverCur = 0;
+    const onMove = (e: PointerEvent) => {
+      const b = host.getBoundingClientRect();
+      const ux = (e.clientX - b.left) / b.width;
+      const uy = (e.clientY - b.top) / b.height;
+      pTgtX = ux; pTgtY = uy;
+      cursorUV = [ux, uy];
+      hoverTgt = 1;
+    };
+    const onLeave = () => { pTgtX = 0.5; pTgtY = 0.5; hoverTgt = 0; };
+    host.addEventListener("pointermove", onMove);
+    host.addEventListener("pointerleave", onLeave);
+
+    let phase: "in" | "hold" | "out" = "in";
+    let phaseStart = 0;
+    let progress = 0;
+    let vel = 0;
+    let target = 1;
+    let clock = 0;
+    let last = 0;
+    let raf = 0;
+    let running = false;
+    let held = 0;
+
+    const loop = () => {
+      if (!running) return;
+      const now = performance.now();
+      const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+      last = now;
+      clock += dt;
+
+      const k = target > 0.5 ? K_IN : K_OUT;
+      [progress, vel] = springStep(progress, vel, target, k, DAMP, dt);
+
+      if (phase === "in") {
+        if (progress >= REVEALED_AT) { phase = "hold"; phaseStart = now; }
+      } else if (phase === "hold") {
+        if (now - phaseStart >= HOLD_MS) { phase = "out"; phaseStart = now; target = 0; }
+      } else {
+        if (progress <= GONE_AT && now - phaseStart >= OUT_HOLD_MS) {
+          index = (index + 1) % TEXT_PAIRS.length;
+          seed = ((seed * 1.618) % 7) + 0.3;
+          mount();
+          phase = "in"; phaseStart = now; progress = 0; vel = 0; target = 1;
+        }
+      }
+
+      const pk = 1 - Math.pow(0.0009, dt);
+      pCurX += (pTgtX - pCurX) * pk;
+      pCurY += (pTgtY - pCurY) * pk;
+      hoverCur += (hoverTgt - hoverCur) * (1 - Math.pow(0.002, dt));
+
+      const amp = PARALLAX_AMP * hoverCur;
+      const parTL: [number, number] = [
+        (pCurX - TL_ANCHOR[0]) * amp,
+        (pCurY - TL_ANCHOR[1]) * amp,
+      ];
+      const parBR: [number, number] = [
+        (pCurX - BR_ANCHOR[0]) * amp,
+        (pCurY - BR_ANCHOR[1]) * amp,
+      ];
+
+      const p = Math.max(0, Math.min(1, progress));
+
+      const reverse = phase === "out" ? 1 : 0;
+      if (useGL) gl.draw(p, MAX_BLUR, edge, clock, W / Math.max(1, H), seed, parTL, parBR, cursorUV, hoverCur, reverse);
+
+      if (useGL) {
+        held += ((phase === "hold" ? 1 : 0) - held) * (1 - Math.pow(0.02, dt));
+        const breathe = Math.sin(clock * 0.45) * 0.5 + 0.5;
+        const s = 1 + held * breathe * 0.0015;
+        const b = 1 + held * (breathe - 0.5) * 0.012;
+        gl.canvas.style.transform = `scale(${s.toFixed(4)})`;
+        gl.canvas.style.filter = `brightness(${b.toFixed(3)})`;
+      }
+
+      raf = requestAnimationFrame(loop);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      phase = "in"; phaseStart = performance.now(); last = phaseStart;
+      progress = 0; vel = 0; target = 1;
+      raf = requestAnimationFrame(loop);
+    };
+    const stop = () => {
+      running = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      last = 0;
+    };
+
+    const renderStill = () => {
+      if (useGL) gl.draw(1, 0, edge, 0, W / Math.max(1, H), seed, [0, 0], [0, 0], [-1, -1], 0, 0);
+    };
+
+    let onScreen = false;
+    let hidden = false;
+    const sync = () => {
+      if (reduced) return;
+      if (onScreen && !hidden) start();
+      else stop();
+    };
+
+    const io = new IntersectionObserver(
+      (es) => { onScreen = es[0]?.isIntersecting ?? false; sync(); },
+      { threshold: 0.15 },
+    );
+    io.observe(host);
+
+    const onVis = () => { hidden = document.hidden; sync(); };
+    document.addEventListener("visibilitychange", onVis);
+
+    let resizeT = 0;
+    const ro = new ResizeObserver(() => {
+      window.clearTimeout(resizeT);
+      resizeT = window.setTimeout(() => {
+        W = host.clientWidth || 1;
+        H = host.clientHeight || 1;
+        if (W < 2 || H < 2) return;
+        gl.resize(W, H, dpr);
+        mount();
+      }, 120);
+    });
+    ro.observe(host);
+
+    if (document.fonts?.load) {
+      document.fonts.load(`500 1em "${fontFamily}"`).then(() => {
+        fontFamily = resolveFamily("var(--font-kyoto), Georgia, serif");
+        mount();
+      }, () => {});
+    }
+
+    if (reduced) renderStill();
+
+    return () => {
+      stop();
+      io.disconnect();
+      ro.disconnect();
+      window.clearTimeout(resizeT);
+      document.removeEventListener("visibilitychange", onVis);
+      host.removeEventListener("pointermove", onMove);
+      host.removeEventListener("pointerleave", onLeave);
+      gl.destroy();
+    };
+  }, []);
+
+  return (
+    <div
+      ref={hostRef}
+      data-canvas-card
+      aria-label="Two small text blocks in opposite corners that materialize through a soft cloudy mask, then clear and repeat with new words."
+      className="relative mx-auto aspect-[1344/620] w-full select-none overflow-hidden rounded-[12px] border"
+      style={{ backgroundColor: BG, borderColor: EDGE }}
+      aria-hidden
+    >
+      {}
+      <div
+        className="textreveal-wash pointer-events-none absolute"
+        style={{ inset: "-8%", backgroundImage: WHITE_WASH }}
+      />
+      {}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backgroundImage: `url("${GRAIN_SVG}")`,
+          backgroundSize: "140px 140px",
+          opacity: 0.05,
+          mixBlendMode: "multiply",
+        }}
+      />
+    </div>
+  );
+}
+
+```
+
+
+16. Build this: a crisp word sitting in a soft gradient-mapped GLOW on light paper — the 'blur glow' text look done live in WebGL (no assets). Rasterize the word to a white silhouette mask at a LOCKED cap-height (fit by height so every cycled word is the same size). Build the halo with a real MULTI-PASS GAUSSIAN BLOOM: blur + downsample the mask into ~4 progressively smaller framebuffers, each a separable H-then-V 9-tap Gaussian (small buffers = a huge smooth halo, no ring banding). Give the blur a VARIABLE FOCUS: keep the middle of the word sharp and blur harder toward both ends (a depth-of-field), driven by the word's measured x-extent. In the composite pass, sum the blur levels with falling weights into one grayscale glow field, apply a gamma so the coloured band hugs the letters, then GRADIENT-MAP its luminance (inverted: paper→light end, cores→dark end) through a 5-stop ramp. Draw the sharp word on top in the palette's INK colour (not plain black), letting the glow bleed into the letter edges, and blend dense monochrome film GRAIN over everything with a soft-light formula (like a 50% noise layer). Animate: the bloom BREATHES on a slow sine, the hue DRIFTS a touch, the cursor lights a local HOT-SPOT, and the word CROSS-DISSOLVES (eased) through a cycle, each settling into a different colour world. Ship several 5-stop palettes, each with its own ink + light paper colour (no dark mode). Framework-free WebGL1 + a rAF loop; DPR-capped at 1.5, pauses offscreen, one static frame under reduced motion.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### blur-glow/params.ts
+
+```ts
+export type Stop = { pos: number; color: [number, number, number] };
+
+export interface Palette {
+  name: string;
+  stops: Stop[];
+  ink: [number, number, number];
+  paper: [number, number, number];
+}
+
+const rgb = (hex: string): [number, number, number] => [
+  parseInt(hex.slice(1, 3), 16) / 255,
+  parseInt(hex.slice(3, 5), 16) / 255,
+  parseInt(hex.slice(5, 7), 16) / 255,
+];
+
+export const PALETTES: Palette[] = [
+  {
+
+    name: "Ultraviolet",
+    stops: [
+      { pos: 0.0, color: rgb("#0c0622") },
+      { pos: 0.22, color: rgb("#5b1fd6") },
+      { pos: 0.46, color: rgb("#ff3bd4") },
+      { pos: 0.72, color: rgb("#ffcf4d") },
+      { pos: 1.0, color: rgb("#faf7ff") },
+    ],
+    ink: rgb("#2a0f66"),
+    paper: rgb("#faf7ff"),
+  },
+  {
+
+    name: "Molten",
+    stops: [
+      { pos: 0.0, color: rgb("#28060a") },
+      { pos: 0.22, color: rgb("#d21414") },
+      { pos: 0.46, color: rgb("#ff6a1f") },
+      { pos: 0.72, color: rgb("#ffcf52") },
+      { pos: 1.0, color: rgb("#fff7ec") },
+    ],
+    ink: rgb("#7a1410"),
+    paper: rgb("#fff7ec"),
+  },
+  {
+
+    name: "Bubblegum",
+    stops: [
+      { pos: 0.0, color: rgb("#2a0718") },
+      { pos: 0.22, color: rgb("#ff1e8e") },
+      { pos: 0.46, color: rgb("#ff7ab0") },
+      { pos: 0.72, color: rgb("#ffe0b0") },
+      { pos: 1.0, color: rgb("#fff5fa") },
+    ],
+    ink: rgb("#8a0e52"),
+    paper: rgb("#fff5fa"),
+  },
+  {
+
+    name: "Electric",
+    stops: [
+      { pos: 0.0, color: rgb("#04102e") },
+      { pos: 0.22, color: rgb("#1550ff") },
+      { pos: 0.46, color: rgb("#25c8ff") },
+      { pos: 0.72, color: rgb("#bff0ff") },
+      { pos: 1.0, color: rgb("#f4faff") },
+    ],
+    ink: rgb("#0a2b8c"),
+    paper: rgb("#f4faff"),
+  },
+  {
+
+    name: "Jade",
+    stops: [
+      { pos: 0.0, color: rgb("#03170f") },
+      { pos: 0.22, color: rgb("#0f7a4a") },
+      { pos: 0.46, color: rgb("#1fd88a") },
+      { pos: 0.72, color: rgb("#b8f5d8") },
+      { pos: 1.0, color: rgb("#f3fbf6") },
+    ],
+    ink: rgb("#0a3d28"),
+    paper: rgb("#f3fbf6"),
+  },
+  {
+
+    name: "Sunburst",
+    stops: [
+      { pos: 0.0, color: rgb("#04161c") },
+      { pos: 0.22, color: rgb("#0e7d86") },
+      { pos: 0.46, color: rgb("#f2a20c") },
+      { pos: 0.72, color: rgb("#ffe27a") },
+      { pos: 1.0, color: rgb("#fefaf0") },
+    ],
+    ink: rgb("#0a3a40"),
+    paper: rgb("#fefaf0"),
+  },
+];
+
+export function paletteUniforms(p: Palette): {
+  positions: number[];
+  colors: number[];
+  ink: number[];
+  paper: number[];
+} {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    const s = p.stops[Math.min(i, p.stops.length - 1)];
+    positions.push(s.pos);
+    colors.push(s.color[0], s.color[1], s.color[2]);
+  }
+  return { positions, colors, ink: p.ink, paper: p.paper };
+}
+
+export interface PaletteUniforms {
+  positions: number[];
+  colors: number[];
+  ink: number[];
+  paper: number[];
+}
+
+const LUMA: readonly [number, number, number] = [0.2126, 0.7152, 0.0722];
+
+function satPreserveLerp(x: number[], y: number[], t: number): number[] {
+  const out = x.map((v, i) => v + (y[i] - v) * t);
+  const bell = Math.sin(Math.PI * t);
+  if (bell < 1e-4) return out;
+  const satOf = (c0: number, c1: number, c2: number) => {
+    const mx = Math.max(c0, c1, c2);
+    return mx === 0 ? 0 : (mx - Math.min(c0, c1, c2)) / mx;
+  };
+
+  for (let i = 0; i + 2 < out.length; i += 3) {
+    const r = out[i], g = out[i + 1], b = out[i + 2];
+    const target = Math.max(
+      satOf(x[i], x[i + 1], x[i + 2]),
+      satOf(y[i], y[i + 1], y[i + 2]),
+    );
+    const s = satOf(r, g, b);
+    if (s < 1e-4 || target < 1e-4) continue;
+    const k = (s + (target - s) * bell) / s;
+    const L = LUMA[0] * r + LUMA[1] * g + LUMA[2] * b;
+    out[i] = Math.min(1, Math.max(0, L + (r - L) * k));
+    out[i + 1] = Math.min(1, Math.max(0, L + (g - L) * k));
+    out[i + 2] = Math.min(1, Math.max(0, L + (b - L) * k));
+  }
+  return out;
+}
+
+export function lerpPaletteUniforms(a: PaletteUniforms, b: PaletteUniforms, t: number): PaletteUniforms {
+  const lerpArr = (x: number[], y: number[]) => x.map((v, i) => v + (y[i] - v) * t);
+  return {
+
+    positions: lerpArr(a.positions, b.positions),
+    colors: satPreserveLerp(a.colors, b.colors, t),
+    ink: satPreserveLerp(a.ink, b.ink, t),
+    paper: satPreserveLerp(a.paper, b.paper, t),
+  };
+}
+
+export const WORDS = ["hello", "pookie", "monkey"];
+
+export const HOLD_SCALE = [1.45, 0.9, 1.0];
+
+export const GRAIN = 0.4;
+
+export const MORPH_LEAD = 0.78;
+export const MORPH_LAG = 1.3;
+
+export const CAST_DIR: readonly [number, number] = [0.38, 0.92];
+export const CAST_STEP: readonly [number, number, number, number] = [0.0008, 0.0022, 0.0042, 0.0075];
+
+export const LETTER_SPREAD = 0.45;
+
+export const WARP_RADIUS = 0.2;
+export const WARP_AMP = 0.013;
+export const WARP_SWIRL = 0.6;
+
+export const WARP_DRAG = 0.26;
+
+export const WARP_STRETCH = 0.5;
+
+export const BREATH = 0.22;
+
+```
+
+### blur-glow/text-mask.ts
+
+```ts
+export interface WordMask {
+  canvas: HTMLCanvasElement;
+  x0: number;
+  x1: number;
+}
+
+export function makeWordMask(
+  word: string,
+  w: number,
+  h: number,
+  fontFamily: string,
+): WordMask {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ctx = out.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+
+  const text = (word || "").trim();
+  if (!text) return { canvas: out, x0: 0.45, x1: 0.55 };
+
+  const cx = W / 2;
+  const cy = H * 0.52;
+  const maxW = W * 0.66;
+
+  const LOCK = H * 0.34;
+
+  let size = LOCK;
+  ctx.font = `600 ${size}px ${fontFamily}`;
+  let measured = ctx.measureText(text).width;
+  if (measured > maxW) {
+    size *= maxW / measured;
+    ctx.font = `600 ${size}px ${fontFamily}`;
+    measured = ctx.measureText(text).width;
+  }
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+
+  const ls = size * 0.015;
+  const chars = [...text];
+  const widths = chars.map((c) => ctx.measureText(c).width);
+  const total = widths.reduce((a, b) => a + b, 0) + ls * (chars.length - 1);
+  let x = cx - total / 2;
+  const left = x;
+
+  const last = Math.max(1, chars.length - 1);
+  for (let i = 0; i < chars.length; i++) {
+    const idx = i / last;
+    ctx.fillStyle = `rgba(${Math.round(idx * 255)}, 0, 0, 1)`;
+    ctx.fillText(chars[i], x, cy);
+    x += widths[i] + ls;
+  }
+  return { canvas: out, x0: left / W, x1: (left + total) / W };
+}
+
+```
+
+### blur-glow/shaders.ts
+
+```ts
+export const VERT = `
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+export const BLUR_FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uDir;
+uniform float uMorph;
+uniform sampler2D uTexB;
+uniform float uUseMorph;
+uniform float uPartOut;
+uniform float uPartIn;
+uniform float uLetterSpread;
+
+uniform vec2  uFocus;
+uniform float uFocusAmt;
+
+float bhash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+float bvnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.0-2.0*f);
+  float a = bhash(i), b2 = bhash(i+vec2(1.0,0.0));
+  float c = bhash(i+vec2(0.0,1.0)), d = bhash(i+vec2(1.0,1.0));
+  return mix(mix(a,b2,u.x), mix(c,d,u.x), u.y);
+}
+float bfbm(vec2 p){
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++){ v += a * bvnoise(p); p = p * 2.0 + 11.0; a *= 0.5; }
+  return v;
+}
+
+float bTransition(vec2 uv, float m){
+
+  vec2 q = vec2(bfbm(uv * 2.1 + 3.7), bfbm(uv * 2.1 - 1.3));
+  float n = bfbm(uv * 3.0 + q * 1.1);
+  float bias = (uv.x * 0.8 + uv.y * 0.2) * 0.30;
+  float field = clamp(n * 0.74 + bias, 0.0, 1.0);
+  const float BAND = 0.26;
+
+  float thr = mix(1.0 + BAND, -BAND, m);
+  return smoothstep(thr - BAND, thr + BAND, field);
+}
+
+float bLetterPhase(sampler2D tex, vec2 uv, float m, float spread){
+  float idx = texture2D(tex, uv).r;
+  return clamp((m * (1.0 + spread)) - idx * spread, 0.0, 1.0);
+}
+vec4 samp(vec2 uv){
+  if (uUseMorph > 0.5) {
+
+    vec4 aTex = texture2D(uTex, uv);
+    vec4 bTex = texture2D(uTexB, uv);
+    float outM = bTransition(uv, bLetterPhase(uTex,  uv, uPartOut, uLetterSpread));
+    float inM  = bTransition(uv, bLetterPhase(uTexB, uv, uPartIn,  uLetterSpread));
+    return max(aTex * (1.0 - outM), bTex * inM);
+  }
+  return texture2D(uTex, uv);
+}
+void main(){
+
+  float mid = (uFocus.x + uFocus.y) * 0.5;
+  float halfW = max(0.001, (uFocus.y - uFocus.x) * 0.5);
+  float ends = clamp(abs(vUv.x - mid) / halfW, 0.0, 1.6);
+  float focus = 1.0 + uFocusAmt * ends * ends;
+  vec2 dir = uDir * focus;
+
+  float w0 = 0.2270270270;
+  float w1 = 0.1945945946;
+  float w2 = 0.1216216216;
+  float w3 = 0.0540540541;
+  float w4 = 0.0162162162;
+  vec4 c = samp(vUv) * w0;
+  c += samp(vUv + dir * 1.0) * w1;
+  c += samp(vUv - dir * 1.0) * w1;
+  c += samp(vUv + dir * 2.0) * w2;
+  c += samp(vUv - dir * 2.0) * w2;
+  c += samp(vUv + dir * 3.0) * w3;
+  c += samp(vUv - dir * 3.0) * w3;
+  c += samp(vUv + dir * 4.0) * w4;
+  c += samp(vUv - dir * 4.0) * w4;
+  gl_FragColor = c;
+}`;
+
+export const COMPOSITE_FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 vUv;
+
+uniform sampler2D uMask;
+uniform sampler2D uMaskB;
+uniform sampler2D uL0;
+uniform sampler2D uL1;
+uniform sampler2D uL2;
+uniform sampler2D uL3;
+uniform vec2  uRes;
+uniform float uMorph;
+uniform float uPartOut;
+uniform float uPartIn;
+uniform float uLetterSpread;
+uniform float uFront;
+uniform vec2  uCursor;
+uniform float uCursorOn;
+uniform float uWarpRadius;
+uniform float uWarpAmp;
+uniform float uWarpSwirl;
+uniform vec2  uWarpVel;
+uniform float uWarpDrag;
+uniform float uWarpStretch;
+uniform float uPhase;
+uniform float uBloom;
+uniform vec2  uCast0;
+uniform vec2  uCast1;
+uniform vec2  uCast2;
+uniform vec2  uCast3;
+
+uniform float uPos[5];
+uniform vec3  uCol[5];
+uniform vec3  uInk;
+uniform vec3  uPaper;
+uniform float uGrain;
+
+float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.0-2.0*f);
+  float a = hash(i), b2 = hash(i+vec2(1.0,0.0));
+  float c = hash(i+vec2(0.0,1.0)), d = hash(i+vec2(1.0,1.0));
+  return mix(mix(a,b2,u.x), mix(c,d,u.x), u.y);
+}
+float fbm(vec2 p){
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++){ v += a * vnoise(p); p = p * 2.0 + 11.0; a *= 0.5; }
+  return v;
+}
+
+float transitionMask(vec2 uv, float m){
+
+  vec2 q = vec2(fbm(uv * 2.1 + 3.7), fbm(uv * 2.1 - 1.3));
+  float n = fbm(uv * 3.0 + q * 1.1);
+  float bias = (uv.x * 0.8 + uv.y * 0.2) * 0.30;
+  float field = clamp(n * 0.74 + bias, 0.0, 1.0);
+  const float BAND = 0.26;
+  float thr = mix(1.0 + BAND, -BAND, m);
+  return smoothstep(thr - BAND, thr + BAND, field);
+}
+
+float letterPhase(sampler2D tex, vec2 uv, float m, float spread){
+  float idx = texture2D(tex, uv).r;
+
+  float local = (m * (1.0 + spread)) - idx * spread;
+  return clamp(local, 0.0, 1.0);
+}
+float coverA(vec2 uv){ return texture2D(uMask, uv).a; }
+float coverB(vec2 uv){ return texture2D(uMaskB, uv).a; }
+
+float cover(vec2 uv){
+  float outM = transitionMask(uv, letterPhase(uMask,  uv, uPartOut, uLetterSpread));
+  float inM  = transitionMask(uv, letterPhase(uMaskB, uv, uPartIn,  uLetterSpread));
+
+  return max(coverA(uv) * (1.0 - outM), coverB(uv) * inM);
+}
+
+vec3 gradientMap(float x){
+  vec3 c = uCol[0];
+  c = mix(c, uCol[1], smoothstep(uPos[0], uPos[1], x));
+  c = mix(c, uCol[2], smoothstep(uPos[1], uPos[2], x));
+  c = mix(c, uCol[3], smoothstep(uPos[2], uPos[3], x));
+  c = mix(c, uCol[4], smoothstep(uPos[3], uPos[4], x));
+  return c;
+}
+
+vec3 softLight(vec3 base, float g){
+  vec3 s = vec3(g);
+  vec3 lo = 2.0*base*s + base*base*(1.0 - 2.0*s);
+  vec3 hi = 2.0*base*(1.0 - s) + sqrt(base)*(2.0*s - 1.0);
+  return mix(lo, hi, step(0.5, s));
+}
+
+vec2 warpUV(vec2 uv){
+  if (uCursorOn < 0.001) return uv;
+  float asp = uRes.x / max(1.0, uRes.y);
+  vec2 d = (uv - uCursor) * vec2(asp, 1.0);
+  float r = length(d);
+  float R = uWarpRadius;
+  if (r > R || r < 1e-5) return uv;
+  float f = 1.0 - r / R;
+  f = f * f * (3.0 - 2.0 * f);
+  vec2 dir = d / r;
+  vec2 swirl = vec2(-dir.y, dir.x);
+  vec2 push = mix(dir, swirl, uWarpSwirl);
+
+  push += uWarpVel * uWarpDrag;
+
+  float speed = length(uWarpVel);
+  if (speed > 0.02) {
+    vec2 vdir = uWarpVel / speed;
+    float along = dot(d / r, vdir);
+    float stretch = 1.0 + uWarpStretch * clamp(speed, 0.0, 1.0) * (along * along - 0.35);
+    f *= clamp(stretch, 0.0, 2.2);
+  }
+
+  float ripple = 1.0 + 0.16 * sin(r / R * 3.1416 - uPhase * 5.0);
+
+  float lead = 0.5 + 0.5 * dot(normalize(d + 1e-6), normalize(uWarpVel + 1e-6));
+  float visc = mix(1.15, 0.85, lead);
+
+  return uv + push * (f * ripple * visc * uWarpAmp * uCursorOn) / vec2(asp, 1.0);
+}
+
+void main(){
+
+  vec2 uv = warpUV(vUv);
+
+  float cd = distance(vUv * uRes, uCursor * uRes);
+  float hot = uCursorOn * smoothstep(min(uRes.x, uRes.y) * uWarpRadius * 2.4, 0.0, cd);
+
+  float b = 1.0 + (uBloom - 1.0) * 1.25 + 0.14 * hot;
+
+  float glow =
+      1.00 * cover(uv)
+    + 0.92 * texture2D(uL0, uv + uCast0).a
+    + 0.78 * texture2D(uL1, vUv + uCast1).a * b
+    + 0.58 * texture2D(uL2, vUv + uCast2).a * b
+    + 0.40 * texture2D(uL3, vUv + uCast3).a * b;
+  glow = clamp(glow / 2.45, 0.0, 1.0);
+
+  float field = pow(glow, 0.6);
+
+  field = clamp(field + hot * 0.16 * field, 0.0, 1.0);
+
+  if (uFront > 0.001) {
+    vec2 q = vec2(fbm(uv * 2.1 + 3.7), fbm(uv * 2.1 - 1.3));
+    float n = fbm(uv * 3.0 + q * 1.1);
+    float fieldN = clamp(n * 0.74 + (uv.x * 0.8 + uv.y * 0.2) * 0.30, 0.0, 1.0);
+    float thrIn = mix(1.26, -0.26, uPartIn);
+    float edge = 1.0 - smoothstep(0.0, 0.30, abs(fieldN - thrIn));
+
+    field = clamp(field + edge * uFront * 0.30 * smoothstep(0.02, 0.45, glow), 0.0, 1.0);
+  }
+
+  float drift = 0.022 * sin(uPhase + uv.x * 3.0 + uv.y * 2.0);
+
+  float t = clamp(1.0 - field + drift - hot * 0.10, 0.0, 1.0);
+  vec3 col = gradientMap(t);
+
+  vec3 bounced = mix(uPaper, uCol[2], texture2D(uL3, vUv + uCast3).a * 0.16);
+  col = mix(bounced, col, smoothstep(0.0, 0.06, field));
+
+  float softCov = clamp(texture2D(uL0, uv).a * 1.05 + cover(uv) * 0.25, 0.0, 1.0);
+
+  float interior = smoothstep(0.18, 0.62, softCov);
+
+  vec3 bodyCol = mix(uInk, uCol[1], 0.5);
+  bodyCol = mix(bodyCol, uCol[2], (1.0 - interior) * 0.5);
+
+  float solid = smoothstep(0.35, 0.95, cover(uv));
+  bodyCol = mix(mix(bodyCol, uCol[2], 0.30), mix(bodyCol, uInk, 0.22), solid);
+  col = mix(col, bodyCol, interior * 0.9);
+
+  float g = hash(gl_FragCoord.xy);
+  vec3 grained = softLight(col, g);
+  col = mix(col, grained, uGrain * (0.5 + 0.7 * field));
+
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`;
+
+```
+
+### blur-glow/engine.ts
+
+```ts
+import { VERT, BLUR_FRAG, COMPOSITE_FRAG } from "./shaders";
+import { makeWordMask } from "./text-mask";
+import {
+  PALETTES,
+  WORDS,
+  GRAIN,
+  MORPH_LEAD,
+  MORPH_LAG,
+  CAST_DIR,
+  CAST_STEP,
+  HOLD_SCALE,
+  LETTER_SPREAD,
+  BREATH,
+  WARP_RADIUS,
+  WARP_AMP,
+  WARP_SWIRL,
+  WARP_DRAG,
+  WARP_STRETCH,
+  paletteUniforms,
+  lerpPaletteUniforms,
+  type PaletteUniforms,
+} from "./params";
+
+const FONT = "var(--font-pangram)";
+const FOCUS_AMT = 1.5;
+
+const MORPH_SEC = 0.8;
+const HOLD_MS = 700;
+
+const LEVELS = [
+  { scale: 0.5, radius: 2 },
+  { scale: 0.25, radius: 3 },
+  { scale: 0.125, radius: 3 },
+  { scale: 0.0625, radius: 3 },
+];
+
+type Target = { fb: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number };
+
+export class BlurGlow {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+
+  private blurProg: WebGLProgram | null = null;
+  private compProg: WebGLProgram | null = null;
+  private quad: WebGLBuffer | null = null;
+
+  private maskA: WebGLTexture | null = null;
+  private maskB: WebGLTexture | null = null;
+  private focusA: [number, number] = [0.35, 0.65];
+  private focusB: [number, number] = [0.35, 0.65];
+  private levels: { out: Target; tmp: Target }[] = [];
+
+  private blurU: Record<string, WebGLUniformLocation | null> = {};
+  private compU: Record<string, WebGLUniformLocation | null> = {};
+
+  private fontFamily = "sans-serif";
+  private raf = 0;
+  private running = false;
+  private destroyed = false;
+  private start0 = 0;
+  private lastT = 0;
+  private revealed = false;
+
+  private wordIdx = 0;
+  private paletteIdx = 0;
+  private morph = 0;
+  private morphEased = 0;
+  private morphGlow = 0;
+  private morphBody = 0;
+  private morphing = false;
+  private holdUntil = 0;
+
+  private paletteFrom: PaletteUniforms = paletteUniforms(PALETTES[0]);
+  private paletteTo: PaletteUniforms = paletteUniforms(PALETTES[0]);
+
+  private curX = 0.5;
+  private curY = 0.5;
+  private tgtX = 0.5;
+  private tgtY = 0.5;
+  private curOn = 0;
+  private tgtOn = 0;
+
+  private velX = 0;
+  private velY = 0;
+  private prevX = 0.5;
+  private prevY = 0.5;
+
+  constructor(host: HTMLElement) {
+    this.host = host;
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      display: "block",
+      width: "100%",
+      height: "100%",
+      opacity: "0",
+      transition: "opacity 0.4s ease",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+      powerPreference: "low-power",
+    }) as WebGLRenderingContext | null;
+    if (!gl) return;
+    this.gl = gl;
+
+    this.buildPrograms();
+    if (!this.blurProg || !this.compProg) return;
+    this.resolveFont();
+    this.resize();
+
+    host.addEventListener("pointermove", this.onMove);
+    host.addEventListener("pointerleave", this.onLeave);
+  }
+
+  private compile(type: number, src: string): WebGLShader | null {
+    const gl = this.gl!;
+    const s = gl.createShader(type)!;
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.warn("[blur-glow] shader:", gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  }
+  private link(vs: string, fs: string): WebGLProgram | null {
+    const gl = this.gl!;
+    const v = this.compile(gl.VERTEX_SHADER, vs);
+    const f = this.compile(gl.FRAGMENT_SHADER, fs);
+    if (!v || !f) return null;
+    const p = gl.createProgram()!;
+    gl.attachShader(p, v);
+    gl.attachShader(p, f);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.warn("[blur-glow] link:", gl.getProgramInfoLog(p));
+      return null;
+    }
+    return p;
+  }
+
+  private buildPrograms() {
+    const gl = this.gl!;
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+    this.blurProg = this.link(VERT, BLUR_FRAG);
+    this.compProg = this.link(VERT, COMPOSITE_FRAG);
+    if (!this.blurProg || !this.compProg) return;
+
+    const BU = (n: string) => gl.getUniformLocation(this.blurProg!, n);
+    this.blurU = {
+      uTex: BU("uTex"),
+      uTexB: BU("uTexB"),
+      uDir: BU("uDir"),
+      uMorph: BU("uMorph"),
+      uUseMorph: BU("uUseMorph"),
+      uFocus: BU("uFocus"),
+      uFocusAmt: BU("uFocusAmt"),
+      uPartOut: BU("uPartOut"),
+      uPartIn: BU("uPartIn"),
+      uLetterSpread: BU("uLetterSpread"),
+    };
+    const CU = (n: string) => gl.getUniformLocation(this.compProg!, n);
+    this.compU = {
+      uMask: CU("uMask"),
+      uMaskB: CU("uMaskB"),
+      uL0: CU("uL0"),
+      uL1: CU("uL1"),
+      uL2: CU("uL2"),
+      uL3: CU("uL3"),
+      uRes: CU("uRes"),
+      uMorph: CU("uMorph"),
+      uCursor: CU("uCursor"),
+      uCursorOn: CU("uCursorOn"),
+      uWarpRadius: CU("uWarpRadius"),
+      uWarpAmp: CU("uWarpAmp"),
+      uWarpSwirl: CU("uWarpSwirl"),
+      uWarpVel: CU("uWarpVel"),
+      uWarpDrag: CU("uWarpDrag"),
+      uWarpStretch: CU("uWarpStretch"),
+      uPhase: CU("uPhase"),
+      uBloom: CU("uBloom"),
+      uCast0: CU("uCast0"),
+      uCast1: CU("uCast1"),
+      uCast2: CU("uCast2"),
+      uCast3: CU("uCast3"),
+      uPartOut: CU("uPartOut"),
+      uPartIn: CU("uPartIn"),
+      uLetterSpread: CU("uLetterSpread"),
+      uFront: CU("uFront"),
+      uPos: CU("uPos[0]"),
+      uCol: CU("uCol[0]"),
+      uInk: CU("uInk"),
+      uPaper: CU("uPaper"),
+      uGrain: CU("uGrain"),
+    };
+  }
+
+  private bindQuad(prog: WebGLProgram) {
+    const gl = this.gl!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    const loc = gl.getAttribLocation(prog, "aPos");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  }
+
+  private uploadPalette(u: { positions: number[]; colors: number[]; ink: number[]; paper: number[] }) {
+    const gl = this.gl;
+    if (!gl || !this.compProg) return;
+    gl.useProgram(this.compProg);
+    gl.uniform1fv(this.compU.uPos!, new Float32Array(u.positions));
+    gl.uniform3fv(this.compU.uCol!, new Float32Array(u.colors));
+    gl.uniform3fv(this.compU.uInk!, new Float32Array(u.ink));
+    gl.uniform3fv(this.compU.uPaper!, new Float32Array(u.paper));
+    this.canvas.style.background = `rgb(${u.paper.map((c) => Math.round(c * 255)).join(",")})`;
+  }
+
+  private applyPalette(i: number) {
+    const idx = i % PALETTES.length;
+    this.paletteFrom = paletteUniforms(PALETTES[idx]);
+    this.paletteTo = this.paletteFrom;
+    this.uploadPalette(this.paletteFrom);
+  }
+
+  private resolveFont() {
+    if (typeof document === "undefined") return;
+    try {
+      const probe = document.createElement("span");
+      probe.style.cssText = "position:absolute;visibility:hidden;font-family:" + FONT;
+      probe.textContent = "Ag";
+      document.body.appendChild(probe);
+      this.fontFamily =
+        getComputedStyle(probe).fontFamily.split(",")[0].replace(/["']/g, "").trim() || "sans-serif";
+      document.body.removeChild(probe);
+    } catch {}
+  }
+
+  private makeTarget(w: number, h: number): Target {
+    const gl = this.gl!;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { fb, tex, w, h };
+  }
+  private freeLevels() {
+    const gl = this.gl;
+    if (!gl) return;
+    for (const lv of this.levels) {
+      gl.deleteFramebuffer(lv.out.fb);
+      gl.deleteTexture(lv.out.tex);
+      gl.deleteFramebuffer(lv.tmp.fb);
+      gl.deleteTexture(lv.tmp.tex);
+    }
+    this.levels = [];
+  }
+  private allocLevels() {
+    this.freeLevels();
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    this.levels = LEVELS.map((l) => {
+      const w = Math.max(2, Math.round(W * l.scale));
+      const h = Math.max(2, Math.round(H * l.scale));
+      return { out: this.makeTarget(w, h), tmp: this.makeTarget(w, h) };
+    });
+  }
+
+  private uploadMask(src: HTMLCanvasElement, existing: WebGLTexture | null): WebGLTexture {
+    const gl = this.gl!;
+    const tex = existing ?? gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+  private buildMask() {
+    const gl = this.gl;
+    if (!gl) return;
+    const m = makeWordMask(WORDS[this.wordIdx % WORDS.length], this.canvas.width, this.canvas.height, this.fontFamily);
+    this.maskA = this.uploadMask(m.canvas, this.maskA);
+    this.focusA = [m.x0, m.x1];
+  }
+
+  private buildMaskB() {
+    const gl = this.gl;
+    if (!gl) return;
+    const next = (this.wordIdx + 1) % WORDS.length;
+    const m = makeWordMask(WORDS[next], this.canvas.width, this.canvas.height, this.fontFamily);
+    this.maskB = this.uploadMask(m.canvas, this.maskB);
+    this.focusB = [m.x0, m.x1];
+  }
+
+  private resize() {
+    const gl = this.gl;
+    if (!gl) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const r = this.host.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width * dpr));
+    const h = Math.max(1, Math.round(r.height * dpr));
+    if (this.canvas.width === w && this.canvas.height === h && this.levels.length) return;
+    this.canvas.width = w;
+    this.canvas.height = h;
+    this.allocLevels();
+    this.buildMask();
+
+    this.buildMaskB();
+
+    if (!this.morphing) this.applyPalette(this.paletteIdx);
+  }
+
+  private beginMorph() {
+
+    this.morph = 0;
+    this.morphing = true;
+
+    this.paletteFrom = paletteUniforms(PALETTES[this.paletteIdx % PALETTES.length]);
+    this.paletteTo = paletteUniforms(PALETTES[(this.paletteIdx + 1) % PALETTES.length]);
+  }
+  private finishMorph() {
+    this.wordIdx = (this.wordIdx + 1) % WORDS.length;
+    const t = this.maskA;
+    this.maskA = this.maskB;
+    this.maskB = t;
+    this.focusA = this.focusB;
+    this.morph = 0;
+    this.morphing = false;
+
+    this.buildMaskB();
+
+    this.paletteIdx = (this.paletteIdx + 1) % PALETTES.length;
+    this.paletteFrom = this.paletteTo;
+    this.uploadPalette(this.paletteTo);
+  }
+
+  private render(bloom: number, phase: number) {
+    const gl = this.gl;
+    if (!gl || !this.blurProg || !this.compProg || !this.levels.length) return;
+
+    gl.useProgram(this.blurProg);
+    this.bindQuad(this.blurProg);
+    gl.disable(gl.BLEND);
+
+    const m = this.morph;
+    const em = m * m * m * (m * (m * 6 - 15) + 10);
+
+    this.morphGlow = Math.pow(em, MORPH_LEAD);
+    this.morphBody = Math.pow(em, MORPH_LAG);
+    this.morphEased = em;
+
+    const clocks = (base: number): [number, number] => [
+      Math.min(1, base * (1 + BREATH)),
+      Math.max(0, Math.min(1, base * (1 + BREATH) - BREATH)),
+    ];
+    const [glowOut, glowIn] = clocks(this.morphGlow);
+    const [bodyOut, bodyIn] = clocks(this.morphBody);
+
+    const front = this.morphing ? Math.sin(Math.PI * em) : 0;
+    const fx0 = this.focusA[0] + (this.focusB[0] - this.focusA[0]) * em;
+    const fx1 = this.focusA[1] + (this.focusB[1] - this.focusA[1]) * em;
+    gl.uniform2f(this.blurU.uFocus!, fx0, fx1);
+    gl.uniform1f(this.blurU.uFocusAmt!, FOCUS_AMT);
+
+    gl.uniform1f(this.blurU.uMorph!, this.morphGlow);
+    gl.uniform1f(this.blurU.uPartOut!, glowOut);
+    gl.uniform1f(this.blurU.uPartIn!, glowIn);
+    gl.uniform1f(this.blurU.uLetterSpread!, LETTER_SPREAD);
+    for (let i = 0; i < this.levels.length; i++) {
+      const lv = this.levels[i];
+      const r = LEVELS[i].radius;
+      const srcTex = i === 0 ? this.maskA! : this.levels[i - 1].out.tex;
+      const useMorph = i === 0 && this.morphing ? 1 : 0;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, lv.tmp.fb);
+      gl.viewport(0, 0, lv.tmp.w, lv.tmp.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, srcTex);
+      gl.uniform1i(this.blurU.uTex!, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.maskB ?? this.maskA!);
+      gl.uniform1i(this.blurU.uTexB!, 1);
+      gl.uniform1f(this.blurU.uUseMorph!, useMorph);
+      gl.uniform2f(this.blurU.uDir!, r / lv.tmp.w, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, lv.out.fb);
+      gl.viewport(0, 0, lv.out.w, lv.out.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, lv.tmp.tex);
+      gl.uniform1i(this.blurU.uTex!, 0);
+      gl.uniform1f(this.blurU.uUseMorph!, 0);
+      gl.uniform2f(this.blurU.uDir!, 0, r / lv.out.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.compProg);
+    this.bindQuad(this.compProg);
+
+    if (this.morphing) {
+      this.uploadPalette(lerpPaletteUniforms(this.paletteFrom, this.paletteTo, this.morphEased));
+    }
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskA!);
+    gl.uniform1i(this.compU.uMask!, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskB ?? this.maskA!);
+    gl.uniform1i(this.compU.uMaskB!, 1);
+    const levelUnits = ["uL0", "uL1", "uL2", "uL3"];
+    for (let i = 0; i < this.levels.length; i++) {
+      gl.activeTexture(gl.TEXTURE2 + i);
+      gl.bindTexture(gl.TEXTURE_2D, this.levels[i].out.tex);
+      gl.uniform1i(this.compU[levelUnits[i]]!, 2 + i);
+    }
+    gl.uniform2f(this.compU.uRes!, this.canvas.width, this.canvas.height);
+    gl.uniform1f(this.compU.uMorph!, this.morphBody);
+    gl.uniform1f(this.compU.uPartOut!, bodyOut);
+    gl.uniform1f(this.compU.uPartIn!, bodyIn);
+    gl.uniform1f(this.compU.uLetterSpread!, LETTER_SPREAD);
+    gl.uniform1f(this.compU.uFront!, front);
+    gl.uniform2f(this.compU.uCursor!, this.curX, this.curY);
+    gl.uniform1f(this.compU.uCursorOn!, this.curOn);
+    gl.uniform1f(this.compU.uWarpRadius!, WARP_RADIUS);
+    gl.uniform1f(this.compU.uWarpAmp!, WARP_AMP);
+    gl.uniform1f(this.compU.uWarpSwirl!, WARP_SWIRL);
+    gl.uniform2f(this.compU.uWarpVel!, this.velX, this.velY);
+    gl.uniform1f(this.compU.uWarpDrag!, WARP_DRAG);
+    gl.uniform1f(this.compU.uWarpStretch!, WARP_STRETCH);
+    gl.uniform1f(this.compU.uPhase!, phase);
+    gl.uniform1f(this.compU.uBloom!, bloom);
+
+    const aspect = this.canvas.width / Math.max(1, this.canvas.height);
+    const casts = [this.compU.uCast0, this.compU.uCast1, this.compU.uCast2, this.compU.uCast3];
+    for (let i = 0; i < casts.length; i++) {
+      const s = CAST_STEP[i];
+      gl.uniform2f(casts[i]!, (CAST_DIR[0] * s) / aspect, CAST_DIR[1] * s);
+    }
+    gl.uniform1f(this.compU.uGrain!, GRAIN);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    this.reveal();
+  }
+
+  private holdFor(i: number) {
+    return HOLD_MS * (HOLD_SCALE[i % WORDS.length] ?? 1);
+  }
+
+  private frame = (now: number) => {
+    if (!this.running || this.destroyed) return;
+    if (!this.start0) {
+      this.start0 = now;
+      this.lastT = now;
+      this.holdUntil = now + this.holdFor(this.wordIdx);
+    }
+    const t = (now - this.start0) / 1000;
+    const dt = Math.min(0.05, Math.max(0.001, (now - this.lastT) / 1000));
+    this.lastT = now;
+
+    this.curX = this.tgtX;
+    this.curY = this.tgtY;
+
+    this.curOn += (this.tgtOn - this.curOn) * (1 - Math.pow(1 - 0.42, dt * 60));
+
+    const vx = (this.curX - this.prevX) / dt;
+    const vy = (this.curY - this.prevY) / dt;
+    this.prevX = this.curX;
+    this.prevY = this.curY;
+    const vk = 1 - Math.pow(1 - 0.5, dt * 60);
+    this.velX += (vx - this.velX) * vk;
+    this.velY += (vy - this.velY) * vk;
+    const vmag = Math.hypot(this.velX, this.velY);
+    const VMAX = 2.2;
+    if (vmag > VMAX) {
+      this.velX = (this.velX / vmag) * VMAX;
+      this.velY = (this.velY / vmag) * VMAX;
+    }
+
+    if (!this.morphing && now >= this.holdUntil) this.beginMorph();
+    if (this.morphing) {
+
+      this.morph = Math.min(1, this.morph + dt / MORPH_SEC);
+      if (this.morph >= 1) {
+        this.finishMorph();
+        this.holdUntil = now + this.holdFor(this.wordIdx);
+      }
+    }
+
+    const bloom = 1.0 + 0.16 * Math.sin(t * 0.6);
+    const phase = t * 0.5;
+    this.render(bloom, phase);
+    this.raf = requestAnimationFrame(this.frame);
+  };
+
+  private reveal() {
+    if (this.revealed) return;
+    this.revealed = true;
+    this.canvas.style.opacity = "1";
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.host.getBoundingClientRect();
+    this.tgtX = (e.clientX - r.left) / r.width;
+    this.tgtY = 1 - (e.clientY - r.top) / r.height;
+    this.tgtOn = 1;
+  };
+  private onLeave = () => {
+    this.tgtOn = 0;
+  };
+
+  start() {
+    if (this.running || !this.gl || !this.compProg) return;
+    this.running = true;
+    this.start0 = 0;
+    this.raf = requestAnimationFrame(this.frame);
+  }
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  renderStill(instant = false) {
+    if (!this.gl || !this.compProg) return;
+    if (instant && !this.revealed) {
+      this.canvas.style.transition = "none";
+      this.revealed = true;
+      this.canvas.style.opacity = "1";
+    }
+    this.render(1.0, 0);
+  }
+  refreshFont() {
+    this.resolveFont();
+
+    this.buildMask();
+    this.buildMaskB();
+    if (!this.running) this.renderStill();
+  }
+  onResize() {
+    this.resize();
+    if (!this.running) this.renderStill();
+  }
+  destroy() {
+    this.destroyed = true;
+    this.stop();
+    this.host.removeEventListener("pointermove", this.onMove);
+    this.host.removeEventListener("pointerleave", this.onLeave);
+    const gl = this.gl;
+    if (gl) {
+      this.freeLevels();
+      if (this.maskA) gl.deleteTexture(this.maskA);
+      if (this.maskB) gl.deleteTexture(this.maskB);
+      if (this.quad) gl.deleteBuffer(this.quad);
+      if (this.blurProg) gl.deleteProgram(this.blurProg);
+      if (this.compProg) gl.deleteProgram(this.compProg);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+17. Build this: a plain white card that drops a TRAIL of tiny, compressed monospace badges behind the cursor as it moves. Each badge is a small die-cut box in a different vivid colour (lime, hot pink, cyan, orange, violet, yellow…) with BLACK text of a typography/design term inside (kerning, baseline, bezier, gamut…). Very compact: ~11px mono text, 1px vertical / 4px horizontal padding, small radius, no border. The trail SPAWNS on the raw pointer path — a new badge drops at the cursor at most every ~90ms AND only after the cursor has travelled a min distance, so a still cursor can't stack badges in place. Each badge fades + scales in (~140ms), holds (~620ms), then fades out (~260ms) and is removed. HARD NON-OVERLAP: before spawning, AABB-test the candidate rect (inflated by a small gap) against every live badge and SKIP the drop if it would collide — density self-limits near clusters, badges never touch. Words are drawn from a shuffled bag (no back-to-back repeats) and colours step through the palette so neighbours differ. DOM badges (not canvas) for crisp text at any DPR and trivial CSS transitions; a rAF loop publishes the live set each frame. Pauses offscreen / when the tab is hidden. Pointer-fine only — touch and reduced-motion show a few static example badges instead of the trail. Light mode, no title row, no detail page.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### badge-trail/badges.ts
+
+```ts
+export const WORDS = [
+  "kerning",
+  "baseline",
+  "leading",
+  "tracking",
+  "x-height",
+  "ligature",
+  "serif",
+  "grotesk",
+  "bezier",
+  "raster",
+  "vector",
+  "stroke",
+  "gamut",
+  "bleed",
+  "weight",
+  "grid",
+  "hue",
+  "counter",
+  "ascender",
+  "hinting",
+  "widow",
+  "orphan",
+  "gutter",
+  "opacity",
+];
+
+export const COLORS = [
+  "#c6ff3d",
+  "#ff3d81",
+  "#38e0ff",
+  "#ff8a3d",
+  "#b56bff",
+  "#ffe234",
+  "#ff5c5c",
+  "#3dffb0",
+  "#4d8dff",
+  "#ff5cf0",
+];
+
+const HUE_STEP = 24;
+
+function hslHex(h: number, s = 0.85, l = 0.62): string {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0,
+    g = 0,
+    b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const hex = (v: number) =>
+    Math.round((v + m) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+export function makeHueWalker(seedHue: number) {
+  let h = seedHue;
+  return (intensity = 1) => {
+    h += HUE_STEP;
+    const t = Math.max(0, Math.min(1, intensity));
+    const s = 0.32 + 0.53 * t;
+    const l = 0.78 - 0.16 * t;
+    return hslHex(h, s, l);
+  };
+}
+
+```
+
+### badge-trail/BadgeTrailCard.tsx
+
+```ts
+"use client";
+
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { WORDS, COLORS, makeHueWalker } from "./badges";
+
+function useMedia(query: string, server: boolean): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      const m = window.matchMedia(query);
+      m.addEventListener("change", cb);
+      return () => m.removeEventListener("change", cb);
+    },
+    () => window.matchMedia(query).matches,
+    () => server,
+  );
+}
+
+function useReducedMotion(): boolean {
+  return useMedia("(prefers-reduced-motion: reduce)", false);
+}
+
+function useFinePointer(): boolean {
+
+  return useMedia("(hover: hover) and (pointer: fine)", true);
+}
+
+const FONT_PX = 11;
+const CHAR_W = 6.6;
+const PAD_X = 4;
+const PAD_Y = 1;
+const RADIUS = 3;
+const GAP = 3;
+
+const DROP_MS = 45;
+const MIN_TRAVEL = 14;
+const APPEAR_MS = 110;
+const HOLD_MS = 480;
+const FADE_MS = 240;
+const LIFE_MS = APPEAR_MS + HOLD_MS + FADE_MS;
+const MAX_LIVE = 22;
+
+const SLAM_OFFSET = 5;
+const SLAM_OVERSHOOT = 1.03;
+
+const IDLE_WOBBLE = 0.35;
+const IDLE_BREATH = 0.01;
+
+const SPECIAL_EVERY = 15;
+
+const SCRAMBLE_MS = 130;
+const SCRAMBLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/#*";
+
+const SPEED_FULL = 40;
+const INTENSITY_FLOOR = 0.35;
+
+const REPEL_PX = 3;
+const REPEL_RANGE = 64;
+const REPEL_CHASE = 0.16;
+const REPEL_DECAY = 0.05;
+
+const GHOST_IDLE_MS = 600;
+
+const GHOST_FX = 0.00156;
+const GHOST_FX2 = 0.00465;
+const GHOST_AX = 0.3;
+const GHOST_AX2 = 0.11;
+const GHOST_FY = 0.00219;
+const GHOST_FY2 = 0.0063;
+const GHOST_AY = 0.3;
+const GHOST_AY2 = 0.12;
+const GHOST_BLEND_MS = 420;
+
+type Badge = {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+  color: string;
+  born: number;
+
+  dirX: number;
+  dirY: number;
+
+  exitRot: number;
+
+  seed: number;
+
+  depth: number;
+
+  special: boolean;
+
+  scram: string;
+
+  offX: number;
+  offY: number;
+  tgtX: number;
+  tgtY: number;
+};
+
+const badgeH = FONT_PX + PAD_Y * 2;
+const badgeW = (text: string) => Math.round(text.length * CHAR_W) + PAD_X * 2;
+
+function hits(x: number, y: number, w: number, h: number, b: Badge): boolean {
+  return (
+    x < b.x + b.w + GAP &&
+    x + w + GAP > b.x &&
+    y < b.y + b.h + GAP &&
+    y + h + GAP > b.y
+  );
+}
+
+function shuffled(n: number, rnd: () => number): number[] {
+  const a = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+export function BadgeTrailCard({ bare = false }: { bare?: boolean } = {}) {
+  void bare;
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [badges, setBadges] = useState<Badge[]>([]);
+  const reduced = useReducedMotion();
+  const fine = useFinePointer();
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || reduced) return;
+
+    const rnd = Math.random;
+
+    let onScreen = false;
+    let hidden = false;
+    let raf = 0;
+    let seq = 0;
+    const live: Badge[] = [];
+
+    let rpx = -1;
+    let rpy = -1;
+    let px = -1;
+    let py = -1;
+    let lastDropT = 0;
+    let lastDropX = 0;
+    let lastDropY = 0;
+    let haveLast = false;
+
+    let leftAt = -Infinity;
+    let blendFromX = 0;
+    let blendFromY = 0;
+
+    let bag: number[] = [];
+    const nextWord = () => {
+      if (bag.length === 0) bag = shuffled(WORDS.length, rnd);
+      return WORDS[bag.pop()!];
+    };
+
+    const nextColor = makeHueWalker(rnd() * 360);
+
+    let prevPx = -1;
+    let prevPy = -1;
+    let dropCount = 0;
+
+    const onMove = (e: PointerEvent) => {
+      const r = host.getBoundingClientRect();
+      rpx = e.clientX - r.left;
+      rpy = e.clientY - r.top;
+    };
+
+    const onDown = (e: PointerEvent) => {
+      const r = host.getBoundingClientRect();
+      rpx = e.clientX - r.left;
+      rpy = e.clientY - r.top;
+      if (e.pointerType === "touch") e.preventDefault();
+    };
+    const onLeave = () => {
+
+      if (px >= 0) {
+        blendFromX = px;
+        blendFromY = py;
+      }
+      rpx = -1;
+      rpy = -1;
+      leftAt = performance.now();
+    };
+
+    const ghostPoint = (t: number, w: number, h: number): [number, number] => {
+      const gx =
+        w * 0.5 +
+        (Math.sin(t * GHOST_FX) * GHOST_AX + Math.sin(t * GHOST_FX2 + 2.3) * GHOST_AX2) * w;
+      const gy =
+        h * 0.5 +
+        (Math.sin(t * GHOST_FY + 1.7) * GHOST_AY + Math.cos(t * GHOST_FY2 + 0.6) * GHOST_AY2) * h;
+      return [gx, gy];
+    };
+
+    let lastNow = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (!onScreen || hidden) return;
+
+      const dtFrames = lastNow ? Math.min(4, (now - lastNow) / 16.6667) : 1;
+      lastNow = now;
+
+      const r = host.getBoundingClientRect();
+      if (rpx >= 0) {
+
+        px = rpx;
+        py = rpy;
+      } else if (now - leftAt >= GHOST_IDLE_MS) {
+
+        const [gx, gy] = ghostPoint(now, r.width, r.height);
+        const k = Math.min(1, (now - leftAt - GHOST_IDLE_MS) / GHOST_BLEND_MS);
+        if (isFinite(leftAt) && k < 1) {
+          px = blendFromX + (gx - blendFromX) * k;
+          py = blendFromY + (gy - blendFromY) * k;
+        } else {
+          px = gx;
+          py = gy;
+        }
+      } else {
+
+        px = -1;
+        py = -1;
+      }
+
+      for (let i = live.length - 1; i >= 0; i--) {
+        if (now - live[i].born >= LIFE_MS) live.splice(i, 1);
+      }
+
+      if (px >= 0 && live.length < MAX_LIVE) {
+        const traveled = haveLast ? Math.hypot(px - lastDropX, py - lastDropY) : Infinity;
+        if (now - lastDropT >= DROP_MS && traveled >= MIN_TRAVEL) {
+          const text = nextWord();
+          const w = badgeW(text);
+          const h = badgeH;
+
+          let x = px - w / 2;
+          let y = py - h / 2;
+          x = Math.max(0, Math.min(r.width - w, x));
+          y = Math.max(0, Math.min(r.height - h, y));
+
+          const collides = live.some((b) => hits(x, y, w, h, b));
+          if (!collides) {
+
+            let dx = prevPx >= 0 ? px - prevPx : 0;
+            let dy = prevPy >= 0 ? py - prevPy : -1;
+            const speed = Math.hypot(prevPx >= 0 ? px - prevPx : 0, prevPy >= 0 ? py - prevPy : 0);
+            const dm = Math.hypot(dx, dy) || 1;
+            dx /= dm;
+            dy /= dm;
+
+            const intensity =
+              INTENSITY_FLOOR + (1 - INTENSITY_FLOOR) * Math.max(0, Math.min(1, speed / SPEED_FULL));
+            const cxn = x + w / 2;
+            const cyn = y + h / 2;
+
+            for (const b of live) {
+              const bx = b.x + b.w / 2;
+              const by = b.y + b.h / 2;
+              const vx = bx - cxn;
+              const vy = by - cyn;
+              const d = Math.hypot(vx, vy) || 1;
+              if (d < REPEL_RANGE) {
+                const push = REPEL_PX * (1 - d / REPEL_RANGE);
+                b.tgtX += (vx / d) * push;
+                b.tgtY += (vy / d) * push;
+              }
+            }
+            live.push({
+              id: seq++,
+              x,
+              y,
+              w,
+              h,
+              text,
+              color: nextColor(intensity),
+              born: now,
+              dirX: dx,
+              dirY: dy,
+              exitRot: (rnd() < 0.5 ? -1 : 1) * (4 + rnd() * 5),
+              seed: rnd() * 1000,
+              depth: 0,
+              special: dropCount % SPECIAL_EVERY === SPECIAL_EVERY - 1,
+              scram: text,
+              offX: 0,
+              offY: 0,
+              tgtX: 0,
+              tgtY: 0,
+            });
+            dropCount++;
+            lastDropT = now;
+            lastDropX = px;
+            lastDropY = py;
+            haveLast = true;
+          }
+        }
+      }
+      prevPx = px;
+      prevPy = py;
+
+      const n = live.length;
+      const chaseK = 1 - Math.pow(1 - REPEL_CHASE, dtFrames);
+      const decayK = 1 - Math.pow(1 - REPEL_DECAY, dtFrames);
+      for (let i = 0; i < n; i++) {
+        const b = live[i];
+
+        b.depth = n > 1 ? 1 - i / (n - 1) : 0;
+
+        b.offX += (b.tgtX - b.offX) * chaseK;
+        b.offY += (b.tgtY - b.offY) * chaseK;
+        b.tgtX *= 1 - decayK;
+        b.tgtY *= 1 - decayK;
+
+        const age = now - b.born;
+        if (age < SCRAMBLE_MS && b.text.length > 1) {
+          const prog = age / SCRAMBLE_MS;
+          const locked = Math.floor(prog * b.text.length);
+          let s = "";
+          for (let c = 0; c < b.text.length; c++) {
+            s +=
+              c < locked
+                ? b.text[c]
+                : SCRAMBLE_CHARS[(Math.floor(rnd() * SCRAMBLE_CHARS.length))];
+          }
+          b.scram = s;
+        } else {
+          b.scram = b.text;
+        }
+      }
+
+      setBadges(live.slice());
+    };
+
+    const io = new IntersectionObserver(
+      (es) => {
+        onScreen = es[0]?.isIntersecting ?? false;
+      },
+      { threshold: 0.15 },
+    );
+    io.observe(host);
+    const onVis = () => {
+      hidden = document.hidden;
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    const onMoveGuarded = (e: PointerEvent) => {
+      onMove(e);
+      if (e.pointerType === "touch") e.preventDefault();
+    };
+    host.addEventListener("pointermove", onMoveGuarded, { passive: false });
+    host.addEventListener("pointerdown", onDown, { passive: false });
+    host.addEventListener("pointerleave", onLeave);
+    host.addEventListener("pointerup", onLeave);
+    host.addEventListener("pointercancel", onLeave);
+    raf = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      io.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
+      host.removeEventListener("pointermove", onMoveGuarded);
+      host.removeEventListener("pointerdown", onDown);
+      host.removeEventListener("pointerleave", onLeave);
+      host.removeEventListener("pointerup", onLeave);
+      host.removeEventListener("pointercancel", onLeave);
+    };
+  }, [reduced]);
+
+  const STATIC: Array<{ text: string; color: string }> = [
+    { text: "kerning", color: COLORS[0] },
+    { text: "baseline", color: COLORS[2] },
+    { text: "bezier", color: COLORS[4] },
+    { text: "gamut", color: COLORS[6] },
+  ];
+
+  return (
+    <div
+      ref={hostRef}
+      data-canvas-card
+      aria-label="A white card that drops a trail of small coloured monospace badges of typography terms as you move the cursor over it. On touch, drag a finger across it to lay the trail."
+      className="relative mx-auto aspect-[1344/620] w-full cursor-crosshair select-none overflow-hidden rounded-[12px] border border-[var(--border-line)] bg-white"
+      style={{
+        fontFamily: "var(--font-neue-mono)",
+
+        ...(!fine && !reduced ? { touchAction: "none" as const } : null),
+      }}
+    >
+      {reduced ? (
+        <div className="absolute inset-0 flex flex-wrap content-center items-center justify-center gap-2 px-8">
+          {STATIC.map((b, i) => (
+            <span
+              key={i}
+              style={{
+                fontFamily: "var(--font-neue-mono)",
+                fontSize: FONT_PX,
+                lineHeight: 1,
+                padding: `${PAD_Y}px ${PAD_X}px`,
+                borderRadius: RADIUS,
+                background: b.color,
+                color: "#000",
+                textTransform: "uppercase",
+              }}
+            >
+              {b.text}
+            </span>
+          ))}
+        </div>
+      ) : (
+        (() => {
+          const clock = performanceNowSafe();
+          return (
+            <>
+              {badges.map((b) => {
+                const m = badgeMotion(b, clock);
+
+                const depthScale = 1 - b.depth * 0.06;
+                const depthDim = 1 - b.depth * 0.12;
+                return (
+                  <span
+                    key={b.id}
+                    style={{
+                      position: "absolute",
+                      left: b.x,
+                      top: b.y,
+                      fontFamily: "var(--font-neue-mono)",
+                      fontSize: FONT_PX,
+                      lineHeight: 1,
+                      whiteSpace: "nowrap",
+                      padding: `${PAD_Y}px ${PAD_X}px`,
+                      borderRadius: RADIUS,
+
+                      background: b.special ? "transparent" : b.color,
+                      boxShadow: b.special
+                        ? `inset 0 0 0 1px ${b.color}`
+                        : "0 1px 2px -1px rgba(20,20,30,0.35)",
+                      color: b.special ? b.color : "#000",
+                      textTransform: "uppercase",
+                      opacity: m.opacity * depthDim,
+
+                      transform: `translate(${m.dx + b.offX}px, ${m.dy + b.offY}px) scale(${m.scale * depthScale}) rotate(${m.rot}deg)`,
+                      transformOrigin: "center",
+                      pointerEvents: "none",
+                      willChange: "opacity, transform",
+                    }}
+                  >
+                    {b.scram}
+                  </span>
+                );
+              })}
+            </>
+          );
+        })()
+      )}
+    </div>
+  );
+}
+
+// performance.now() guarded for the (impossible here, but cheap) case it's unavailable.
+function performanceNowSafe(): number {
+  return typeof performance !== "undefined" ? performance.now() : 0;
+}
+
+// Derive a badge's per-frame motion from its age + seed. Combines four layers:
+//   #1 slam entrance   — enters offset back along cursor travel, springs to place (WEAK)
+//   #2 flick exit      — collapses thinner + rotates as it dies (different verb from entrance)
+//   #4 idle wobble     — sub-pixel positional wobble + scale breath while held
+// Returns the composited dx/dy (px), scale, rotation (deg) and opacity.
+function badgeMotion(
+  b: Badge,
+  clock: number,
+): { dx: number; dy: number; scale: number; rot: number; opacity: number } {
+  const age = clock - b.born;
+  let opacity = 1;
+  let scale = 1;
+  let rot = 0;
+  let dx = 0;
+  let dy = 0;
+
+  if (age < APPEAR_MS) {
+
+    const t = age / APPEAR_MS;
+    const spring = 1 - Math.pow(1 - t, 3);
+    opacity = Math.min(1, t * 1.4);
+
+    const base = 0.9 + 0.1 * spring;
+    scale = base + (SLAM_OVERSHOOT - 1) * Math.sin(Math.PI * t);
+    const back = (1 - spring) * SLAM_OFFSET;
+    dx = -b.dirX * back;
+    dy = -b.dirY * back;
+  } else if (age > APPEAR_MS + HOLD_MS) {
+
+    const t = Math.min(1, (age - APPEAR_MS - HOLD_MS) / FADE_MS);
+    const e = t * t;
+    opacity = 1 - t;
+    scale = 1 - 0.2 * e;
+    rot = b.exitRot * e;
+  }
+
+  if (age >= APPEAR_MS) {
+    const idle = opacity;
+    const p = clock * 0.004 + b.seed;
+    dx += Math.sin(p) * IDLE_WOBBLE * idle;
+    dy += Math.cos(p * 1.3 + 0.7) * IDLE_WOBBLE * idle;
+    scale += Math.sin(p * 0.9) * IDLE_BREATH * idle;
+  }
+
+  return { dx, dy, scale, rot, opacity };
+}
+```
+
+
+18. Build this: a scene of overlapping WORD-SHAPED embroidered patches stitched onto fabric, rendered live in WebGL. Each patch is cut to the OUTLINE of its word: the colored cloth is the word's silhouette DILATED outward (a fat patch hugging the glyphs), with dark satin lettering on top and a white MERROWED BORDER bead tracing the rim; the patches overlap and cast tight drop shadows on the cloth background. BUILD IT AS TWO TEXTURES + one shader. (1) A CPU 'scene' pass (2D canvas) builds an ART texture (RGB: fabric bg, then per word — fill the dilated silhouette with the cloth color, paint the white border band, paint the dark ink glyphs — composited front-to-back so a nearer patch hides the ink/border of patches behind it) and a FIELD texture (RGBA: R = blurred patch coverage / puff ramp, G = ink-letter mask, B = merrowed-border ring, A = per-pixel SATIN-STITCH RUN ANGLE). The dilate is a cheap morphological grow (stamp the glyph at ringed offsets). The satin angle is the KEY realism cue: compute it from the GRADIENT of a heavily-blurred glyph field so stitches run ALONG each stroke, and from the coverage-rim gradient on the border so stitches WRAP the rim (a real merrow). Upload the field as RAW rgba pixels (no premultiply) so the alpha-packed angle survives. (2) The fragment shader lights the pre-colored ART as thread: sample a fabric-WEAVE grayscale texture (tiled) as a bump-normal so each thread catches light, add the patch PUFF bevel from the coverage ramp (N·L lighting), render tight bright/dark SATIN BANDS perpendicular to the per-pixel run angle (this is what makes it read as sewn, not printed), an inner shadow at the patch edge, fine thread noise, and composite over the dark fabric with a tight contact drop shadow. Hover sweeps the light toward the cursor to relight the stitching. Framework-free WebGL1 (two textures, one quad) + a rAF loop; idle-defers the CPU scene build, pauses offscreen / when hidden, reveals on first paint (no flash), reduced-motion draws one static frame.
+
+You need ONE asset: a small seamless grayscale FABRIC-WEAVE texture (512x512), tiled as the thread bump-map. You can use the exact one this effect ships — download it here:
+  https://pub-58a0dfd4417141169bd84ab545cd7830.r2.dev/vault/embroidery-weave.webp
+Save it into your project (the engine expects it at /vault/embroidery-weave.webp) and load it into the shader with REPEAT wrap. To make your own instead: take any dense canvas/linen weave image, crop a clean interior square (no seams/edges), high-pass it to keep only the fine weave, center it around mid-gray, and make it seamlessly tileable (offset-and-cosine blend).
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### folder-embroidery/patches.ts
+
+```ts
+export type WordPatch = {
+  word: string;
+
+  cx: number;
+  cy: number;
+  scale: number;
+  rotDeg: number;
+  fill: [number, number, number];
+  ink: [number, number, number];
+  border: [number, number, number];
+  stitchDeg: number;
+};
+
+export const WORDS: WordPatch[] = [
+  {
+    word: "made",
+    cx: 0.44, cy: 0.29, scale: 0.32, rotDeg: -4,
+    fill: [0.42, 0.62, 0.92],
+    ink: [0.09, 0.09, 0.1],
+    border: [0.97, 0.97, 0.98],
+    stitchDeg: 70,
+  },
+  {
+    word: "with",
+    cx: 0.6, cy: 0.51, scale: 0.28, rotDeg: 3,
+    fill: [0.96, 0.82, 0.36],
+    ink: [0.09, 0.09, 0.1],
+    border: [0.98, 0.98, 0.96],
+    stitchDeg: 20,
+  },
+  {
+    word: "love",
+    cx: 0.48, cy: 0.72, scale: 0.34, rotDeg: -2,
+    fill: [0.9, 0.62, 0.82],
+    ink: [0.09, 0.09, 0.1],
+    border: [0.98, 0.97, 0.98],
+    stitchDeg: 100,
+  },
+];
+
+export const FABRIC: [number, number, number] = [0.16, 0.13, 0.2];
+
+```
+
+### folder-embroidery/scene.ts
+
+```ts
+import { WORDS, FABRIC, type WordPatch } from "./patches";
+
+export type Scene = {
+  art: HTMLCanvasElement;
+
+  field: { data: Uint8Array; width: number; height: number };
+};
+
+export async function makeScene(
+  w: number,
+  h: number,
+  fontFamily: string,
+): Promise<Scene> {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+  const mk = () => {
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    return c;
+  };
+
+  const borderPx = Math.max(3, H * 0.018);
+  const bevelPx = Math.max(1.5, H * 0.007);
+
+  const cover = mk();
+  const coverX = cover.getContext("2d")!;
+  const ink = mk();
+  const inkX = ink.getContext("2d")!;
+  const ring = mk();
+  const ringX = ring.getContext("2d")!;
+  const dir = mk();
+  const dirX = dir.getContext("2d")!;
+
+  const art = mk();
+  const artX = art.getContext("2d")!;
+
+  artX.fillStyle = rgb(FABRIC);
+  artX.fillRect(0, 0, W, H);
+
+  coverX.globalCompositeOperation = "lighten";
+  inkX.globalCompositeOperation = "lighten";
+  ringX.globalCompositeOperation = "lighten";
+
+  for (const wp of WORDS) {
+
+    const glyph = mk();
+    const gx = glyph.getContext("2d")!;
+    drawWord(gx, wp, W, H, fontFamily);
+
+    const sil = mk();
+    const sx = sil.getContext("2d")!;
+    dilate(sx, glyph, borderPx * 2.1);
+
+    const inner = mk();
+    const ix = inner.getContext("2d")!;
+    dilate(ix, glyph, borderPx * 1.05);
+    const bandC = mk();
+    const bx = bandC.getContext("2d")!;
+    bx.drawImage(sil, 0, 0);
+    bx.globalCompositeOperation = "destination-out";
+    bx.drawImage(inner, 0, 0);
+    bx.globalCompositeOperation = "source-over";
+
+    const layer = mk();
+    const lx = layer.getContext("2d")!;
+    lx.drawImage(sil, 0, 0);
+    lx.globalCompositeOperation = "source-in";
+    lx.fillStyle = rgb(wp.fill);
+    lx.fillRect(0, 0, W, H);
+    lx.globalCompositeOperation = "source-over";
+
+    paintMasked(lx, bandC, wp.border);
+
+    paintMasked(lx, glyph, wp.ink);
+
+    artX.drawImage(layer, 0, 0);
+
+    coverX.drawImage(sil, 0, 0);
+
+    punchThenAdd(inkX, sil, glyph);
+    punchThenAdd(ringX, sil, bandC);
+
+    dirX.drawImage(glyph, 0, 0);
+  }
+
+  const puff = mk();
+  const px = puff.getContext("2d")!;
+  px.filter = `blur(${bevelPx.toFixed(2)}px)`;
+  px.drawImage(cover, 0, 0);
+  px.filter = "none";
+
+  const gsrc = mk();
+  const gx2 = gsrc.getContext("2d")!;
+  gx2.filter = `blur(${Math.max(2, H * 0.02).toFixed(2)}px)`;
+  gx2.drawImage(dir, 0, 0);
+  gx2.filter = "none";
+  const rsrc = mk();
+  const rx2 = rsrc.getContext("2d")!;
+  rx2.filter = `blur(${Math.max(2, H * 0.016).toFixed(2)}px)`;
+  rx2.drawImage(cover, 0, 0);
+  rx2.filter = "none";
+
+  const cData = px.getImageData(0, 0, W, H).data;
+  const iData = inkX.getImageData(0, 0, W, H).data;
+  const rData = ringX.getImageData(0, 0, W, H).data;
+  const gData = gx2.getImageData(0, 0, W, H).data;
+  const rimData = rx2.getImageData(0, 0, W, H).data;
+  const p = new Uint8Array(W * H * 4);
+
+  const grad = (a: Uint8ClampedArray, x: number, y: number) => {
+    const at = (xx: number, yy: number) => {
+      xx = xx < 0 ? 0 : xx >= W ? W - 1 : xx;
+      yy = yy < 0 ? 0 : yy >= H ? H - 1 : yy;
+      return a[(yy * W + xx) * 4 + 3];
+    };
+    return [at(x + 1, y) - at(x - 1, y), at(x, y + 1) - at(x, y - 1)] as const;
+  };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const isBorder = rData[i + 3] > 40 && iData[i + 3] < 40;
+
+      const [dx, dy] = isBorder ? grad(rimData, x, y) : grad(gData, x, y);
+
+      let ang = Math.atan2(dy, dx) + Math.PI / 2;
+
+      ang = ((ang % Math.PI) + Math.PI) % Math.PI;
+      p[i] = cData[i + 3];
+      p[i + 1] = iData[i + 3];
+      p[i + 2] = rData[i + 3];
+      p[i + 3] = Math.round((ang / Math.PI) * 255);
+    }
+  }
+
+  return { art, field: { data: p, width: W, height: H } };
+}
+
+function rgb(c: [number, number, number]): string {
+  const to = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255);
+  return `rgb(${to(c[0])},${to(c[1])},${to(c[2])})`;
+}
+
+function paintMasked(
+  ctx: CanvasRenderingContext2D,
+  mask: HTMLCanvasElement,
+  color: [number, number, number],
+) {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const t = document.createElement("canvas");
+  t.width = W;
+  t.height = H;
+  const tx = t.getContext("2d")!;
+  tx.drawImage(mask, 0, 0);
+  tx.globalCompositeOperation = "source-in";
+  tx.fillStyle = rgb(color);
+  tx.fillRect(0, 0, W, H);
+  ctx.drawImage(t, 0, 0);
+}
+
+function dilate(
+  ctx: CanvasRenderingContext2D,
+  src: HTMLCanvasElement,
+  r: number,
+) {
+  const steps = 28;
+  for (let s = 1; s >= 0.5; s -= 0.5) {
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      ctx.drawImage(src, Math.cos(a) * r * s, Math.sin(a) * r * s);
+    }
+  }
+  ctx.drawImage(src, 0, 0);
+}
+
+function punchThenAdd(
+  acc: CanvasRenderingContext2D,
+  sil: HTMLCanvasElement,
+  add: HTMLCanvasElement,
+) {
+  acc.globalCompositeOperation = "destination-out";
+  acc.drawImage(sil, 0, 0);
+  acc.globalCompositeOperation = "lighten";
+  acc.drawImage(add, 0, 0);
+}
+
+function drawWord(
+  ctx: CanvasRenderingContext2D,
+  wp: WordPatch,
+  W: number,
+  H: number,
+  fontFamily: string,
+) {
+  const size = wp.scale * H;
+  ctx.save();
+  ctx.translate(wp.cx * W, wp.cy * H);
+  ctx.rotate((wp.rotDeg * Math.PI) / 180);
+  ctx.font = `800 ${size}px ${fontFamily}`;
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(wp.word, 0, 0);
+  ctx.restore();
+}
+
+```
+
+### folder-embroidery/shaders.ts
+
+```ts
+export const EMB_VERT = `
+attribute vec2 aPosition;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+export const EMB_FRAG = `
+
+precision highp float;
+
+varying vec2 vUV;
+
+uniform sampler2D uArt;
+uniform sampler2D uField;
+uniform sampler2D uWeave;
+uniform vec2  uTexel;
+uniform vec2  uLight;
+uniform float uLightZ;
+uniform vec2  uWash;
+uniform float uHover;
+uniform float uPress;
+uniform vec2  uPressPos;
+uniform float uAspect;
+uniform vec3  uFabric;
+uniform float uDepth;
+uniform float uWeaveScale;
+
+float hash(vec2 p){
+  p = mod(p, 137.0);
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float noise(vec2 p){
+
+  p = mod(p, 137.0);
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i+vec2(1.,0.)), c = hash(i+vec2(0.,1.)), d = hash(i+vec2(1.,1.));
+  vec2 u = f*f*(3.-2.*f);
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+
+float weaveAt(vec2 uv){ return texture2D(uWeave, fract(uv * vec2(uAspect,1.0) * uWeaveScale)).r; }
+
+void main() {
+  vec2 uv = vUV;
+  vec2 texel = uTexel;
+
+  vec4 fld = texture2D(uField, uv);
+  float cover = fld.r;
+  float inkM  = fld.g;
+  float ringM = fld.b;
+  float stitchAng = fld.a * 3.14159;
+
+  vec2 dp = uv * vec2(uAspect, 1.0);
+  float bw = weaveAt(uv + vec2(0.37, 0.11));
+  float blotch = noise(dp * 3.0) * 0.1 + noise(dp * 7.0) * 0.05;
+  vec3 fabric = uFabric * (0.72 + bw * 0.6 + (blotch - 0.075));
+  fabric += (noise(dp * 240.0) - 0.5) * 0.025;
+  vec3 col = fabric;
+
+  float pdist = distance(uv * vec2(uAspect, 1.0), uPressPos * vec2(uAspect, 1.0));
+  float pressLocal = uPress * (1.0 - smoothstep(0.0, 0.5, pdist));
+
+  float lift = 1.0 - pressLocal * 0.85;
+  vec2 shOff = vec2(6.0, -6.0) * texel * lift;
+  float shc = texture2D(uField, uv - shOff).r;
+  col = mix(col, col * mix(0.42, 0.62, pressLocal), smoothstep(0.2, 0.8, shc) * 0.8);
+
+  if (cover < 0.004) { gl_FragColor = vec4(col, 1.0); return; }
+
+  float w0 = weaveAt(uv);
+  float wL = weaveAt(uv - vec2(1.,0.)*texel), wR = weaveAt(uv + vec2(1.,0.)*texel);
+  float wD = weaveAt(uv - vec2(0.,1.)*texel), wU = weaveAt(uv + vec2(0.,1.)*texel);
+  vec2 wslope = vec2(wR - wL, wU - wD) * 22.0;
+  vec3 Nw = normalize(vec3(-wslope.x, -wslope.y, 1.0));
+
+  float cL = texture2D(uField, uv - vec2(1.,0.)*texel).r, cR = texture2D(uField, uv + vec2(1.,0.)*texel).r;
+  float cD = texture2D(uField, uv - vec2(0.,1.)*texel).r, cU = texture2D(uField, uv + vec2(0.,1.)*texel).r;
+  vec2 pslope = vec2(cR - cL, cU - cD) * uDepth * 16.0;
+  vec3 Np = vec3(-pslope.x, -pslope.y, 1.0);
+  float bevel = clamp(length(pslope), 0.0, 1.0);
+  vec3 N = normalize(Np + Nw * 2.0);
+
+  vec3 L = normalize(vec3(uLight, uLightZ));
+  float diff = dot(N, L);
+  float hi = pow(max(diff, 0.0), 1.25);
+  float sh = pow(max(-diff, 0.0), 1.1);
+
+  vec3 art = texture2D(uArt, uv).rgb;
+  vec3 c = art * (0.72 + w0 * 0.6);
+
+  float sc = cos(stitchAng), ss = sin(stitchAng);
+
+  float across = (dp.x * ss - dp.y * sc);
+  float rows = across * 260.0;
+
+  float TWO_PI = 6.2831853;
+  float satin = sin(mod(rows, TWO_PI));
+
+  float ridge = 0.5 + 0.5 * satin;
+  ridge = pow(ridge, 1.4);
+  float jit = noise(vec2(floor(rows), (dp.x*sc+dp.y*ss)*90.0)) * 0.25;
+  float satinShade = mix(0.82, 1.14, clamp(ridge + jit*ridge, 0.0, 1.0));
+
+  float clothFace = cover * (1.0 - inkM);
+  c *= mix(1.0, satinShade, clothFace * 0.9 + ringM * 0.6);
+
+  c *= 1.0 - inkM * 0.05;
+
+  c += hi * 0.46 * (0.5 + bevel * 0.5);
+  c -= sh * 0.36;
+
+  float edge = 1.0 - smoothstep(0.0, 0.32, cover);
+  c *= 1.0 - edge * 0.28 * cover;
+
+  c += (noise(dp * 380.0) - 0.5) * 0.045;
+
+  if (uHover > 0.001) {
+    float d = distance(dp, uWash * vec2(uAspect, 1.0));
+    float halo = 1.0 - smoothstep(0.0, 0.42, d);
+    float crown = smoothstep(0.72, 1.0, ridge);
+    float glint = halo * halo * (0.35 + crown * 0.9) * uHover;
+    c += glint * 0.16 * cover;
+  }
+
+  c *= 1.0 - pressLocal * 0.16 * cover;
+
+  c = clamp(c, 0.0, 1.0);
+
+  float aa = smoothstep(0.06, 0.2, cover);
+  gl_FragColor = vec4(mix(col, c, aa), 1.0);
+}
+`;
+
+```
+
+### folder-embroidery/engine.ts
+
+```ts
+import { EMB_VERT, EMB_FRAG } from "./shaders";
+import { makeScene } from "./scene";
+import { FABRIC } from "./patches";
+import { mediaUrl } from "../../lib/video-sources";
+
+const REST_ANGLE = (73 * Math.PI) / 180;
+const LIGHT_Z = 0.55;
+
+const WEAVE_URL = mediaUrl("/vault/embroidery-weave.webp");
+const WEAVE_SCALE = 15;
+
+export class Embroidery {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+  private prog: WebGLProgram | null = null;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+  private quad: WebGLBuffer | null = null;
+  private artTex: WebGLTexture | null = null;
+  private fieldTex: WebGLTexture | null = null;
+  private weave: WebGLTexture | null = null;
+  private texW = 1;
+  private texH = 1;
+
+  private raf = 0;
+  private running = false;
+  private awake = false;
+
+  private w = 0;
+  private h = 0;
+  private dpr = 1;
+  private fontFamily = "var(--font-neue-corp), sans-serif";
+
+  private builtW = 0;
+  private builtH = 0;
+  private builtFont = "";
+  private buildScheduled = 0;
+  private destroyed = false;
+  private painted = false;
+
+  private hover = 0;
+  private hoverTarget = 0;
+  private wx = 0.5;
+  private wy = 0.55;
+  private twx = 0.5;
+  private twy = 0.55;
+
+  private press = 0;
+  private pressVel = 0;
+  private pressKick = 0;
+  private px = 0.5;
+  private py = 0.5;
+
+  ok = false;
+
+  constructor(host: HTMLElement, fontFamily?: string) {
+    this.host = host;
+    if (fontFamily) this.fontFamily = fontFamily;
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      opacity: "0",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+    this.gl = gl;
+
+    try {
+      this.prog = this.build(EMB_VERT, EMB_FRAG);
+    } catch {
+      this.gl = null;
+      return;
+    }
+
+    const p = this.prog;
+    for (const u of [
+      "uArt", "uField", "uWeave", "uTexel", "uLight", "uLightZ", "uWash", "uHover",
+      "uPress", "uPressPos", "uAspect", "uFabric", "uDepth", "uWeaveScale",
+    ]) {
+      this.loc[u] = gl.getUniformLocation(p, u);
+    }
+    const aPos = gl.getAttribLocation(p, "aPosition");
+    const aUV = gl.getAttribLocation(p, "aUV");
+    const data = new Float32Array([
+      -1, -1, 0, 1,
+       1, -1, 1, 1,
+      -1,  1, 0, 0,
+       1,  1, 1, 0,
+    ]);
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.useProgram(p);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUV);
+    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+
+    gl.clearColor(FABRIC[0] * 0.8, FABRIC[1] * 0.8, FABRIC[2] * 0.8, 1);
+
+    this.resize();
+    this.weave = this.newPlaceholder([150, 150, 150, 255]);
+    this.loadWeave();
+    void this.buildSceneNow();
+
+    this.canvas.addEventListener("pointermove", this.onMove);
+    this.ok = true;
+  }
+
+  private newPlaceholder(rgba: number[]): WebGLTexture | null {
+    const gl = this.gl;
+    if (!gl) return null;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(rgba));
+    return t;
+  }
+
+  private loadWeave() {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const g = this.gl;
+      if (!g || !this.weave || this.destroyed) return;
+      g.bindTexture(g.TEXTURE_2D, this.weave);
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true);
+      g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, img);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.REPEAT);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.REPEAT);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+      if (!this.running) this.render();
+    };
+    img.src = WEAVE_URL;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "compile failed");
+      }
+      return sh;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog) || "link failed");
+    }
+    return prog;
+  }
+
+  setFont(family: string) {
+    if (family === this.fontFamily) return;
+    this.fontFamily = family;
+    this.scheduleBuild();
+  }
+
+  setPatch(_i: number) {
+    void _i;
+  }
+
+  setHover(v: number) {
+    this.hoverTarget = Math.max(0, Math.min(1, v));
+    this.wake();
+  }
+
+  pressTap(x = 0.5, y = 0.5) {
+    this.px = x;
+    this.py = 1 - y;
+    this.pressKick = 1;
+    this.wake();
+  }
+
+  private wake() {
+    if (this.awake && !this.running) this.start();
+    else if (!this.running) this.render();
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.canvas.getBoundingClientRect();
+    this.twx = (e.clientX - r.left) / r.width;
+    this.twy = 1 - (e.clientY - r.top) / r.height;
+    this.wake();
+  };
+
+  resize() {
+    const r = this.host.getBoundingClientRect();
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = r.width;
+    this.h = r.height;
+    const cw = Math.max(1, Math.round(this.w * this.dpr));
+    const ch = Math.max(1, Math.round(this.h * this.dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+      this.gl?.viewport(0, 0, cw, ch);
+      this.scheduleBuild();
+    }
+  }
+
+  private maskSize(): [number, number] {
+    const MAX_W = 1400;
+    const mw = Math.max(2, Math.min(MAX_W, Math.round(this.w * this.dpr)));
+    const mh = Math.max(2, Math.round(mw * (this.h / Math.max(1, this.w))));
+    return [mw, mh];
+  }
+
+  private scheduleBuild() {
+    if (!this.gl || this.destroyed) return;
+    const [mw, mh] = this.maskSize();
+    if (mw === this.builtW && mh === this.builtH && this.fontFamily === this.builtFont) return;
+    if (this.buildScheduled) return;
+    const run = () => {
+      this.buildScheduled = 0;
+      void this.buildSceneNow();
+    };
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    this.buildScheduled = ric ? ric(run, { timeout: 200 }) : window.setTimeout(run, 0);
+  }
+
+  private uploadCanvas(tex: WebGLTexture, canvas: HTMLCanvasElement) {
+    const gl = this.gl!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+  }
+
+  private uploadPixels(tex: WebGLTexture, px: { data: Uint8Array; width: number; height: number }) {
+    const gl = this.gl!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, px.width, px.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, px.data);
+  }
+
+  private async buildSceneNow() {
+    const gl = this.gl;
+    if (!gl || this.destroyed) return;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    const [mw, mh] = this.maskSize();
+    this.builtW = mw;
+    this.builtH = mh;
+    this.builtFont = this.fontFamily;
+    const scene = await makeScene(mw, mh, this.fontFamily);
+    if (!this.gl || this.destroyed) return;
+    if (!this.artTex) this.artTex = gl.createTexture();
+    if (!this.fieldTex) this.fieldTex = gl.createTexture();
+    this.uploadCanvas(this.artTex, scene.art);
+    this.uploadPixels(this.fieldTex, scene.field);
+    this.texW = scene.field.width;
+    this.texH = scene.field.height;
+    if (!this.running) this.render();
+  }
+
+  start() {
+    if (!this.ok) return;
+    this.awake = true;
+    if (this.running) return;
+    this.running = true;
+    this.resize();
+    const loop = () => {
+      if (!this.running) return;
+      this.frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  stop() {
+    this.awake = false;
+    this.pause();
+  }
+
+  private pause() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private frame() {
+    const k = 0.12;
+    this.hover += (this.hoverTarget - this.hover) * k;
+    this.wx += (this.twx - this.wx) * k;
+    this.wy += (this.twy - this.wy) * k;
+
+    this.pressKick *= 0.8;
+    if (this.pressKick < 0.002) this.pressKick = 0;
+    this.pressVel += (this.pressKick - this.press) * 0.28;
+    this.pressVel *= 0.6;
+    this.press += this.pressVel;
+    this.render();
+  }
+
+  renderStill() {
+    this.resize();
+    void this.buildSceneNow();
+    this.render();
+  }
+
+  private render() {
+    const gl = this.gl;
+    if (!gl || !this.prog || !this.artTex || !this.fieldTex) return;
+
+    const ang = REST_ANGLE + (this.wx - 0.5) * 1.4 * this.hover;
+    gl.useProgram(this.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.artTex);
+    gl.uniform1i(this.loc.uArt, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.fieldTex);
+    gl.uniform1i(this.loc.uField, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.weave);
+    gl.uniform1i(this.loc.uWeave, 2);
+    gl.uniform1f(this.loc.uWeaveScale, WEAVE_SCALE);
+    gl.uniform2f(this.loc.uTexel, 1 / this.texW, 1 / this.texH);
+    gl.uniform2f(this.loc.uLight, Math.cos(ang), Math.sin(ang));
+    gl.uniform1f(this.loc.uLightZ, LIGHT_Z);
+    gl.uniform2f(this.loc.uWash, this.wx, this.wy);
+    gl.uniform1f(this.loc.uHover, this.hover);
+    gl.uniform1f(this.loc.uPress, Math.max(0, Math.min(1, this.press)));
+    gl.uniform2f(this.loc.uPressPos, this.px, this.py);
+    gl.uniform1f(this.loc.uAspect, this.w / Math.max(1, this.h));
+    gl.uniform3f(this.loc.uFabric, FABRIC[0], FABRIC[1], FABRIC[2]);
+    gl.uniform1f(this.loc.uDepth, 1.15);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    if (!this.painted) {
+      this.painted = true;
+      this.canvas.style.opacity = "1";
+    }
+
+    if (
+      Math.abs(this.hover - this.hoverTarget) < 0.002 &&
+      this.hoverTarget < 0.002 &&
+      Math.abs(this.wx - this.twx) < 0.001 &&
+      Math.abs(this.wy - this.twy) < 0.001 &&
+      this.pressKick === 0 &&
+      Math.abs(this.press) < 0.002 &&
+      Math.abs(this.pressVel) < 0.002
+    ) {
+      this.pause();
+    }
+  }
+
+  destroy() {
+    this.destroyed = true;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    this.stop();
+    this.canvas.removeEventListener("pointermove", this.onMove);
+    const gl = this.gl;
+    if (gl) {
+      if (this.artTex) gl.deleteTexture(this.artTex);
+      if (this.fieldTex) gl.deleteTexture(this.fieldTex);
+      if (this.weave) gl.deleteTexture(this.weave);
+      if (this.quad) gl.deleteBuffer(this.quad);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+   19. Build this: a word rendered as flowing LIQUID CHROME on black — polished, glassy metal with a bright/dark horizon reflection, sparks, and a reflection that streams as the cursor moves. BUILD IT WITH A HEIGHT-FIELD + ENV-MAP (matcap) SHADER, no 3D scene. (1) Rasterize the word to a coverage mask on a 2D canvas, then build a ROUND liquid HEIGHT FIELD by blurring that mask WIDE (a big soft blur — the wide blur is what makes the metal read as fat liquid bulges, not a thin bevel). Pack R = crisp coverage, G = blurred height, upload as a texture. (2) In the fragment shader, take the surface NORMAL as the gradient of the height field (N = normalize(vec3(-dh/dx, -dh/dy, 1))). Reflect the view vector (0,0,1) off N and TILT the reflected vector by the cursor position; use the reflected ray's vertical component to index a 5-stop CHROME RAMP (sky / bright-horizon / dark-horizon / ground / base) — that sharp bright-to-dark horizon band IS the chrome reflection. Sharpen the horizon so the reflection line reads crisp. Add a FRESNEL rim (edges of the bulge catch a bright reflection), a horizontal sky-streak, star SPARKS at the brightest high-curvature ridges (twinkling on a sine so they pop in/out), fine grain, and composite over black with a soft liquid antialiased edge. The cursor tilt makes the whole reflection flow across the letters — the signature interaction. Ship a few ramp presets (silver-teal, gold, iridescent), each just 5 colors + a spark tint, so it recolors trivially. Framework-free WebGL1 (one shader, one quad) + a rAF loop; idle-defers the CPU height build, pauses offscreen / when hidden, reveals on first paint, reduced-motion draws one static frame.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### chrome/params.ts
+
+```ts
+export type ChromeRamp = {
+  name: string;
+
+  stops: [number, number, number][];
+  spark: [number, number, number];
+};
+
+export const RAMPS: ChromeRamp[] = [
+  {
+
+    name: "Silver Teal",
+    stops: [
+      [0.62, 0.78, 0.85],
+      [0.98, 1.0, 1.0],
+      [0.03, 0.06, 0.08],
+      [0.1, 0.34, 0.4],
+      [0.5, 0.72, 0.78],
+    ],
+    spark: [0.85, 0.97, 1.0],
+  },
+  {
+    name: "Gold",
+    stops: [
+      [0.95, 0.82, 0.4],
+      [1.0, 0.98, 0.85],
+      [0.14, 0.08, 0.0],
+      [0.6, 0.4, 0.05],
+      [0.9, 0.72, 0.3],
+    ],
+    spark: [1.0, 0.95, 0.7],
+  },
+  {
+
+    name: "Iridescent",
+    stops: [
+      [0.55, 0.5, 0.95],
+      [0.95, 0.85, 1.0],
+      [0.04, 0.02, 0.1],
+      [0.9, 0.3, 0.6],
+      [0.3, 0.8, 0.85],
+    ],
+    spark: [1.0, 0.9, 1.0],
+  },
+  {
+
+    name: "Rose Gold",
+    stops: [
+      [0.95, 0.72, 0.68],
+      [1.0, 0.92, 0.9],
+      [0.12, 0.04, 0.05],
+      [0.72, 0.34, 0.32],
+      [0.9, 0.6, 0.56],
+    ],
+    spark: [1.0, 0.9, 0.88],
+  },
+  {
+
+    name: "Gunmetal",
+    stops: [
+      [0.52, 0.56, 0.62],
+      [0.9, 0.93, 0.98],
+      [0.02, 0.03, 0.04],
+      [0.16, 0.2, 0.26],
+      [0.42, 0.47, 0.53],
+    ],
+    spark: [0.85, 0.9, 1.0],
+  },
+  {
+
+    name: "Toxic",
+    stops: [
+      [0.55, 0.9, 0.3],
+      [0.95, 1.0, 0.85],
+      [0.02, 0.08, 0.02],
+      [0.2, 0.5, 0.08],
+      [0.45, 0.82, 0.35],
+    ],
+    spark: [0.9, 1.0, 0.75],
+  },
+  {
+
+    name: "Molten",
+    stops: [
+      [1.0, 0.55, 0.2],
+      [1.0, 0.92, 0.6],
+      [0.12, 0.01, 0.0],
+      [0.55, 0.1, 0.04],
+      [0.9, 0.42, 0.16],
+    ],
+    spark: [1.0, 0.85, 0.5],
+  },
+  {
+
+    name: "Sapphire",
+    stops: [
+      [0.35, 0.55, 0.98],
+      [0.85, 0.95, 1.0],
+      [0.01, 0.02, 0.08],
+      [0.08, 0.16, 0.55],
+      [0.28, 0.45, 0.9],
+    ],
+    spark: [0.82, 0.92, 1.0],
+  },
+];
+
+export const DEFAULT_RAMP = 0;
+export const WORD = "metal";
+
+export const FONT_CSS = "var(--font-neue-montreal)";
+export const FONT_WEIGHT = 600;
+
+```
+
+### chrome/text-mask.ts
+
+```ts
+import { FONT_WEIGHT as WEIGHT } from "./params";
+
+export async function makeChromeField(
+  word: string,
+  blurPx: number,
+  w: number,
+  h: number,
+  fontFamily: string,
+): Promise<HTMLCanvasElement> {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+
+  const crisp = document.createElement("canvas");
+  crisp.width = W;
+  crisp.height = H;
+  const cx = crisp.getContext("2d")!;
+
+  const text = (word || "").trim();
+  if (text) {
+
+    let size = H * 0.56;
+    cx.font = `${WEIGHT} ${size}px ${fontFamily}`;
+    const maxW = W * 0.82;
+    const measured = cx.measureText(text).width;
+    if (measured > maxW) {
+      size *= maxW / measured;
+      cx.font = `${WEIGHT} ${size}px ${fontFamily}`;
+    }
+    cx.fillStyle = "#fff";
+    cx.textAlign = "center";
+    cx.textBaseline = "middle";
+
+    const ls = size * -0.05;
+    const chars = [...text];
+    const widths = chars.map((c) => cx.measureText(c).width);
+    const total = widths.reduce((a, b) => a + b, 0) + ls * (chars.length - 1);
+    let x = W / 2 - total / 2;
+    cx.textAlign = "left";
+    for (let i = 0; i < chars.length; i++) {
+      cx.fillText(chars[i], x, H * 0.5);
+      x += widths[i] + ls;
+    }
+  }
+
+  const wide = blurTo(crisp, W, H, Math.max(0.5, blurPx * 1.15));
+
+  const tight = blurTo(crisp, W, H, Math.max(0.5, blurPx * 0.4));
+
+  const cData = cx.getImageData(0, 0, W, H).data;
+  const wData = wide.getContext("2d")!.getImageData(0, 0, W, H).data;
+  const tData = tight.getContext("2d")!.getImageData(0, 0, W, H).data;
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ox = out.getContext("2d")!;
+  const packed = ox.createImageData(W, H);
+  const p = packed.data;
+  for (let i = 0; i < p.length; i += 4) {
+    p[i] = cData[i + 3];
+    p[i + 1] = wData[i + 3];
+    p[i + 2] = tData[i + 3];
+    p[i + 3] = 255;
+  }
+  ox.putImageData(packed, 0, 0);
+  return out;
+}
+
+function blurTo(
+  src: HTMLCanvasElement,
+  W: number,
+  H: number,
+  px: number,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const x = c.getContext("2d")!;
+  x.filter = `blur(${px.toFixed(2)}px)`;
+  x.drawImage(src, 0, 0);
+  x.filter = "none";
+  return c;
+}
+
+```
+
+### chrome/shaders.ts
+
+```ts
+export const CHROME_VERT = `
+attribute vec2 aPosition;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main() {
+  vUV = aUV;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+export const CHROME_FRAG = `
+precision highp float;
+
+varying vec2 vUV;
+
+uniform sampler2D uField;
+uniform vec2  uTexel;
+uniform vec2  uTilt;
+uniform float uAspect;
+uniform float uTime;
+
+uniform vec3  uS0;
+uniform vec3  uS1;
+uniform vec3  uS2;
+uniform vec3  uS3;
+uniform vec3  uS4;
+uniform vec3  uSpark;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i+vec2(1.,0.)), c = hash(i+vec2(0.,1.)), d = hash(i+vec2(1.,1.));
+  vec2 u = f*f*(3.-2.*f);
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+
+float heightAt(vec2 uv){
+  vec4 f = texture2D(uField, uv);
+  return f.g + f.b * 0.18;
+}
+
+vec3 ramp(float t){
+  t = clamp(t, 0.0, 1.0);
+  float x = t * 4.0;
+  vec3 col = uS0;
+  col = mix(col, uS1, smoothstep(0.0, 1.0, clamp(x - 0.0, 0.0, 1.0)));
+  col = mix(col, uS2, smoothstep(0.0, 1.0, clamp(x - 1.0, 0.0, 1.0)));
+  col = mix(col, uS3, smoothstep(0.0, 1.0, clamp(x - 2.0, 0.0, 1.0)));
+  col = mix(col, uS4, smoothstep(0.0, 1.0, clamp(x - 3.0, 0.0, 1.0)));
+  return col;
+}
+
+float envT(vec2 env){
+  float t = clamp(0.5 - env.y * 0.9, 0.0, 1.0);
+  t = t + (t - 0.5) * 0.35 * (1.0 - abs(env.x));
+  return clamp(t, 0.0, 1.0);
+}
+
+vec3 toneMap(vec3 c){
+  return c / (c + vec3(0.85)) * 1.85;
+}
+
+float fbm(vec2 p){
+  return noise(p) * 0.6 + noise(p * 2.1 + 4.0) * 0.3 + noise(p * 4.3 + 9.0) * 0.1;
+}
+
+vec3 background(vec2 uv){
+  vec2 p = uv * vec2(uAspect, 1.0);
+  float t = uTime * 0.08;
+
+  float f1 = fbm(p * 1.4 + vec2(t, -t * 0.7));
+  float f2 = fbm(p * 1.9 + vec2(-t * 0.8, t) + f1);
+
+  vec3 poolA = uS0   * 0.16;
+  vec3 poolB = uS3   * 0.5;
+  vec3 poolC = uSpark* 0.1;
+  vec3 col = uS4 * 0.04 + vec3(0.015);
+  col = mix(col, poolA, smoothstep(0.35, 0.75, f1));
+  col = mix(col, poolB, smoothstep(0.4, 0.85, f2));
+  col = mix(col, poolC, smoothstep(0.6, 0.95, f1 * f2 * 1.6));
+
+  vec2 c = (uv - vec2(0.5, 0.44)) * vec2(uAspect, 1.0);
+  float radial = 1.0 - smoothstep(0.0, 0.95, length(c));
+  col += (uS0 * 0.08 + vec3(0.02)) * radial;
+
+  vec3 studioTint = mix(uS0, uS1, 0.4);
+
+  float horizon = 1.0 - smoothstep(0.0, 0.16, abs(uv.y - 0.30));
+  col += studioTint * 0.09 * horizon * 0.6;
+
+  float ray = uv.x * uAspect * 0.5 + uv.y - fract(uTime * 0.03) * 2.0;
+  col += studioTint * 0.07 * (1.0 - smoothstep(0.0, 0.22, abs(ray - 0.4))) * 0.5 * radial;
+
+  float temp = clamp((uv.x - uv.y) * 0.5 + 0.5, 0.0, 1.0);
+  col += mix(uS0 * 0.03, uSpark * 0.03, temp) * radial;
+
+  col *= mix(0.45, 1.0, radial);
+
+  col += (noise(p * 320.0) - 0.5) * 0.012;
+  return col;
+}
+
+void main() {
+  vec2 uv = vUV;
+
+  vec2 wuv = uv - uTilt * 0.012;
+
+  float crisp = texture2D(uField, wuv).r;
+  float height = heightAt(wuv);
+
+  vec3 bg = background(uv);
+
+  float shadow = 0.0;
+  shadow += texture2D(uField, wuv - vec2(0.004, 0.03)).g * 0.5;
+  shadow += texture2D(uField, wuv - vec2(0.006, 0.055)).g * 0.3;
+  shadow += texture2D(uField, wuv - vec2(0.008, 0.085)).g * 0.2;
+  bg *= 1.0 - clamp(shadow, 0.0, 1.0) * 0.6;
+
+  if (height < 0.01) {
+    gl_FragColor = vec4(bg, 1.0);
+    return;
+  }
+
+  float g1 = 1.6, g2 = 3.4;
+
+  float aL = heightAt(wuv - vec2(g1,0.)*uTexel), aR = heightAt(wuv + vec2(g1,0.)*uTexel);
+  float aD = heightAt(wuv - vec2(0.,g1)*uTexel), aU = heightAt(wuv + vec2(0.,g1)*uTexel);
+
+  float bL = heightAt(wuv - vec2(g2,0.)*uTexel), bR = heightAt(wuv + vec2(g2,0.)*uTexel);
+  float bD = heightAt(wuv - vec2(0.,g2)*uTexel), bU = heightAt(wuv + vec2(0.,g2)*uTexel);
+  vec2 slope = (vec2(aR - aL, aU - aD) * 0.6 + vec2(bR - bL, bU - bD) * 0.4) * 22.0;
+  vec3 N = normalize(vec3(-slope.x, -slope.y, 1.0));
+
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  vec3 R = reflect(-V, N);
+
+  float tt = uTime;
+  vec2 fp = uv * vec2(uAspect, 1.0) * 1.6;
+  vec2 flow = vec2(
+    fbm(fp + vec2(tt * 0.25, height * 3.0)) - 0.5,
+    fbm(fp + vec2(-tt * 0.2 + 5.0, tt * 0.15)) - 0.5
+  ) * 0.55;
+  flow += vec2(sin(tt * 0.31) * 0.1, cos(tt * 0.24) * 0.08);
+  vec2 env = R.xy + uTilt + flow;
+
+  vec3 sharpRefl = ramp(envT(env));
+  vec3 blurRefl = vec3(0.0);
+  const int NB = 6;
+  for (int i = 0; i < NB; i++) {
+    float a = float(i) / float(NB) * 6.2831853;
+    vec2 j = vec2(cos(a), sin(a)) * 0.14;
+    blurRefl += ramp(envT(env + j));
+  }
+  blurRefl /= float(NB);
+
+  float rough = 0.4 + 0.25 * clamp(length(slope), 0.0, 1.0);
+  vec3 metal = mix(sharpRefl, blurRefl, rough);
+
+  float tMid = envT(env);
+  vec3 envColor = background(clamp(uv + env * 0.35, 0.0, 1.0));
+  float envMix = (1.0 - abs(tMid - 0.5) * 2.0) * 0.3;
+  metal = mix(metal, metal + envColor * 2.0, envMix);
+
+  float streak = smoothstep(0.35, 0.5, abs(env.x + sin(env.y*3.0)*0.1));
+  metal += (1.0 - streak) * 0.1 * uS1;
+
+  float fres = pow(1.0 - N.z, 2.2);
+  metal += fres * uS1 * 0.45;
+
+  vec3 keyDir = normalize(vec3(cos(tt * 0.22) * 0.7, 0.5 + sin(tt * 0.18) * 0.3, 0.9));
+  vec3 Hh = normalize(keyDir + V);
+
+  vec3 Na = normalize(vec3(N.x * 0.6, N.y, N.z));
+  float ndh = max(dot(Na, Hh), 0.0);
+  float spec = pow(ndh, 120.0);
+  metal += spec * uSpark * 1.3;
+
+  metal += pow(max(dot(N, Hh), 0.0), 16.0) * uS1 * 0.25;
+
+  float sweepPos = fract(uTime * 0.16);
+  float diag = (uv.x * uAspect + (1.0 - uv.y)) * 0.42;
+  float band = 1.0 - smoothstep(0.0, 0.06, abs(diag - sweepPos * 1.4 + 0.2));
+  float facing = clamp(N.x * -0.6 + N.y * 0.6 + 0.4, 0.0, 1.0);
+  metal += band * facing * uSpark * 0.5;
+
+  float curv = length(slope);
+  float bright = smoothstep(0.62, 1.0, tMid) * smoothstep(0.4, 1.2, curv);
+  float tw = 0.5 + 0.5 * sin(uTime * 2.0 + height * 40.0 + uv.x * 30.0);
+  metal += bright * tw * tw * uSpark * 1.1;
+
+  float ao = smoothstep(0.15, 0.7, texture2D(uField, wuv).g);
+  metal *= 0.7 + ao * 0.3;
+
+  float face = smoothstep(0.3, 0.55, crisp);
+  metal *= 0.86 + face * 0.14;
+
+  metal += (noise(uv * vec2(uAspect,1.0) * 520.0) - 0.5) * 0.035;
+
+  vec3 c = toneMap(metal);
+
+  c += (hash(uv * 1024.0 + fract(uTime)) - 0.5) * (1.5 / 255.0);
+  c = clamp(c, 0.0, 1.0);
+
+  float aa = smoothstep(0.16, 0.4, height);
+  gl_FragColor = vec4(mix(bg, c, aa), 1.0);
+}
+`;
+
+```
+
+### chrome/engine.ts
+
+```ts
+import { CHROME_VERT, CHROME_FRAG } from "./shaders";
+import { makeChromeField } from "./text-mask";
+import { RAMPS, DEFAULT_RAMP, WORD, FONT_CSS, type ChromeRamp } from "./params";
+
+function rampToFloats(r: ChromeRamp): number[] {
+  const out: number[] = [];
+  for (const s of r.stops) out.push(s[0], s[1], s[2]);
+  out.push(r.spark[0], r.spark[1], r.spark[2]);
+  return out;
+}
+
+export class Chrome {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+  private prog: WebGLProgram | null = null;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+  private quad: WebGLBuffer | null = null;
+  private tex: WebGLTexture | null = null;
+  private texW = 1;
+  private texH = 1;
+
+  private raf = 0;
+  private running = false;
+  private awake = false;
+
+  private w = 0;
+  private h = 0;
+  private dpr = 1;
+  private fontFamily = `${FONT_CSS}, sans-serif`;
+  private word = WORD;
+  private rampIdx = DEFAULT_RAMP;
+
+  private curRamp: number[] = rampToFloats(RAMPS[DEFAULT_RAMP]);
+  private targetRamp: number[] = rampToFloats(RAMPS[DEFAULT_RAMP]);
+
+  private builtW = 0;
+  private builtH = 0;
+  private builtFont = "";
+  private builtWord = "";
+  private buildScheduled = 0;
+  private destroyed = false;
+  private painted = false;
+  private t0 = performance.now();
+
+  private tx = 0;
+  private ty = 0;
+  private ttx = 0;
+  private tty = 0;
+
+  ok = false;
+
+  constructor(host: HTMLElement, fontFamily?: string) {
+    this.host = host;
+    if (fontFamily) this.fontFamily = fontFamily;
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      opacity: "0",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+    this.gl = gl;
+
+    try {
+      this.prog = this.build(CHROME_VERT, CHROME_FRAG);
+    } catch {
+      this.gl = null;
+      return;
+    }
+
+    const p = this.prog;
+    for (const u of [
+      "uField", "uTexel", "uTilt", "uAspect", "uTime",
+      "uS0", "uS1", "uS2", "uS3", "uS4", "uSpark",
+    ]) {
+      this.loc[u] = gl.getUniformLocation(p, u);
+    }
+    const aPos = gl.getAttribLocation(p, "aPosition");
+    const aUV = gl.getAttribLocation(p, "aUV");
+    const data = new Float32Array([
+      -1, -1, 0, 1,
+       1, -1, 1, 1,
+      -1,  1, 0, 0,
+       1,  1, 1, 0,
+    ]);
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.useProgram(p);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aUV);
+    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+
+    gl.clearColor(0.045, 0.048, 0.055, 1);
+
+    this.resize();
+    void this.buildFieldNow();
+
+    this.canvas.addEventListener("pointermove", this.onMove);
+    this.canvas.addEventListener("pointerleave", this.onLeave);
+    this.ok = true;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "compile failed");
+      }
+      return sh;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog) || "link failed");
+    }
+    return prog;
+  }
+
+  setFont(family: string) {
+    if (family === this.fontFamily) return;
+    this.fontFamily = family;
+    this.scheduleBuild();
+  }
+
+  setWord(word: string) {
+    if (word === this.word) return;
+    this.word = word;
+    this.scheduleBuild();
+  }
+
+  setRamp(i: number) {
+    this.rampIdx = ((i % RAMPS.length) + RAMPS.length) % RAMPS.length;
+
+    this.targetRamp = rampToFloats(RAMPS[this.rampIdx]);
+    this.wake();
+  }
+
+  private wake() {
+    if (this.awake && !this.running) this.start();
+    else if (!this.running) this.render();
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.canvas.getBoundingClientRect();
+
+    this.ttx = ((e.clientX - r.left) / r.width - 0.5) * 0.9;
+    this.tty = ((e.clientY - r.top) / r.height - 0.5) * 0.9;
+    this.wake();
+  };
+
+  private onLeave = () => {
+    this.ttx = 0;
+    this.tty = 0;
+    this.wake();
+  };
+
+  resize() {
+    const r = this.host.getBoundingClientRect();
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = r.width;
+    this.h = r.height;
+    const cw = Math.max(1, Math.round(this.w * this.dpr));
+    const ch = Math.max(1, Math.round(this.h * this.dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+      this.gl?.viewport(0, 0, cw, ch);
+      this.scheduleBuild();
+    }
+  }
+
+  private maskSize(): [number, number] {
+    const MAX_W = 1400;
+    const mw = Math.max(2, Math.min(MAX_W, Math.round(this.w * this.dpr)));
+    const mh = Math.max(2, Math.round(mw * (this.h / Math.max(1, this.w))));
+    return [mw, mh];
+  }
+
+  private scheduleBuild() {
+    if (!this.gl || this.destroyed) return;
+    const [mw, mh] = this.maskSize();
+    if (
+      mw === this.builtW && mh === this.builtH &&
+      this.fontFamily === this.builtFont && this.word === this.builtWord
+    ) {
+      return;
+    }
+    if (this.buildScheduled) return;
+    const run = () => {
+      this.buildScheduled = 0;
+      void this.buildFieldNow();
+    };
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    this.buildScheduled = ric ? ric(run, { timeout: 200 }) : window.setTimeout(run, 0);
+  }
+
+  private async buildFieldNow() {
+    const gl = this.gl;
+    if (!gl || this.destroyed) return;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    const [mw, mh] = this.maskSize();
+    this.builtW = mw;
+    this.builtH = mh;
+    this.builtFont = this.fontFamily;
+    this.builtWord = this.word;
+    const blur = Math.max(1.5, mh * 0.012);
+    const art = await makeChromeField(this.word, blur, mw, mh, this.fontFamily);
+    if (!this.gl || this.destroyed) return;
+    if (!this.tex) this.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    this.texW = art.width;
+    this.texH = art.height;
+    if (!this.running) this.render();
+  }
+
+  start() {
+    if (!this.ok) return;
+    this.awake = true;
+    if (this.running) return;
+    this.running = true;
+    this.resize();
+    const loop = () => {
+      if (!this.running) return;
+      this.frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  stop() {
+    this.awake = false;
+    this.pause();
+  }
+
+  private pause() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private frame() {
+    const k = 0.1;
+    this.tx += (this.ttx - this.tx) * k;
+    this.ty += (this.tty - this.ty) * k;
+
+    const ck = 0.08;
+    for (let i = 0; i < this.curRamp.length; i++) {
+      this.curRamp[i] += (this.targetRamp[i] - this.curRamp[i]) * ck;
+    }
+    this.render();
+  }
+
+  private rampSettling(): boolean {
+    for (let i = 0; i < this.curRamp.length; i++) {
+      if (Math.abs(this.curRamp[i] - this.targetRamp[i]) > 0.002) return true;
+    }
+    return false;
+  }
+
+  renderStill() {
+    this.resize();
+    void this.buildFieldNow();
+    this.render();
+  }
+
+  private render() {
+    const gl = this.gl;
+    if (!gl || !this.prog || !this.tex) return;
+
+    gl.useProgram(this.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.uniform1i(this.loc.uField, 0);
+    gl.uniform2f(this.loc.uTexel, 1 / this.texW, 1 / this.texH);
+    gl.uniform2f(this.loc.uTilt, this.tx, this.ty);
+    gl.uniform1f(this.loc.uAspect, this.w / Math.max(1, this.h));
+    gl.uniform1f(this.loc.uTime, (performance.now() - this.t0) / 1000);
+
+    const r = this.curRamp;
+    gl.uniform3f(this.loc.uS0, r[0], r[1], r[2]);
+    gl.uniform3f(this.loc.uS1, r[3], r[4], r[5]);
+    gl.uniform3f(this.loc.uS2, r[6], r[7], r[8]);
+    gl.uniform3f(this.loc.uS3, r[9], r[10], r[11]);
+    gl.uniform3f(this.loc.uS4, r[12], r[13], r[14]);
+    gl.uniform3f(this.loc.uSpark, r[15], r[16], r[17]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    if (!this.painted) {
+      this.painted = true;
+      this.canvas.style.opacity = "1";
+    }
+
+    if (
+      !this.awake &&
+      !this.rampSettling() &&
+      Math.abs(this.tx - this.ttx) < 0.001 &&
+      Math.abs(this.ty - this.tty) < 0.001
+    ) {
+      this.pause();
+    }
+  }
+
+  destroy() {
+    this.destroyed = true;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    this.stop();
+    this.canvas.removeEventListener("pointermove", this.onMove);
+    this.canvas.removeEventListener("pointerleave", this.onLeave);
+    const gl = this.gl;
+    if (gl) {
+      if (this.tex) gl.deleteTexture(this.tex);
+      if (this.quad) gl.deleteBuffer(this.quad);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+
+
+20. Build this: a dense grid of CIRCLES that touch, with a symbol cut OUT of them as negative space — nothing is ever drawn on top, the glyph is the HOLE and the flat background shows through the mesh. THE GRID: ~42 circles across, on a square lattice at EXACTLY the pitch, so neighbours meet. The little concave diamonds between every four touching circles are the texture, and they only exist when the circles actually meet — pull them apart even slightly and the field stops being one connected surface and turns into polka dots on a background. The grid is INSET with a clear margin on all four sides (pitch derived from the width INCLUDING a 0.75-pitch margin per side, then only WHOLE rows fitted into the remaining height and centred) — a grid that bleeds off the edge produces half-circles at the frame, which read as a rendering bug rather than a crop. TWO STATES, CONTINUOUSLY BETWEEN: a cell is not simply present or absent. It opens from a solid disc into a RING by boring a hole outward from its centre, and every intermediate radius is valid, so a cell animates its own state change instead of snapping. Rings are punched as reverse-wound inner circles into ONE accumulating Path2D under the even-odd rule and the whole field is filled in a SINGLE submission — not a stroked pass per cell. That is the difference between a smooth card and a stuttering one: a few thousand per-cell draw calls is what makes this lag, one composite path is what fixes it. THE SYMBOL: rasterize the glyph on a 2D canvas AT GRID RESOLUTION (one sample per cell, not big-then-downsampled) and remove every circle the glyph covers. Size it to about 58% of the grid height with a margin of intact lattice all round, so it reads as a hole punched in a surface rather than a frame. Only bold, closed, high-contrast forms survive at this cell count — thin strokes and fine joins (arrows, punctuation, most lowercase) dissolve into noise. SIX SCENES ON TWO INDEPENDENT PATTERN AXES: one letter (A) and five full-bleed patterns (rings, columns, checker, boxes, bars). The scene CARVES; a second pattern (drift / grain / swell / streak) simultaneously TEXTURES whichever cells the carve leaves standing, so two patterns are legible at once. The pair is always chosen to differ in AXIS from the cut — a diagonal texture under a square cut, rings under a brick cut — because two patterns on the same axis just read as one blurry pattern. The single letter is the only contained figure in the cycle, which is what gives it weight: surrounded by five moments where the whole surface reorganises, one centred shape lands as an event rather than another slide. THE TRANSITIONS: each scene arrives with both its own TIMING and its own MOTION. Timing is a per-cell delay — a diagonal wipe front, a ripple expanding from the centre, a per-cell random scatter, a collapse where the centre goes last out and first in, and a left-to-right column shutter. Motion is the second axis and is what stops every transition looking like the same fade reordered: as a cell changes it also travels — leaning along the wipe direction, lifting vertically on the ripple, flicking off at its own angle on the scatter, swelling before it pops on the collapse, sinking downward on the columns. Cells interpolate FROM their previous state TO the next one; starting every cell from zero makes open rings snap shut on the first morph frame, which reads as a glitch before the transition rather than as the transition. Keep the travel SMALL (well under one cell) and cap the swell so a growing cell never collides with its neighbour; the lattice has to stay legible throughout, otherwise cells read as loose particles instead of a surface. Each cell only moves during a short slice of the morph, so the field is completely still during the hold and every change is over quickly. Two-tone palettes cross-blend as scenes change, and the circle colour and background colour are always a matched pair so the glyph keeps reading as negative space. A pointer brush retracts circles near the cursor with a squared falloff, so you can rub the mesh away and watch it flow back. Framework-free Canvas 2D (arc() gives perfect edges for free, no shader) + a rAF loop; DPR-capped, pauses offscreen / when hidden / during route transitions, one static frame under reduced motion.
+
+The complete, self-contained implementation follows, one file per block. It is framework-agnostic core logic — wire it into your own component and mount it on an element.
+
+### dotcut/scenes.ts
+
+```ts
+export interface Scene {
+
+  kind: "text" | "rings" | "checker" | "bars" | "columns" | "boxes";
+  value?: string;
+
+  transition: TransitionKind;
+
+  palette: number;
+
+  style?: StyleKind;
+}
+
+export type TransitionKind =
+
+  | "wipe"
+
+  | "ripple"
+
+  | "scatter"
+
+  | "collapse"
+
+  | "columns";
+
+export function cellMotion(
+  kind: TransitionKind,
+
+  t: number,
+
+  dir: number,
+  rand: number,
+): { scale: number; dx: number; dy: number; spin: number } {
+
+  const u = Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
+  switch (kind) {
+    case "wipe":
+
+      return { scale: 1, dx: u * 0.16 * -dir, dy: 0, spin: 0 };
+    case "ripple":
+
+      return { scale: 1 - u * 0.10, dx: 0, dy: u * -0.13, spin: 0 };
+    case "scatter":
+
+      return {
+        scale: 1,
+        dx: u * 0.18 * Math.cos(rand * Math.PI * 2),
+        dy: u * 0.18 * Math.sin(rand * Math.PI * 2),
+        spin: 0,
+      };
+    case "collapse":
+
+      return { scale: 1 - u * 0.18, dx: 0, dy: 0, spin: 0 };
+    case "columns":
+
+      return { scale: 1, dx: 0, dy: u * 0.22, spin: 0 };
+  }
+}
+
+export type StyleKind = "drift" | "grain" | "swell" | "streak" | null;
+
+function smooth01(v: number, e0: number, e1: number): number {
+  const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+function hash2(x: number, y: number): number {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+export const SCENES: Scene[] = [
+  { kind: "text", value: "A", transition: "wipe", palette: 0, style: "drift" },
+  { kind: "rings", transition: "ripple", palette: 1, style: "grain" },
+  { kind: "columns", transition: "columns", palette: 2, style: "streak" },
+  { kind: "checker", transition: "scatter", palette: 3, style: "swell" },
+  { kind: "boxes", transition: "collapse", palette: 4, style: "grain" },
+  { kind: "bars", transition: "wipe", palette: 5, style: "drift" },
+];
+
+export function styleField(
+  scene: Scene,
+  cols: number,
+  rows: number,
+  t: number,
+  out: Float32Array,
+
+  prev?: Scene,
+) {
+  const cx = (cols - 1) / 2;
+  const cy = (rows - 1) / 2;
+  const maxR = Math.hypot(cols, rows) / 2;
+
+  const FLIP = 0.32;
+
+  const stateOf = (style: StyleKind | undefined, x: number, y: number): number => {
+    switch (style) {
+      case "drift": {
+
+        const a = Math.sin(x * 0.41 + y * 0.23);
+        const b = Math.sin(x * 0.17 - y * 0.53 + 2.1);
+        return smooth01((a + b) * 0.5, -0.15, 0.75);
+      }
+      case "grain": {
+
+        const n =
+          hash2(x, y) * 0.55 +
+          hash2(x + 1, y) * 0.15 +
+          hash2(x, y + 1) * 0.15 +
+          hash2(x + 1, y + 1) * 0.15;
+        return smooth01(n, 0.34, 0.86);
+      }
+      case "swell": {
+
+        const d = Math.hypot(x - cx, y - cy) / maxR;
+        const warp = Math.sin(Math.atan2(y - cy, x - cx) * 3.0) * 0.14;
+        return smooth01(1 - (d + warp), 0.28, 0.92);
+      }
+      case "streak": {
+
+        const s = Math.sin(x * 0.28 + y * 0.62);
+        const cut = Math.sin(x * 0.09 - y * 0.11 + 1.3) * 0.5 + 0.5;
+        return smooth01(s * cut, -0.05, 0.7);
+      }
+      default:
+        return 0;
+    }
+  };
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+
+      let order = 0;
+      switch (scene.style) {
+        case "drift":
+
+          order = (x / cols) * 0.75 + Math.sin(y * 0.5) * 0.12 + 0.12;
+          break;
+        case "grain":
+          order = (x / cols) * 0.55 + (y / rows) * 0.25 + hash2(x, y) * 0.2;
+          break;
+        case "swell":
+          order = Math.hypot(x - cx, y - cy) / maxR;
+          break;
+        case "streak":
+          order = (x / cols) * 0.8 + (y / rows) * 0.2;
+          break;
+      }
+
+      const from = stateOf(prev?.style ?? scene.style, x, y);
+      const to = stateOf(scene.style, x, y);
+      const u = Math.min(1, Math.max(0, (t - order * (1 - FLIP)) / FLIP));
+      const eased = u * u * (3 - 2 * u);
+      out[y * cols + x] = from + (to - from) * eased;
+    }
+  }
+}
+
+export const PALETTES: [string, string][] = [
+  ["#8aa9ff", "#1f45f5"],
+  ["#ffd166", "#e5484d"],
+  ["#b8f2c9", "#0f8a5f"],
+  ["#ffc2e2", "#c81d77"],
+  ["#c7d2fe", "#4338ca"],
+  ["#fde68a", "#b45309"],
+];
+
+export function rasterize(
+  scene: Scene,
+  cols: number,
+  rows: number,
+  fontFamily: string,
+): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(new ArrayBuffer(cols * rows)).fill(1);
+
+  const cx = (cols - 1) / 2;
+  const cy = (rows - 1) / 2;
+
+  if (scene.kind === "checker") {
+
+    const b = Math.max(2, Math.round(cols / 14));
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if ((Math.floor(x / b) + Math.floor(y / b)) % 2 === 0) out[y * cols + x] = 0;
+      }
+    }
+    return out;
+  }
+
+  if (scene.kind === "bars") {
+
+    const period = 3;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (Math.floor((x + y) / period) % 2 === 0) out[y * cols + x] = 0;
+      }
+    }
+    return out;
+  }
+
+  if (scene.kind === "columns") {
+
+    const bw = 4;
+    const bh = 3;
+    for (let y = 0; y < rows; y++) {
+      const band = Math.floor(y / bh);
+      const shift = band % 2 === 0 ? 0 : bw / 2;
+      for (let x = 0; x < cols; x++) {
+        if (Math.floor((x + shift) / bw) % 2 === 0) out[y * cols + x] = 0;
+      }
+    }
+    return out;
+  }
+
+  if (scene.kind === "boxes") {
+
+    const period = 2.5;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const d = Math.max(Math.abs(x - cx), Math.abs(y - cy));
+        if (Math.floor(d / period) % 2 === 0) out[y * cols + x] = 0;
+      }
+    }
+    return out;
+  }
+
+  if (scene.kind === "rings") {
+
+    const maxR = Math.hypot(cols, rows) / 2;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const d = Math.hypot(x - cx, y - cy) / maxR;
+        if (Math.floor(d * 6.0) % 2 === 0) out[y * cols + x] = 0;
+      }
+    }
+    return out;
+  }
+
+  const cv = document.createElement("canvas");
+  cv.width = cols;
+  cv.height = rows;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return out;
+
+  const text = (scene.value || "").trim();
+  if (!text) return out;
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, cols, rows);
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  let size = rows * 0.80;
+  ctx.font = `600 ${size}px ${fontFamily}`;
+  const maxW = cols * 0.36;
+  const m = ctx.measureText(text);
+  if (m.width > maxW) {
+    size *= maxW / m.width;
+    ctx.font = `600 ${size}px ${fontFamily}`;
+  }
+
+  const maxH = rows * 0.58;
+  const mm = ctx.measureText(text);
+  const gh = mm.actualBoundingBoxAscent + mm.actualBoundingBoxDescent;
+  if (gh > maxH) {
+    size *= maxH / gh;
+    ctx.font = `600 ${size}px ${fontFamily}`;
+  }
+  ctx.fillText(text, cols / 2, rows / 2 + rows * 0.02);
+
+  const data = ctx.getImageData(0, 0, cols, rows).data;
+  for (let i = 0; i < cols * rows; i++) {
+
+    if (data[i * 4] > 110) out[i] = 0;
+  }
+  return out;
+}
+
+export function cellDelay(
+  kind: TransitionKind,
+  x: number,
+  y: number,
+  cols: number,
+  rows: number,
+  rand: number,
+): number {
+  const fx = cols > 1 ? x / (cols - 1) : 0;
+  const fy = rows > 1 ? y / (rows - 1) : 0;
+  switch (kind) {
+    case "wipe":
+
+      return Math.min(1, Math.max(0, (fx * 0.75 + fy * 0.25) * 0.85 + rand * 0.15));
+    case "ripple": {
+      const d = Math.hypot(fx - 0.5, fy - 0.5) / 0.707;
+      return Math.min(1, d * 0.9 + rand * 0.10);
+    }
+    case "scatter":
+      return rand;
+    case "collapse": {
+
+      const d = Math.hypot(fx - 0.5, fy - 0.5) / 0.707;
+      return Math.min(1, (1 - d) * 0.85 + rand * 0.15);
+    }
+    case "columns":
+
+      return Math.min(1, fx * 0.9 + rand * 0.10);
+  }
+}
+
+```
+
+### dotcut/engine.ts
+
+```ts
+import {
+  PALETTES,
+  SCENES,
+  cellDelay,
+  cellMotion,
+  rasterize,
+  styleField,
+  type Scene,
+} from "./scenes";
+
+const COLS = 42;
+
+const HOLD_MS = 600;
+const MORPH_MS = 520;
+
+const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+const easeInOut = (t: number) =>
+  t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+function hash(n: number): number {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+export interface DotCutParams {
+
+  cols: number;
+
+  squareness: number;
+
+  hold: number;
+
+  morph: number;
+
+  brush: number;
+
+  fill: number;
+}
+
+export const DEFAULTS: DotCutParams = {
+  cols: COLS,
+  squareness: 0,
+  hold: HOLD_MS,
+  morph: MORPH_MS,
+
+  brush: 1.6,
+
+  fill: 1.0,
+};
+
+export class DotCut {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D | null = null;
+
+  readonly params: DotCutParams = { ...DEFAULTS };
+
+  private cols = COLS;
+  private rows = 12;
+  private pitch = 10;
+  private ox = 0;
+  private oy = 0;
+
+  private target = new Uint8Array(0);
+
+  private live = new Float32Array(0);
+
+  private from = new Float32Array(0);
+
+  private delay = new Float32Array(0);
+
+  private rnd = new Float32Array(0);
+
+  private prog = new Float32Array(0);
+
+  private dir = new Float32Array(0);
+
+  private bore = new Float32Array(0);
+
+  private styleT = 0;
+
+  private sceneIdx = 0;
+  private phase: "hold" | "morph" = "hold";
+  private phaseT = 0;
+  private clock = 0;
+
+  private paletteMix = 1;
+  private prevPalette = 0;
+
+  private prevScene = 0;
+
+  private pointer: { x: number; y: number } | null = null;
+  private raf = 0;
+  private last = 0;
+  private running = false;
+  private dpr = 1;
+  private ro: ResizeObserver | null = null;
+  private disposed = false;
+  private fontFamily = "sans-serif";
+
+  constructor(host: HTMLElement, fontFamily?: string) {
+    this.host = host;
+    if (fontFamily) this.fontFamily = fontFamily;
+    this.canvas = document.createElement("canvas");
+    this.canvas.style.cssText = "display:block;width:100%;height:100%";
+    host.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext("2d");
+    if (!this.ctx) return;
+
+    this.resize();
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(host);
+  }
+
+  get ok() {
+    return !!this.ctx;
+  }
+
+  private applyScene(scene: Scene, instant: boolean) {
+    const next = rasterize(scene, this.cols, this.rows, this.fontFamily);
+    this.from.set(this.live);
+    this.target = next;
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        const i = y * this.cols + x;
+        this.delay[i] = cellDelay(
+          scene.transition,
+          x,
+          y,
+          this.cols,
+          this.rows,
+          this.rnd[i],
+        );
+      }
+    }
+    if (instant) {
+      for (let i = 0; i < next.length; i++) this.live[i] = next[i];
+      this.from.set(this.live);
+    }
+  }
+
+  private resize() {
+    const ctx = this.ctx;
+    if (!ctx || this.disposed) return;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    if (!w || !h) return;
+
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
+
+    const margin = 0.75;
+    this.cols = Math.max(6, Math.round(this.params.cols));
+    this.pitch = w / (this.cols + 2 * margin);
+    this.rows = Math.max(3, Math.floor((h - 2 * margin * this.pitch) / this.pitch));
+
+    this.ox = (w - this.cols * this.pitch) / 2;
+    this.oy = (h - this.rows * this.pitch) / 2;
+
+    const n = this.cols * this.rows;
+    this.target = new Uint8Array(n);
+    this.live = new Float32Array(n);
+    this.from = new Float32Array(n);
+    this.delay = new Float32Array(n);
+    this.rnd = new Float32Array(n);
+    this.prog = new Float32Array(n);
+    this.dir = new Float32Array(n);
+    this.bore = new Float32Array(n);
+    for (let i = 0; i < n; i++) this.rnd[i] = hash(i * 1.37 + 0.5);
+
+    this.applyScene(SCENES[this.sceneIdx], true);
+    if (!this.running) this.draw(0);
+  }
+
+  setParams(p: Partial<DotCutParams>) {
+    const needsGrid = p.cols !== undefined && p.cols !== this.params.cols;
+    Object.assign(this.params, p);
+    if (needsGrid) this.resize();
+  }
+
+  setPointer(p: { x: number; y: number } | null) {
+    this.pointer = p;
+  }
+
+  advance() {
+    this.prevScene = this.sceneIdx;
+    this.sceneIdx = (this.sceneIdx + 1) % SCENES.length;
+    this.prevPalette = SCENES[(this.sceneIdx - 1 + SCENES.length) % SCENES.length].palette;
+    this.paletteMix = 0;
+    this.phase = "morph";
+    this.phaseT = 0;
+    this.styleT = 0;
+    this.applyScene(SCENES[this.sceneIdx], false);
+  }
+
+  private step(dt: number) {
+    this.clock += dt;
+    this.phaseT += dt * 1000;
+
+    if (this.phase === "hold" && this.phaseT >= this.params.hold) {
+      this.advance();
+    } else if (this.phase === "morph" && this.phaseT >= this.params.morph) {
+      this.phase = "hold";
+      this.phaseT = 0;
+    }
+
+    const p = this.phase === "morph" ? Math.min(1, this.phaseT / this.params.morph) : 1;
+    const n = this.cols * this.rows;
+    for (let i = 0; i < n; i++) {
+
+      const d = this.delay[i];
+      const local = Math.min(1, Math.max(0, (p - d * 0.72) / 0.28));
+      const e = easeOut(local);
+      this.live[i] = this.from[i] + (this.target[i] - this.from[i]) * e;
+
+      const changing = this.from[i] !== this.target[i] && this.phase === "morph";
+      this.prog[i] = changing ? local : 0;
+      this.dir[i] = this.target[i] > this.from[i] ? 1 : -1;
+    }
+
+    this.paletteMix = Math.min(1, this.paletteMix + dt * 2.2);
+
+    this.styleT =
+      this.phase === "morph"
+        ? Math.min(1, this.styleT + dt / (this.params.morph / 1000))
+        : 1;
+    styleField(
+      SCENES[this.sceneIdx],
+      this.cols,
+      this.rows,
+      this.styleT,
+      this.bore,
+      SCENES[this.prevScene],
+    );
+  }
+
+  private draw(dt: number) {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this.step(dt);
+
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const s = this.dpr;
+    const scene = SCENES[this.sceneIdx];
+
+    const [cA, bA] = PALETTES[this.prevPalette % PALETTES.length];
+    const [cB, bB] = PALETTES[scene.palette % PALETTES.length];
+    const m = easeInOut(this.paletteMix);
+    const circle = mixHex(cA, cB, m);
+    const back = mixHex(bA, bB, m);
+
+    ctx.fillStyle = back;
+    ctx.fillRect(0, 0, W, H);
+
+    const pitch = this.pitch * s;
+    const r = pitch / 2;
+    const sq = Math.max(0, Math.min(1, this.params.squareness));
+
+    ctx.fillStyle = circle;
+
+    const solidPath = new Path2D();
+
+    const stroke = Math.max(1.1 * s, r * 0.30);
+    const brush = this.params.brush;
+
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) {
+        const i = y * this.cols + x;
+        let v = this.live[i];
+        if (v <= 0.004) continue;
+
+        if (this.pointer && brush > 0) {
+          const d = Math.hypot(x + 0.5 - this.pointer.x, y + 0.5 - this.pointer.y);
+          if (d < brush) v *= Math.min(1, (d / brush) ** 2);
+        }
+        if (v <= 0.004) continue;
+
+        const mo = cellMotion(scene.transition, this.prog[i], this.dir[i], this.rnd[i]);
+
+        const cx = this.ox * s + (x + 0.5) * pitch + mo.dx * pitch;
+        const cy = this.oy * s + (y + 0.5) * pitch + mo.dy * pitch;
+
+        const pop = 1;
+        const rr = r * v * pop * mo.scale * this.params.fill;
+        if (rr <= 0.3) continue;
+
+        const canRing = rr > 3.2 * s;
+        const bore = canRing ? (rr - stroke) * this.bore[i] : 0;
+
+        solidPath.moveTo(cx + rr, cy);
+        if (sq < 0.02) {
+          solidPath.arc(cx, cy, rr, 0, Math.PI * 2);
+        } else {
+
+          roundedSquare(solidPath, cx, cy, rr, sq);
+        }
+        if (bore > 0.4) {
+
+          solidPath.moveTo(cx + bore, cy);
+          solidPath.arc(cx, cy, bore, 0, Math.PI * 2, true);
+        }
+      }
+    }
+
+    ctx.fill(solidPath, "evenodd");
+  }
+
+  renderStill() {
+    this.phase = "hold";
+    this.phaseT = 0;
+    this.paletteMix = 1;
+    this.applyScene(SCENES[this.sceneIdx], true);
+    this.draw(0);
+  }
+
+  start() {
+    if (this.running || !this.ok || this.disposed) return;
+    this.running = true;
+    this.last = performance.now();
+    const tick = (now: number) => {
+      if (!this.running) return;
+      const dt = Math.min((now - this.last) / 1000, 1 / 30);
+      this.last = now;
+      this.draw(dt);
+      this.raf = requestAnimationFrame(tick);
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.ro?.disconnect();
+    this.ro = null;
+    this.ctx = null;
+    this.canvas.remove();
+  }
+
+  toCell(px: number, py: number) {
+    return { x: (px - this.ox) / this.pitch, y: (py - this.oy) / this.pitch };
+  }
+}
+
+function roundedSquare(
+
+  ctx: Pick<CanvasRenderingContext2D, "moveTo" | "lineTo" | "closePath">,
+  cx: number,
+  cy: number,
+  r: number,
+  sq: number,
+) {
+  const n = 2 + sq * 8;
+  const steps = 22;
+  ctx.moveTo(cx + r, cy);
+  for (let i = 1; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    const x = Math.sign(c) * Math.pow(Math.abs(c), 2 / n) * r;
+    const y = Math.sign(s) * Math.pow(Math.abs(s), 2 / n) * r;
+    ctx.lineTo(cx + x, cy + y);
+  }
+  ctx.closePath();
+}
+
+function mixHex(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const r = Math.round((((pa >> 16) & 255) * (1 - t) + ((pb >> 16) & 255) * t));
+  const g = Math.round((((pa >> 8) & 255) * (1 - t) + ((pb >> 8) & 255) * t));
+  const bl = Math.round(((pa & 255) * (1 - t) + (pb & 255) * t));
+  return `rgb(${r},${g},${bl})`;
+}
+
+```

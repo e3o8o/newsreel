@@ -152,3 +152,57 @@ in the capture harness (the capture browser must never take the reduced path).
 - Squircle drop is the odd one out: less a video effect, more a design-system
   utility + material study. Value for video is the styled component props; value
   for the wider toolbox is the path generator and the embedded material method.
+
+## Primitive catalog, Set 3 (final)
+
+Twenty drops, one duplicate (5 and 6 are the identical ascii-wordmark). Framing
+changed: these are "Build this" engines with mount/start/stop/renderStill/destroy
+lifecycles, mostly framework-free. That is a better harness fit than the
+playground trees of sets 1-2, and most of them self-drive (auto-cycle, ghost
+cursors, idle drift), which is exactly the capture-friendly property.
+
+| # | Drop | Primitive(s) | Pipeline surface |
+| --- | --- | --- | --- |
+| 1 | Tile field | Wordmark as touching square tiles; oklch colour wave + cursor light blob; Canvas 2D | Brand idents, section beds |
+| 2 | Fire field | Minecraft fire flipbook with a live editable pixel buffer | Toy; blocked on Mojang assets (see provenance) |
+| 3 | Pixel scan | three.js shader: diagonal band assembles a word from coloured blocks, then rests solid | Techy title reveals |
+| 4 | Pixel field | Image cycler: pixelize in sharp, out chunky, 3D-ish swap; gsap-driven | Screenshot/photo montages in ads |
+| 5/6 | ASCII wordmark (pasted twice) | GPGPU flow-field particles rendered as ASCII glyphs; three.js + GPUComputationRenderer | Living technical wordmark |
+| 7 | Image galaxy | DOM perspective field of drifting images, infinite wrap, depth parallax | Screenshot b-roll beds, montage backgrounds |
+| 8 | Frosted word + cursors | CSS frosted-glass text stack; Figma-style labelled cursors orbiting + scattering | Collaboration-story scenes, team credits |
+| 9 | Gold scar | glTF on a pedestal: silhouette outline + shader loot beam + glow; three.js | Product hero shots (swap in any model) |
+| 10 | Image sphere | Billboarded image cloud on a sphere, drag/spin, click-to-focus | Gallery/recap scenes |
+| 11 | Design tiles | Per-word solid-colour tile bar, clip-path fly-in, idle colour shuffle | Statement lines, section titles |
+| 12 | Word stickers | Die-cut vinyl stickers (canvas dilate) + fling physics | Playful idents; gl-sticker module missing (stub works, non-GL path exists) |
+| 13 | Blur reveal | WebGL fbm dissolve + localized un-blur, cycling colour panels | Quote/value cards that cycle |
+| 14 | LEGO reveal | Style-cycling portrait (LEGO/Minecraft/Roblox) melting to the real photo along a trail buffer | Personal intros/outros; photo recipe included |
+| 15 | Text reveal | Corner text blocks materializing through a cloudy fbm front | Editorial openers, chapter cards |
+| 16 | Blur glow | Multi-pass bloom + 5-stop gradient map + variable focus; 6 palettes | Soft luxurious titles on paper |
+| 17 | Badge trail | Cursor drops compact mono badges; ghost cursor when idle | Playful overlay energy, credits |
+| 18 | Folder embroidery | Satin-stitch embroidered word patches; weave bump shader | Craft/tactile brand moments; weave texture URL provided |
+| 19 | Liquid chrome | Height-field + env-map chrome with 8 colour ramps | Premium metal titles |
+| 20 | Dotcut | Negative-space glyph in a circle lattice; 6 scenes, per-cell transitions | Pattern interstitials, single-letter idents |
+
+## Set 3 notes
+
+- Missing modules inside the drops: design-tiles imports ./measure
+  (measureWord/REF_FS/BASELINE_Y — small, reconstructable from usage),
+  word-stickers imports ./gl-sticker (StickerGL — a stub whose available=false
+  activates the included non-GL fallback), and lib/sound surfaces again
+  (isMuted, glitchScan, glitchTick — harness stubs).
+- New npm deps implied: three (+ examples/jsm) and gsap (pixel-field only;
+  its timeline is simple enough to reimplement and drop the dep).
+- Asset ledger for set 3: embroidery weave has a download URL (the only one);
+  lego needs four photos with the restyle recipe included in the drop;
+  gold-scar needs scar.glb + chest.mp3 (substitute any CC0 model); fire needs
+  Minecraft textures + sounds, which are Mojang IP — never commit those to a
+  public repo, treat that primitive as private-only or re-draw the art.
+- Self-drive is now the norm: dotcut, blur-reveal, design-tiles, text-reveal,
+  blur-glow, tile-field, image-galaxy, cursors, badge-trail (ghost), lego
+  (virtual cursor) all animate without a pointer. Where a cursor matters,
+  three drops ship their own autonomous cursor pattern (the LEGO wander,
+  badge-trail ghost, chroma's from set 2) — that pattern becomes the harness's
+  standard fake-pointer driver.
+
+All sets received (36 drops, 33 unique). The deferred design questions are
+resolved in `design/generated-scenes.md`.
