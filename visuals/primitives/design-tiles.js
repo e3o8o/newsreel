@@ -1,4 +1,4 @@
-// visuals/src/design-tiles/palette.ts
+// src/design-tiles/palette.ts
 var WORDS = ["design", "is", "how", "it", "works"];
 var SWATCHES = [
   { bg: "#0a0a0a", fg: "#ffffff" },
@@ -24,7 +24,7 @@ var INITIAL = [
   SWATCHES[4]
 ];
 
-// visuals/src/design-tiles/measure.ts
+// src/design-tiles/measure.ts
 var REF_FS = 100;
 var BASELINE_Y = 100;
 var ctx = null;
@@ -66,7 +66,7 @@ function measureWord(word, fontFamily, weight = "500") {
   return { width: pen, glyphs };
 }
 
-// visuals/src/design-tiles/engine.ts
+// src/design-tiles/engine.ts
 var SVGNS = "http://www.w3.org/2000/svg";
 var FLY_STAGGER = 130;
 var FLY_MS = 760;
@@ -335,7 +335,7 @@ var DesignTiles = class {
   }
 };
 
-// visuals/src/design-tiles/adapter.ts
+// src/design-tiles/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (Array.isArray(props.words) && props.words.length) {

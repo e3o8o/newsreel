@@ -1,4 +1,4 @@
-// visuals/src/emboss/pg-shader.ts
+// src/emboss/pg-shader.ts
 var PG_VERT = `
 attribute vec2 aPosition;
 attribute vec2 aUV;
@@ -70,7 +70,7 @@ void main(){
 }
 `;
 
-// visuals/src/emboss/content-mask.ts
+// src/emboss/content-mask.ts
 async function makeContentField(content, blurPx, w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
   const H = Math.max(1, Math.round(h));
@@ -159,10 +159,10 @@ function loadImage(src) {
   });
 }
 
-// visuals/lib/video-sources.ts
+// lib/video-sources.ts
 var mediaUrl = (p) => `/assets/${p.replace(/^\/+/, "").replace(/^vault\//, "")}`;
 
-// visuals/src/emboss/pg-engine.ts
+// src/emboss/pg-engine.ts
 var PLASTER_URL = mediaUrl("/vault/emboss-plaster.png");
 var GRUNGE_URL = mediaUrl("/vault/emboss-grunge.png");
 var GRUNGE_AMT = 0.38;
@@ -424,7 +424,7 @@ var EmbossPlayground = class {
   }
 };
 
-// visuals/src/emboss/params.ts
+// src/emboss/params.ts
 function fromSpec(a) {
   return {
     depth: 0.55 + Math.min(a.depth, 1e3) / 1e3 * 1.2,
@@ -496,7 +496,7 @@ var PRESETS = [
   // magenta
 ];
 
-// visuals/src/emboss/adapter.ts
+// src/emboss/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     let i = 0;

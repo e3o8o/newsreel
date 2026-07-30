@@ -1,4 +1,4 @@
-// visuals/src/blur-glow/shaders.ts
+// src/blur-glow/shaders.ts
 var VERT = `
 attribute vec2 aPos;
 varying vec2 vUv;
@@ -277,7 +277,7 @@ void main(){
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
-// visuals/src/blur-glow/text-mask.ts
+// src/blur-glow/text-mask.ts
 function makeWordMask(word, w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
   const H = Math.max(1, Math.round(h));
@@ -318,7 +318,7 @@ function makeWordMask(word, w, h, fontFamily) {
   return { canvas: out, x0: left / W, x1: (left + total) / W };
 }
 
-// visuals/src/blur-glow/params.ts
+// src/blur-glow/params.ts
 var rgb = (hex) => [
   parseInt(hex.slice(1, 3), 16) / 255,
   parseInt(hex.slice(3, 5), 16) / 255,
@@ -457,7 +457,7 @@ var WARP_DRAG = 0.26;
 var WARP_STRETCH = 0.5;
 var BREATH = 0.22;
 
-// visuals/src/blur-glow/engine.ts
+// src/blur-glow/engine.ts
 var FONT = "var(--font-pangram)";
 var FOCUS_AMT = 1.5;
 var MORPH_SEC = 0.8;
@@ -952,7 +952,7 @@ var BlurGlow = class {
   }
 };
 
-// visuals/src/blur-glow/adapter.ts
+// src/blur-glow/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (Array.isArray(props.words) && props.words.length) {

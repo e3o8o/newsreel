@@ -1,4 +1,4 @@
-// visuals/src/materials/color-depth.css
+// src/materials/color-depth.css
 var color_depth_default = `/* The Art of Color Depth \u2014 button depth by technique, not by color.
  *
  * Six ways to give a flat button real depth. Each is a different METHOD; the
@@ -589,7 +589,7 @@ var color_depth_default = `/* The Art of Color Depth \u2014 button depth by tech
 
 `;
 
-// visuals/src/materials/color-depth.js
+// src/materials/color-depth.js
 function initColorDepth(root = document) {
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (!reduce) {
@@ -647,7 +647,7 @@ if (typeof document !== "undefined") {
   }
 }
 
-// visuals/src/shared/ghost.ts
+// src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -675,7 +675,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// visuals/src/materials/adapter.ts
+// src/materials/adapter.ts
 var ALL = ["glossy", "glow", "metal", "layered", "inset", "glass", "neon", "duotone", "satin", "foil"];
 function button(material, label) {
   const b = document.createElement("button");

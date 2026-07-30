@@ -97,10 +97,6 @@ button, a, .tab, .filter, .act, .dep { cursor: pointer; }
   font: 500 12px/1 var(--font-mono); color: var(--ink-3);
   letter-spacing: 0.02em; margin-bottom: 20px;
 }
-.dot {
-  width: 7px; height: 7px; border-radius: 999px; background: var(--green);
-  box-shadow: 0 0 0 3px var(--green-soft);
-}
 h1 {
   font-size: clamp(2.4rem, 5.4vw, 4rem);
   line-height: 1.03; font-weight: 600; letter-spacing: -0.035em;
@@ -178,6 +174,40 @@ h1 em { font-style: normal; color: var(--ink-3); }
 }
 .steps h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .steps p { font-size: 13.5px; color: var(--ink-2); text-wrap: pretty; }
+
+/* ── kinds ───────────────────────────────────────────────────────────────── */
+.kinds {
+  margin-top: 28px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;
+}
+.kind {
+  display: flex; flex-direction: column;
+  border-radius: var(--radius-lg); overflow: hidden;
+  background: var(--surface); box-shadow: var(--shadow-card);
+}
+/* the family this kind rolls its background from, shown as the actual gradients */
+.kind-swatches { display: flex; height: 76px; }
+.kind-swatches span { flex: 1; }
+.kind-body { padding: 20px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.kind-body h3 {
+  font: 500 11px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--kind-accent);
+}
+.kind-body > p { font-size: 13.5px; color: var(--ink-2); text-wrap: pretty; }
+.kind-facts { display: grid; gap: 6px; }
+.kind-facts > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.kind-facts dt { color: var(--ink-3); }
+.kind-facts dd { color: var(--ink-2); font-family: var(--font-mono); font-size: 11.5px; }
+.kind-scenes { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+.kind-scenes span {
+  font: 500 10.5px/1 var(--font-mono); color: var(--ink-3);
+  padding: 5px 7px; border-radius: 6px; background: var(--band-alt);
+}
+.cmd.sm { padding: 9px 11px; font-size: 12px; align-self: flex-start; }
+.kind .cmd.sm { box-shadow: inset 0 0 0 1px var(--hairline); }
+.kind .cmd.is-copied .cmd-icon {
+  box-shadow: inset 0 0 0 1.5px var(--kind-accent); background: var(--kind-accent);
+}
 
 /* ── filters + grid ──────────────────────────────────────────────────────── */
 .filters {

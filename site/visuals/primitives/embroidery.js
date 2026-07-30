@@ -1,4 +1,4 @@
-// visuals/src/embroidery/shaders.ts
+// src/embroidery/shaders.ts
 var EMB_VERT = `
 attribute vec2 aPosition;
 attribute vec2 aUV;
@@ -135,7 +135,7 @@ void main() {
 }
 `;
 
-// visuals/src/embroidery/patches.ts
+// src/embroidery/patches.ts
 var WORDS = [
   {
     word: "made",
@@ -173,7 +173,7 @@ var WORDS = [
 ];
 var FABRIC = [0.16, 0.13, 0.2];
 
-// visuals/src/embroidery/scene.ts
+// src/embroidery/scene.ts
 async function makeScene(w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
   const H = Math.max(1, Math.round(h));
@@ -321,10 +321,10 @@ function drawWord(ctx, wp, W, H, fontFamily) {
   ctx.restore();
 }
 
-// visuals/lib/video-sources.ts
+// lib/video-sources.ts
 var mediaUrl = (p) => `/assets/${p.replace(/^\/+/, "").replace(/^vault\//, "")}`;
 
-// visuals/src/embroidery/engine.ts
+// src/embroidery/engine.ts
 var REST_ANGLE = 73 * Math.PI / 180;
 var LIGHT_Z = 0.55;
 var WEAVE_URL = mediaUrl("/vault/embroidery-weave.webp");
@@ -691,7 +691,7 @@ var Embroidery = class {
   }
 };
 
-// visuals/src/shared/ghost.ts
+// src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -719,7 +719,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// visuals/src/embroidery/adapter.ts
+// src/embroidery/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (Array.isArray(props.words) && props.words.length === 3) {

@@ -261,6 +261,41 @@ for (const vibe of VIBES) {
 }
 render();
 
+// ── kinds ─────────────────────────────────────────────────────────────────
+// Rendered from kinds.json, which site/build.mjs emits from lib/kinds.cjs, so these are the
+// real recipes rather than a copy of them.
+const kindGrid = document.getElementById("kind-grid");
+const KINDS = await fetch("./kinds.json").then((r) => r.json()).catch(() => []);
+
+for (const k of KINDS) {
+  const el = document.createElement("article");
+  el.className = "kind";
+  el.style.setProperty("--kind-accent", k.accent);
+  el.innerHTML = `
+    <div class="kind-swatches" aria-hidden="true">
+      ${k.backgrounds.map((b) => `<span title="${b.name}" style="background:${b.css}"></span>`).join("")}
+    </div>
+    <div class="kind-body">
+      <h3>${k.id}</h3>
+      <p>${k.about}</p>
+      <dl class="kind-facts">
+        <div><dt>Bed</dt><dd>${k.track}</dd></div>
+        <div><dt>Backgrounds</dt><dd>${k.backgrounds.length} to roll from</dd></div>
+        <div><dt>Max speed</dt><dd>${k.maxSpeed}×</dd></div>
+      </dl>
+      <p class="kind-scenes">${k.scenes.map((s) => `<span>${s}</span>`).join("")}</p>
+      <button class="kind-copy cmd sm" type="button" data-kind="${k.id}">
+        <span class="cmd-text lockable">"kind": "${k.id}"</span>
+        <span class="cmd-icon" aria-hidden="true"></span>
+      </button>
+    </div>`;
+  kindGrid.appendChild(el);
+}
+kindGrid.addEventListener("click", (e) => {
+  const btn = e.target.closest(".kind-copy");
+  if (btn) copy(`"video": { "kind": "${btn.dataset.kind}" }`, btn, "config copied");
+});
+
 // ── usage tabs ────────────────────────────────────────────────────────────
 document.getElementById("tabs").addEventListener("click", (e) => {
   const tab = e.target.closest(".tab");

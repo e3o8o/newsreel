@@ -1,451 +1,495 @@
 {
-    "_about": "Every visual in the collection: the ones the harness can mount and capture (live), and the ones that ship as a build prompt only, with the reason. Drives both the landing gallery and the lookbook. Source prompts live in incoming/visual-prompts.md.",
-    "visuals": [
-        {
-            "id": "swirl",
-            "title": "ASCII swirl",
-            "blurb": "A soup of text swirls in a vortex, then condenses into your word. CRT scanlines, chromatic fringe, nine figlet faces.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "swirl",
-            "props": {
-                "word": "vortex"
-            },
-            "tech": "WebGL2, instanced glyph atlas"
-        },
-        {
-            "id": "chroma",
-            "title": "Chromatic glow",
-            "blurb": "A word blooming in neon with its colour channels pulled apart, dissolving and reforming through a palette cycle.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "chroma",
-            "props": {
-                "words": [
-                    "glow",
-                    "split",
-                    "bloom"
-                ]
-            },
-            "tech": "WebGL multi-pass bloom"
-        },
-        {
-            "id": "fade",
-            "title": "Fade motion",
-            "blurb": "Two hundred copies of a word stacked almost invisibly, so the fade is real accumulation. Seven palettes that wash between each other.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "fade",
-            "props": {
-                "word": "exposure"
-            },
-            "tech": "WebGL single-pass trail accumulation"
-        },
-        {
-            "id": "kinetic",
-            "title": "Kinetic typography",
-            "blurb": "A letter cut into a grid of tiles, each slipping on its own wave, so the glyph ripples like water. Duotone with a chromatic split.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "kinetic",
-            "props": {
-                "text": "A"
-            },
-            "tech": "Canvas 2D tile warp"
-        },
-        {
-            "id": "typer",
-            "title": "The typer",
-            "blurb": "A wave runs across the line and each letter flickers through pill, highlight and outline states before it lands. Adjacent letters merge into one bar.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "typer",
-            "props": {
-                "lines": [
-                    "type it in,",
-                    "do not fade it in"
-                ]
-            },
-            "tech": "DOM + CSS, framework-free"
-        },
-        {
-            "id": "dotcut",
-            "title": "Dotcut",
-            "blurb": "A dense lattice of touching circles with the letter cut out as negative space. Six scenes, each with its own per-cell transition.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "dotcut",
-            "props": {
-                "letter": "N"
-            },
-            "tech": "Canvas 2D, one composite path"
-        },
-        {
-            "id": "tile-field",
-            "title": "Tile field",
-            "blurb": "A wordmark built from a dense grid of squares, lit by a slow morphing colour wave, with a soft light blob under the cursor.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "tile-field",
-            "props": {
-                "word": "mosaic"
-            },
-            "tech": "Canvas 2D, oklch"
-        },
-        {
-            "id": "blur-reveal",
-            "title": "Blur reveal",
-            "blurb": "Vivid panels, one line each, dissolving in through a cloudy noise front while un-blurring into focus.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "blur-reveal",
-            "props": {},
-            "tech": "WebGL mask reveal"
-        },
-        {
-            "id": "blur-glow",
-            "title": "Blur glow",
-            "blurb": "A crisp word inside a real multi-pass bloom, gradient-mapped through a five-stop ramp on light paper. Six palettes.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "blur-glow",
-            "props": {
-                "words": [
-                    "quiet",
-                    "precise",
-                    "warm"
-                ]
-            },
-            "tech": "WebGL bloom chain"
-        },
-        {
-            "id": "chrome",
-            "title": "Liquid chrome",
-            "blurb": "Polished metal with a bright/dark horizon reflection that streams as the cursor moves. Eight colour ramps.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "chrome",
-            "props": {
-                "word": "chrome"
-            },
-            "tech": "WebGL height field + env map"
-        },
-        {
-            "id": "cursors",
-            "title": "Frosted word + cursors",
-            "blurb": "A word rendered as frosted glass with labelled collaborator cursors drifting around it, scattering when you approach.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "live",
-            "scene": "cursors",
-            "props": {
-                "word": "shared"
-            },
-            "tech": "DOM + CSS glass stack"
-        },
-        {
-            "id": "embroidery",
-            "title": "Embroidery",
-            "blurb": "Word-shaped patches stitched onto fabric, with satin stitch angles that follow each stroke and a merrowed border bead.",
-            "vibe": [
-                "craft"
-            ],
-            "status": "live",
-            "scene": "embroidery",
-            "props": {},
-            "tech": "WebGL, weave bump map"
-        },
-        {
-            "id": "materials",
-            "title": "The art of colour depth",
-            "blurb": "Ten button materials built from layering alone: glossy, glow, metal, layered, inset, glass, neon, duotone, satin, foil.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "live",
-            "scene": "materials",
-            "props": {
-                "label": "Buy now"
-            },
-            "tech": "CSS, tiny companion script"
-        },
-        {
-            "id": "liquid",
-            "title": "Liquid UI",
-            "blurb": "Two cards fuse and the corner between them bends inward, like they were poured together. One knob from crisp joint to gooey neck.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "live",
-            "scene": "liquid",
-            "props": {},
-            "tech": "SDF smooth-union + marching squares"
-        },
-        {
-            "id": "squircle",
-            "title": "Apple's corners",
-            "blurb": "A normal rounded corner has a kink where it meets the edge. The squircle eases in. Here they are side by side.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "live",
-            "scene": "squircle",
-            "props": {
-                "label": "Continue"
-            },
-            "tech": "Superellipse path generator"
-        },
-        {
-            "id": "text-reveal",
-            "title": "Text reveal",
-            "blurb": "Two corner blocks materialising through a cloudy front as wispy tendrils, then clearing the same way.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "scene": "text-reveal",
-            "props": {},
-            "tech": "WebGL fbm dissolve"
-        },
-        {
-            "id": "cta",
-            "title": "Aurora CTA",
-            "blurb": "Blurred colour bars rise from the floor behind a logotype, a tagline and a glossy pill button. The closing frame.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "live",
-            "scene": "cta",
-            "props": {
-                "brand": "newsreel"
-            },
-            "tech": "CSS gradients + colour-depth glossy"
-        },
-        {
-            "id": "emboss",
-            "title": "Realistic emboss",
-            "blurb": "A word or SVG pressed into plaster, with bevel, light angle and surface controls. Nine presets from sharp to pillow.",
-            "vibe": [
-                "craft"
-            ],
-            "status": "live",
-            "tech": "WebGL height field, generated plaster",
-            "scene": "emboss",
-            "props": {
-                "word": "press"
-            }
-        },
-        {
-            "id": "ransom",
-            "title": "Ransom note",
-            "blurb": "Every letter torn from a different magazine and taped down crooked, with seeded jitter you can re-roll.",
-            "vibe": [
-                "playful"
-            ],
-            "status": "prompt",
-            "needs": "The cut-out letter sprite pack",
-            "tech": "DOM sprites + seeded PRNG"
-        },
-        {
-            "id": "word-stickers",
-            "title": "Word stickers",
-            "blurb": "Die-cut vinyl word stickers you can grab and fling, with a border generated by dilating the glyph silhouette.",
-            "vibe": [
-                "playful"
-            ],
-            "status": "live",
-            "tech": "Canvas dilate + fling physics",
-            "scene": "word-stickers",
-            "props": {}
-        },
-        {
-            "id": "design-tiles",
-            "title": "Design tiles",
-            "blurb": "A sentence packed edge to edge as solid colour tiles, flying in with clip-path wipes and re-rolling their swatches.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "live",
-            "tech": "SVG + DOM, measured per glyph",
-            "scene": "design-tiles",
-            "props": {}
-        },
-        {
-            "id": "badge-trail",
-            "title": "Badge trail",
-            "blurb": "Tiny mono badges of typography terms drop behind the cursor and fade, never overlapping.",
-            "vibe": [
-                "playful"
-            ],
-            "status": "prompt",
-            "needs": "Ships as a React component in the drop",
-            "tech": "DOM + rAF"
-        },
-        {
-            "id": "image-galaxy",
-            "title": "Image galaxy",
-            "blurb": "A perspective field of small images drifting behind text, parallaxed by depth and wrapping infinitely.",
-            "vibe": [
-                "backgrounds"
-            ],
-            "status": "prompt",
-            "needs": "Your own image set",
-            "tech": "DOM transforms, no WebGL"
-        },
-        {
-            "id": "pixel-field",
-            "title": "Pixel field",
-            "blurb": "Images cycling in and out of chunky pixelation, with a swap that slides, scales and skews.",
-            "vibe": [
-                "backgrounds"
-            ],
-            "status": "prompt",
-            "needs": "gsap, plus your own image set",
-            "tech": "Canvas 2D downscale trick"
-        },
-        {
-            "id": "ghost-reveal",
-            "title": "Ghost reveal",
-            "blurb": "A feathered mask slides across an element in any of four directions, so it materialises rather than fades.",
-            "vibe": [
-                "motion"
-            ],
-            "status": "prompt",
-            "needs": "The feathered mask images (generate your own)",
-            "tech": "CSS masks"
-        },
-        {
-            "id": "dia-gradient",
-            "title": "Aurora gradients",
-            "blurb": "Three background treatments: blurred bars, a bezier mountain, and a colour-dodge dome, each rising into place.",
-            "vibe": [
-                "backgrounds"
-            ],
-            "status": "live",
-            "tech": "SVG gradients + blur filter",
-            "scene": "aurora",
-            "props": {}
-        },
-        {
-            "id": "figma-frame",
-            "title": "Design-tool chrome",
-            "blurb": "The selection frame from a vector editor: animated border, corner handles and a size badge, wrapping any element.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "prompt",
-            "needs": "Ships as React components in the drop",
-            "tech": "DOM + SVG"
-        },
-        {
-            "id": "hover-video",
-            "title": "Hover video pill",
-            "blurb": "A pill that reveals an alpha video on hover, with a spring on playback rate and a rewind-from-position trick.",
-            "vibe": [
-                "ui"
-            ],
-            "status": "prompt",
-            "needs": "Your own alpha video clips",
-            "tech": "React + HTMLVideoElement"
-        },
-        {
-            "id": "symbols",
-            "title": "Symbols effect",
-            "blurb": "Any image or video rebuilt from glyph stamps in four brightness bands: a GPU halftone treatment.",
-            "vibe": [
-                "motion"
-            ],
-            "status": "prompt",
-            "needs": "three.js",
-            "tech": "three.js shader"
-        },
-        {
-            "id": "ascii-wordmark",
-            "title": "ASCII particle wordmark",
-            "blurb": "GPGPU flow-field particles spelling a word, rendered as a grid of ASCII glyphs that drift and react.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "prompt",
-            "needs": "three.js",
-            "tech": "three.js GPGPU"
-        },
-        {
-            "id": "pixel-scan",
-            "title": "Pixel scan",
-            "blurb": "A diagonal band sweeps across and assembles a word out of a spray of tiny coloured blocks, then rests as solid text.",
-            "vibe": [
-                "titles"
-            ],
-            "status": "prompt",
-            "needs": "three.js",
-            "tech": "three.js shader"
-        },
-        {
-            "id": "image-sphere",
-            "title": "Image sphere",
-            "blurb": "A cloud of images orbiting an invisible sphere, billboarded to the camera, draggable and clickable.",
-            "vibe": [
-                "backgrounds"
-            ],
-            "status": "prompt",
-            "needs": "three.js, plus your own image set",
-            "tech": "three.js"
-        },
-        {
-            "id": "gold-scar",
-            "title": "Loot beam",
-            "blurb": "A 3D model floating in a golden loot beam, with a screen-space silhouette outline and a shader shaft.",
-            "vibe": [
-                "3d"
-            ],
-            "status": "prompt",
-            "needs": "three.js, plus your own glTF model",
-            "tech": "three.js + GLTFLoader"
-        },
-        {
-            "id": "lego",
-            "title": "Style melt",
-            "blurb": "A portrait cycling through art styles and melting back to the real photo along a cursor trail of merged blocks.",
-            "vibe": [
-                "playful"
-            ],
-            "status": "prompt",
-            "needs": "Your own photo plus AI-restyled versions of it",
-            "tech": "WebGL ping-pong trail buffer"
-        },
-        {
-            "id": "fire-field",
-            "title": "Pixel fire",
-            "blurb": "A pixel fire on a low-res grid that you can shove around with the cursor, healing back as it burns. Simulated, not sprite-sheeted.",
-            "vibe": [
-                "playful"
-            ],
-            "status": "live",
-            "tech": "Canvas 2D cellular fire, own art",
-            "scene": "fire",
-            "props": {}
-        }
-    ]
+  "_about": "Every visual in the collection: the ones the harness can mount and capture (live), and the ones that ship as a build prompt only, with the reason. Drives both the landing gallery and the lookbook. Source prompts live in incoming/visual-prompts.md.",
+  "visuals": [
+    {
+      "id": "swirl",
+      "title": "ASCII swirl",
+      "blurb": "A soup of text swirls in a vortex, then condenses into your word. CRT scanlines, chromatic fringe, nine figlet faces.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "swirl",
+      "props": {
+        "word": "vortex"
+      },
+      "tech": "WebGL2, instanced glyph atlas"
+    },
+    {
+      "id": "chroma",
+      "title": "Chromatic glow",
+      "blurb": "A word blooming in neon with its colour channels pulled apart, dissolving and reforming through a palette cycle.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "chroma",
+      "props": {
+        "words": [
+          "glow",
+          "split",
+          "bloom"
+        ]
+      },
+      "tech": "WebGL multi-pass bloom"
+    },
+    {
+      "id": "fade",
+      "title": "Fade motion",
+      "blurb": "Two hundred copies of a word stacked almost invisibly, so the fade is real accumulation. Seven palettes that wash between each other.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "fade",
+      "props": {
+        "word": "exposure"
+      },
+      "tech": "WebGL single-pass trail accumulation"
+    },
+    {
+      "id": "kinetic",
+      "title": "Kinetic typography",
+      "blurb": "A letter cut into a grid of tiles, each slipping on its own wave, so the glyph ripples like water. Duotone with a chromatic split.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "kinetic",
+      "props": {
+        "text": "A"
+      },
+      "tech": "Canvas 2D tile warp"
+    },
+    {
+      "id": "typer",
+      "title": "The typer",
+      "blurb": "A wave runs across the line and each letter flickers through pill, highlight and outline states before it lands. Adjacent letters merge into one bar.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "typer",
+      "props": {
+        "lines": [
+          "type it in,",
+          "do not fade it in"
+        ]
+      },
+      "tech": "DOM + CSS, framework-free"
+    },
+    {
+      "id": "dotcut",
+      "title": "Dotcut",
+      "blurb": "A dense lattice of touching circles with the letter cut out as negative space. Six scenes, each with its own per-cell transition.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "dotcut",
+      "props": {
+        "letter": "N"
+      },
+      "tech": "Canvas 2D, one composite path"
+    },
+    {
+      "id": "tile-field",
+      "title": "Tile field",
+      "blurb": "A wordmark built from a dense grid of squares, lit by a slow morphing colour wave, with a soft light blob under the cursor.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "tile-field",
+      "props": {
+        "word": "mosaic"
+      },
+      "tech": "Canvas 2D, oklch"
+    },
+    {
+      "id": "blur-reveal",
+      "title": "Blur reveal",
+      "blurb": "Vivid panels, one line each, dissolving in through a cloudy noise front while un-blurring into focus.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "blur-reveal",
+      "props": {},
+      "tech": "WebGL mask reveal"
+    },
+    {
+      "id": "blur-glow",
+      "title": "Blur glow",
+      "blurb": "A crisp word inside a real multi-pass bloom, gradient-mapped through a five-stop ramp on light paper. Six palettes.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "blur-glow",
+      "props": {
+        "words": [
+          "quiet",
+          "precise",
+          "warm"
+        ]
+      },
+      "tech": "WebGL bloom chain"
+    },
+    {
+      "id": "chrome",
+      "title": "Liquid chrome",
+      "blurb": "Polished metal with a bright/dark horizon reflection that streams as the cursor moves. Eight colour ramps.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "chrome",
+      "props": {
+        "word": "chrome"
+      },
+      "tech": "WebGL height field + env map"
+    },
+    {
+      "id": "cursors",
+      "title": "Frosted word + cursors",
+      "blurb": "A word rendered as frosted glass with labelled collaborator cursors drifting around it, scattering when you approach.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "scene": "cursors",
+      "props": {
+        "word": "shared"
+      },
+      "tech": "DOM + CSS glass stack"
+    },
+    {
+      "id": "embroidery",
+      "title": "Embroidery",
+      "blurb": "Word-shaped patches stitched onto fabric, with satin stitch angles that follow each stroke and a merrowed border bead.",
+      "vibe": [
+        "craft"
+      ],
+      "status": "live",
+      "scene": "embroidery",
+      "props": {},
+      "tech": "WebGL, weave bump map"
+    },
+    {
+      "id": "materials",
+      "title": "The art of colour depth",
+      "blurb": "Ten button materials built from layering alone: glossy, glow, metal, layered, inset, glass, neon, duotone, satin, foil.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "scene": "materials",
+      "props": {
+        "label": "Buy now"
+      },
+      "tech": "CSS, tiny companion script"
+    },
+    {
+      "id": "liquid",
+      "title": "Liquid UI",
+      "blurb": "Two cards fuse and the corner between them bends inward, like they were poured together. One knob from crisp joint to gooey neck.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "scene": "liquid",
+      "props": {},
+      "tech": "SDF smooth-union + marching squares"
+    },
+    {
+      "id": "squircle",
+      "title": "Apple's corners",
+      "blurb": "A normal rounded corner has a kink where it meets the edge. The squircle eases in. Here they are side by side.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "scene": "squircle",
+      "props": {
+        "label": "Continue"
+      },
+      "tech": "Superellipse path generator"
+    },
+    {
+      "id": "text-reveal",
+      "title": "Text reveal",
+      "blurb": "Two corner blocks materialising through a cloudy front as wispy tendrils, then clearing the same way.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "scene": "text-reveal",
+      "props": {},
+      "tech": "WebGL fbm dissolve"
+    },
+    {
+      "id": "cta",
+      "title": "Aurora CTA",
+      "blurb": "Blurred colour bars rise from the floor behind a logotype, a tagline and a glossy pill button. The closing frame.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "scene": "cta",
+      "props": {
+        "brand": "newsreel"
+      },
+      "tech": "CSS gradients + colour-depth glossy"
+    },
+    {
+      "id": "emboss",
+      "title": "Realistic emboss",
+      "blurb": "A word or SVG pressed into plaster, with bevel, light angle and surface controls. Nine presets from sharp to pillow.",
+      "vibe": [
+        "craft"
+      ],
+      "status": "live",
+      "tech": "WebGL height field, generated plaster",
+      "scene": "emboss",
+      "props": {
+        "word": "press"
+      }
+    },
+    {
+      "id": "ransom",
+      "title": "Ransom note",
+      "blurb": "Every letter torn from a different magazine and taped down crooked, with seeded jitter you can re-roll.",
+      "vibe": [
+        "playful"
+      ],
+      "status": "live",
+      "tech": "2D canvas",
+      "scene": "ransom",
+      "props": {
+        "text": "RANSOM"
+      }
+    },
+    {
+      "id": "word-stickers",
+      "title": "Word stickers",
+      "blurb": "Die-cut vinyl word stickers you can grab and fling, with a border generated by dilating the glyph silhouette.",
+      "vibe": [
+        "playful"
+      ],
+      "status": "live",
+      "tech": "Canvas dilate + fling physics",
+      "scene": "word-stickers",
+      "props": {}
+    },
+    {
+      "id": "design-tiles",
+      "title": "Design tiles",
+      "blurb": "A sentence packed edge to edge as solid colour tiles, flying in with clip-path wipes and re-rolling their swatches.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "tech": "SVG + DOM, measured per glyph",
+      "scene": "design-tiles",
+      "props": {}
+    },
+    {
+      "id": "badge-trail",
+      "title": "Badge trail",
+      "blurb": "Tiny mono badges of typography terms drop behind the cursor and fade, never overlapping.",
+      "vibe": [
+        "playful"
+      ],
+      "status": "live",
+      "tech": "DOM + rAF",
+      "scene": "badge-trail",
+      "props": {
+        "words": [
+          "kerning",
+          "ligature",
+          "x-height",
+          "baseline",
+          "tracking",
+          "counter",
+          "ascender",
+          "serif"
+        ]
+      }
+    },
+    {
+      "id": "image-galaxy",
+      "title": "Image galaxy",
+      "blurb": "A perspective field of small images drifting behind text, parallaxed by depth and wrapping infinitely.",
+      "vibe": [
+        "backgrounds"
+      ],
+      "status": "live",
+      "tech": "DOM transforms, no WebGL",
+      "scene": "galaxy",
+      "props": {
+        "text": "depth",
+        "count": 60
+      }
+    },
+    {
+      "id": "pixel-field",
+      "title": "Pixel field",
+      "blurb": "Images cycling in and out of chunky pixelation, with a swap that slides, scales and skews.",
+      "vibe": [
+        "backgrounds"
+      ],
+      "status": "live",
+      "tech": "2D canvas, nearest-neighbour",
+      "scene": "pixel-field",
+      "props": {}
+    },
+    {
+      "id": "ghost-reveal",
+      "title": "Ghost reveal",
+      "blurb": "A feathered mask slides across an element in any of four directions, so it materialises rather than fades.",
+      "vibe": [
+        "motion"
+      ],
+      "status": "live",
+      "tech": "CSS mask",
+      "scene": "ghost-reveal",
+      "props": {
+        "text": "materialise",
+        "direction": "right"
+      }
+    },
+    {
+      "id": "dia-gradient",
+      "title": "Aurora gradients",
+      "blurb": "Three background treatments: blurred bars, a bezier mountain, and a colour-dodge dome, each rising into place.",
+      "vibe": [
+        "backgrounds"
+      ],
+      "status": "live",
+      "tech": "SVG gradients + blur filter",
+      "scene": "aurora",
+      "props": {}
+    },
+    {
+      "id": "figma-frame",
+      "title": "Design-tool chrome",
+      "blurb": "The selection frame from a vector editor: marching border, corner handles and a live size badge, wrapping any element.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "tech": "DOM + SVG",
+      "scene": "figma-frame",
+      "props": {
+        "title": "Selection",
+        "label": "Hero / Card"
+      }
+    },
+    {
+      "id": "hover-video",
+      "title": "Hover video pill",
+      "blurb": "Pills that open into a moving clip on hover, with the playback rate on a spring so leaving winds down instead of stopping.",
+      "vibe": [
+        "ui"
+      ],
+      "status": "live",
+      "tech": "DOM + 2D canvas",
+      "scene": "hover-video",
+      "props": {}
+    },
+    {
+      "id": "symbols",
+      "title": "Symbols effect",
+      "blurb": "Any picture rebuilt from glyph stamps in four hard brightness bands, so it survives as tone and reads as type.",
+      "vibe": [
+        "motion"
+      ],
+      "status": "live",
+      "tech": "2D canvas halftone",
+      "scene": "symbols",
+      "props": {}
+    },
+    {
+      "id": "ascii-wordmark",
+      "title": "ASCII particle wordmark",
+      "blurb": "Flow-field particles caught into the shape of a word, sampled back into a grid of ASCII glyphs that drift and thicken.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "tech": "2D canvas, CPU particles",
+      "scene": "ascii-wordmark",
+      "props": {
+        "word": "ascii"
+      }
+    },
+    {
+      "id": "pixel-scan",
+      "title": "Pixel scan",
+      "blurb": "A diagonal band sweeps across and assembles a word out of a spray of tiny coloured blocks, then rests as solid text.",
+      "vibe": [
+        "titles"
+      ],
+      "status": "live",
+      "tech": "2D canvas",
+      "scene": "pixel-scan",
+      "props": {
+        "word": "SCAN"
+      }
+    },
+    {
+      "id": "image-sphere",
+      "title": "Image sphere",
+      "blurb": "A cloud of images orbiting an invisible sphere, billboarded to the camera, hazing into the background at the back.",
+      "vibe": [
+        "backgrounds"
+      ],
+      "status": "live",
+      "tech": "2D canvas, hand-projected",
+      "scene": "image-sphere",
+      "props": {
+        "count": 84
+      }
+    },
+    {
+      "id": "gold-scar",
+      "title": "Loot beam",
+      "blurb": "An object turning inside a shaft of golden light, ringed with a silhouette outline and rising motes.",
+      "vibe": [
+        "3d"
+      ],
+      "status": "live",
+      "tech": "2D canvas, hand-projected",
+      "scene": "loot-beam",
+      "props": {
+        "label": "Ancient Relic",
+        "rarity": "legendary"
+      }
+    },
+    {
+      "id": "lego",
+      "title": "Style melt",
+      "blurb": "A portrait cycling through art styles and melting back to the untouched photo along a cursor trail of merged blocks.",
+      "vibe": [
+        "playful"
+      ],
+      "status": "live",
+      "tech": "2D canvas filters",
+      "scene": "style-melt",
+      "props": {}
+    },
+    {
+      "id": "fire-field",
+      "title": "Pixel fire",
+      "blurb": "A pixel fire on a low-res grid that you can shove around with the cursor, healing back as it burns. Simulated, not sprite-sheeted.",
+      "vibe": [
+        "playful"
+      ],
+      "status": "live",
+      "tech": "Canvas 2D cellular fire, own art",
+      "scene": "fire",
+      "props": {}
+    }
+  ]
 }

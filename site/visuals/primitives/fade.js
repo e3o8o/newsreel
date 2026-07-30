@@ -1,4 +1,4 @@
-// visuals/src/fade/shaders.ts
+// src/fade/shaders.ts
 var FULL_VERT = `
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -305,7 +305,7 @@ void main() {
 }
 `;
 
-// visuals/src/fade/text-mask.ts
+// src/fade/text-mask.ts
 var ANCHOR_Y = 0.42;
 function makeWordMask(word, w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
@@ -342,7 +342,7 @@ function measureWord(word, fontFamily) {
   return Math.round(probe.measureText(word).width);
 }
 
-// visuals/src/fade/engine.ts
+// src/fade/engine.ts
 var DEFAULTS = {
   // Many copies at a near-1px step. Spacing them further apart makes each copy
   // land clear of the last, which reads as stacked ghosts rather than one
@@ -1050,7 +1050,7 @@ var FadeMotion = class {
   }
 };
 
-// visuals/src/fade/adapter.ts
+// src/fade/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     setFadeWord(String(props.word ?? "financecrew"));

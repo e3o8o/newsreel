@@ -1,4 +1,4 @@
-// visuals/src/word-stickers/stickers.ts
+// src/word-stickers/stickers.ts
 var FONT = "var(--font-mondwest)";
 var STICKERS = [
   { word: "wow", font: FONT, weight: 400, outline: "#ff2e6e", fill: "#2b0b4f", x: 0.17, y: 0.28, rot: 0 },
@@ -9,7 +9,7 @@ var STICKERS = [
   { word: "ship it", font: FONT, weight: 400, outline: "#1668ff", fill: "#7dffb0", x: 0.2, y: 0.55, rot: 0 }
 ];
 
-// visuals/src/word-stickers/sticker-render.ts
+// src/word-stickers/sticker-render.ts
 function renderSticker(opts) {
   const dpr = opts.dpr ?? Math.min(window.devicePixelRatio || 1, 2);
   const size = opts.fontSizePx;
@@ -60,7 +60,7 @@ function renderSticker(opts) {
   return { canvas, width: cssW, height: cssH };
 }
 
-// visuals/src/word-stickers/gl-sticker.ts
+// src/word-stickers/gl-sticker.ts
 var StickerGL = class {
   canvas = document.createElement("canvas");
   available = false;
@@ -77,7 +77,7 @@ var StickerGL = class {
   }
 };
 
-// visuals/src/word-stickers/engine.ts
+// src/word-stickers/engine.ts
 function resolveFamily(cssFamily) {
   const probe = document.createElement("span");
   probe.style.fontFamily = cssFamily;
@@ -470,7 +470,7 @@ var WordStickers = class {
   }
 };
 
-// visuals/src/word-stickers/adapter.ts
+// src/word-stickers/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (Array.isArray(props.words) && props.words.length) {

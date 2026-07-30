@@ -1,4 +1,4 @@
-// visuals/src/aurora/adapter.ts
+// src/aurora/adapter.ts
 var NS = "http://www.w3.org/2000/svg";
 var VBW = 1271;
 var VBH = 599;

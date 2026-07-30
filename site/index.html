@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>newsreel — a week of work, in two minutes</title>
-<meta name="description" content="Turn a week of shipped work into a written report and a narrated demo video. Ships a collection of web visuals you can put in a video or drop straight into your site." />
+<title>newsreel — videos your repo knows how to build</title>
+<meta name="description" content="Build narrated videos from a config file: weekly reports, product demos, ads, launch films. Drives your real app in a browser, narrates locally, assembles with ffmpeg. Ships a collection of web visuals you can put in a video or drop straight into your site." />
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -14,6 +14,7 @@
   <div class="nav-inner">
     <a class="brand" href="#top">newsreel</a>
     <div class="nav-links">
+      <a href="#kinds">Kinds</a>
       <a href="#collection">Collection</a>
       <a href="#studio">Studio</a>
       <a href="#use">Use it</a>
@@ -25,12 +26,13 @@
 <!-- ══ hero ════════════════════════════════════════════════════════════════ -->
 <header class="hero" id="top">
   <div class="hero-inner">
-    <p class="eyebrow"><span class="dot" aria-hidden="true"></span> open source · runs on your machine</p>
-    <h1>A week of work,<br /><em>in two minutes.</em></h1>
+    <p class="eyebrow">open source · runs on your machine</p>
+    <h1>Videos your repo<br /><em>knows how to build.</em></h1>
     <p class="lede">
       newsreel drives your real app in a browser, narrates it in a voice that never leaves
-      your laptop, and cuts the whole thing together. The visuals it ships are web components,
-      so they belong in your site as much as in your video.
+      your laptop, and cuts the whole thing together. A weekly report is only one of the
+      things it makes. Change one line and the same shot list becomes a product demo, an ad,
+      or a launch film.
     </p>
 
     <div class="hero-actions">
@@ -84,6 +86,20 @@
   </div>
 </section>
 
+<!-- ══ kinds ═══════════════════════════════════════════════════════════════ -->
+<section class="band alt" id="kinds">
+  <div class="wrap">
+    <h2 class="section-title">Four kinds of video, one shot list</h2>
+    <p class="section-sub">
+      What a video is <em>for</em> decides how it should look and move. Set
+      <code>video.kind</code> and the palette, accent, bed, pacing and title card follow.
+      The background is rolled from the family rather than fixed, so two ads come out
+      siblings instead of copies.
+    </p>
+    <div class="kinds" id="kind-grid"></div>
+  </div>
+</section>
+
 <!-- ══ collection ══════════════════════════════════════════════════════════ -->
 <section class="collection" id="collection">
   <div class="wrap">
@@ -91,7 +107,7 @@
       <div>
         <h2 class="section-title">The collection</h2>
         <p class="section-sub">
-          <span id="live-count">24</span> of <span id="all-count">35</span> run live right here.
+          <span id="live-count">35</span> of <span id="all-count">35</span> run live right here.
           Take the embed code for your site, the shot config for a video, or the build prompt
           to make your own variant.
         </p>

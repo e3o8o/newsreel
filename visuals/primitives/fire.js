@@ -1,4 +1,4 @@
-// visuals/src/fire/adapter.ts
+// src/fire/adapter.ts
 var W = 48;
 var H = 64;
 function ramp() {

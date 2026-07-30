@@ -1,4 +1,4 @@
-// visuals/src/tile-field/engine.ts
+// src/tile-field/engine.ts
 var TAU = Math.PI * 2;
 var ROWS = [
   {
@@ -310,7 +310,7 @@ var TileField = class {
   }
 };
 
-// visuals/src/shared/ghost.ts
+// src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -338,7 +338,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// visuals/src/tile-field/adapter.ts
+// src/tile-field/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (typeof props.word === "string" && props.word) ROWS[0].word = props.word;

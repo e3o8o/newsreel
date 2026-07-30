@@ -1,0 +1,179 @@
+[
+  {
+    "id": "report",
+    "about": "The weekly shipping report. Calm, legible, unhurried.",
+    "accent": "#22c55e",
+    "track": "calm",
+    "trackAbout": "mellow, ~90 BPM. Weekly reports, walkthroughs.",
+    "maxSpeed": 3,
+    "scenes": [
+      "typer",
+      "text-reveal",
+      "blur-glow",
+      "tile-field",
+      "dotcut"
+    ],
+    "backgrounds": [
+      {
+        "id": "granite",
+        "name": "Granite",
+        "css": "linear-gradient(135deg, #EDF5F2, #A3B8D1, #546B8C)"
+      },
+      {
+        "id": "arctic-lens",
+        "name": "Arctic Lens",
+        "css": "linear-gradient(135deg, #DEF2F0, #75C4DB, #4087ED)"
+      },
+      {
+        "id": "soft-linen",
+        "name": "Soft Linen",
+        "css": "linear-gradient(135deg, #F0F0EB, #CCE0F0, #F2C2B2)"
+      },
+      {
+        "id": "deep-ocean",
+        "name": "Deep Ocean",
+        "css": "linear-gradient(153deg, #0A0D80, #4230ED, #6BABFA)"
+      },
+      {
+        "id": "tidal-pool",
+        "name": "Tidal Pool",
+        "css": "linear-gradient(45deg, #144C8A, #40A3B8, #B2EBC7)"
+      }
+    ]
+  },
+  {
+    "id": "demo",
+    "about": "A product walkthrough. Confident, focused on the screen.",
+    "accent": "#0ea5e9",
+    "track": "driving",
+    "trackAbout": "confident mid-tempo, ~104 BPM. Demos, product tours.",
+    "maxSpeed": 2.5,
+    "scenes": [
+      "typer",
+      "liquid",
+      "squircle",
+      "materials",
+      "blur-reveal"
+    ],
+    "backgrounds": [
+      {
+        "id": "tidal-pool",
+        "name": "Tidal Pool",
+        "css": "linear-gradient(45deg, #144C8A, #40A3B8, #B2EBC7)"
+      },
+      {
+        "id": "lagoon",
+        "name": "Lagoon",
+        "css": "linear-gradient(135deg, #6EDBBF, #409ECC, #3859BF)"
+      },
+      {
+        "id": "granite",
+        "name": "Granite",
+        "css": "linear-gradient(135deg, #EDF5F2, #A3B8D1, #546B8C)"
+      },
+      {
+        "id": "arctic-lens",
+        "name": "Arctic Lens",
+        "css": "linear-gradient(135deg, #DEF2F0, #75C4DB, #4087ED)"
+      },
+      {
+        "id": "deep-ocean",
+        "name": "Deep Ocean",
+        "css": "linear-gradient(153deg, #0A0D80, #4230ED, #6BABFA)"
+      }
+    ]
+  },
+  {
+    "id": "ad",
+    "about": "A short, loud piece. Heat, pace, and a call to action.",
+    "accent": "#f59e0b",
+    "track": "upbeat",
+    "trackAbout": "energetic, ~124 BPM. Ads, launch videos, fast cuts.",
+    "maxSpeed": 3,
+    "scenes": [
+      "swirl",
+      "chroma",
+      "chrome",
+      "kinetic",
+      "fire",
+      "design-tiles",
+      "cta"
+    ],
+    "backgrounds": [
+      {
+        "id": "forge",
+        "name": "Forge",
+        "css": "linear-gradient(135deg, #2E0814, #DB2B2E, #FFAB40)"
+      },
+      {
+        "id": "neon-pulse",
+        "name": "Neon Pulse",
+        "css": "linear-gradient(225deg, #140538, #591FD6, #F2426B)"
+      },
+      {
+        "id": "ripe-mango",
+        "name": "Ripe Mango",
+        "css": "linear-gradient(135deg, #FCBF33, #F55436, #AB30E3)"
+      },
+      {
+        "id": "dawn-fire",
+        "name": "Dawn Fire",
+        "css": "linear-gradient(135deg, #FA4F94, #6652F2, #4AD6CC)"
+      },
+      {
+        "id": "coral-bloom",
+        "name": "Coral Bloom",
+        "css": "linear-gradient(135deg, #FA615C, #FCB55C, #E654A6)"
+      },
+      {
+        "id": "twilight",
+        "name": "Twilight",
+        "css": "linear-gradient(153deg, #3D1482, #9638F0, #F56BBD)"
+      }
+    ]
+  },
+  {
+    "id": "launch",
+    "about": "A launch film. Premium, deliberate, a little cinematic.",
+    "accent": "#a78bfa",
+    "track": "driving",
+    "trackAbout": "confident mid-tempo, ~104 BPM. Demos, product tours.",
+    "maxSpeed": 2.5,
+    "scenes": [
+      "chrome",
+      "emboss",
+      "blur-glow",
+      "fade",
+      "aurora",
+      "cursors",
+      "cta"
+    ],
+    "backgrounds": [
+      {
+        "id": "gemstone",
+        "name": "Gemstone",
+        "css": "linear-gradient(45deg, #1A1447, #5926A6, #C263F2)"
+      },
+      {
+        "id": "twilight",
+        "name": "Twilight",
+        "css": "linear-gradient(153deg, #3D1482, #9638F0, #F56BBD)"
+      },
+      {
+        "id": "neon-pulse",
+        "name": "Neon Pulse",
+        "css": "linear-gradient(225deg, #140538, #591FD6, #F2426B)"
+      },
+      {
+        "id": "sunrise",
+        "name": "Sunrise",
+        "css": "linear-gradient(45deg, #FA9EC4, #FAD178, #6BB5F5)"
+      },
+      {
+        "id": "sherbet",
+        "name": "Sherbet",
+        "css": "linear-gradient(135deg, #FF7D82, #FFBD7A, #8FC7FA)"
+      }
+    ]
+  }
+]

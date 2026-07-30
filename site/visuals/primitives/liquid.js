@@ -1,4 +1,4 @@
-// visuals/src/liquid/sdf.ts
+// src/liquid/sdf.ts
 function sdRoundBox(px, py, cx, cy, hw, hh, r) {
   const rr = Math.min(r, Math.min(hw, hh));
   const qx = Math.abs(px - cx) - hw + rr;
@@ -71,7 +71,7 @@ var Field = class {
   }
 };
 
-// visuals/src/liquid/marching-squares.ts
+// src/liquid/marching-squares.ts
 var fmt = (v) => v.toFixed(2);
 var EDGES = [
   [],
@@ -253,7 +253,7 @@ function fieldToPath(field, opts = {}) {
   };
 }
 
-// visuals/src/liquid/engine.ts
+// src/liquid/engine.ts
 var DEFAULT_PARAMS = { k: 26, cell: 6, smooth: 2 };
 var LiquidEngine = class {
   boxes = [];
@@ -304,7 +304,7 @@ var LiquidEngine = class {
   }
 };
 
-// visuals/src/liquid/adapter.ts
+// src/liquid/adapter.ts
 var VW = 720;
 var VH = 380;
 var bar = (w, h) => {
