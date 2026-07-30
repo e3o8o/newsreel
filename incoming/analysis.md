@@ -109,3 +109,46 @@ in the capture harness (the capture browser must never take the reduced path).
   simpler, reusable over any footage).
 - The harness architecture (single bundled page vs per-primitive pages).
 - Which primitives earn config-level names in v1 versus staying raw material.
+
+## Primitive catalog, Set 2
+
+| # | Drop | Primitive(s) | Pipeline surface |
+| --- | --- | --- | --- |
+| 9 | The typer | Character reveal: each glyph ripples through pill/highlight/border states before settling; per-line stagger via TyperGroup | Headline entrances on cards and generated scenes; framework-free, in()/out() driven |
+| 10 | Realistic emboss | WebGL plaster press: word or SVG embossed with bevel/light/surface controls, 9 presets | Logo stingers, tactile title cards, brand marks |
+| 11 | Chromatic glow | GPU bloom + chromatic split of a word; dark and light modes; built-in disperse-and-reform cycle transition | Neon titles; the disperse transition is a scene-swap language of its own |
+| 12 | Ransom note | Real torn-paper letter sprites composed per character, seeded jitter, slam-in entrance | Playful titles/quotes; needs the sprite pack (external asset, R2-hosted in source) |
+| 13 | Apple's corners | Squircle path generator + a full glossy-material component family (button, tabs, toggle, input, stepper, dropdown) | Styled UI props inside ads/demos; the path generator is a general shape utility |
+| 14 | Kinetic typography | Canvas 2D tile-warp: letter cut into a grid, tiles ripple on interference waves, duotone + chroma + grain | Motion backgrounds, title treatments; cheap (no WebGL) |
+| 15 | Liquid UI | SDF smooth-union + marching squares: cards fuse with concave fillets or gooey necks, one knob | Animated UI compositions for product-story scenes; morphs between layouts |
+| 16 | Fade motion | Single-pass WebGL trail accumulation: a word long-exposed into light or ink, 7 palettes, hero self-drive | Atmospheric titles/closers; palettes crossfade continuously |
+
+## Set 2 notes
+
+- Text-effect family is now deep: typer (9), emboss (10), chroma (11), ransom
+  (12), kinetic (14), fade (16), plus set 1's swirl. The eventual config should
+  expose ONE "title" scene kind with a style parameter, not seven scene kinds.
+- Entrance/exit vocabulary worth lifting engine-agnostically: typer's in/out,
+  chroma's disperse-and-reform, ransom's slam-and-settle and lift-blur-out,
+  kinetic's constant ripple, fade's palette wash. These are transition grammars
+  a recipe can name.
+- Hero self-drive appears twice (chroma's cycle mode, fade's ghost cursor +
+  palette timer): components animate themselves without a pointer, which is
+  exactly the capture-friendly property we need. Prefer these modes in scene
+  harness defaults.
+- Deterministic replay: ransom uses a seeded PRNG (mulberry32 + hashSeed) —
+  the strongest determinism story so far, and a pattern to demand of future
+  primitives. Chroma/fade/kinetic run on wall-clock (fine for capture).
+- Shared control-kit dependency: sets 1-2 playgrounds all import
+  ../swirl/controls and ../section-label — the playground chrome is NOT needed
+  for video use; only engines/components get harnessed. Also referenced but not
+  supplied: lib/haptics, lib/sound, lib/view-transition, ../../lib/video-sources
+  (already have from set 1), font vars (--font-neue-corp, --font-mondwest,
+  --font-woodland). Harness stubs cover all of these.
+- External assets: ransom needs the Resource Boy sprite pack + manifest.json
+  (royalty-free, but the actual files aren't in the drop); emboss needs
+  plaster/grunge textures from the same R2 bucket. Ask Karo for the asset bundle
+  or substitute our own.
+- Squircle drop is the odd one out: less a video effect, more a design-system
+  utility + material study. Value for video is the styled component props; value
+  for the wider toolbox is the path generator and the embedded material method.

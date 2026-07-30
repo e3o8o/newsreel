@@ -7540,3 +7540,8170 @@ Markup is always the same; only the second class changes:
 ```
 
 ```
+
+---
+
+## Set 2 (received 2026-07-30)
+
+9. You are given the complete source for a self-contained web visual: "The typer".
+
+What it is:
+- Most headlines fade in. The nice ones type in. A wave runs across the line, and as it passes each letter the letter flickers through a few states, a solid pill, a highlight, an outlined pill, then lands on plain text. Letters next to each other in the same state merge into one long rounded bar.
+- Below you can type your own text and change the color, the speed, and which states are in the mix. The colors are three variables, so it drops onto any theme.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### typer/standalone/typer.ts
+
+```ts
+// Typer — a character-by-character text reveal where each glyph ripples through a
+// pool of randomized visual states (filled pill, inverse, accent, outlined pill…)
+// before settling into plain text. Adjacent same-state chars merge into one
+// rounded bar (that corner-merging is pure CSS, see typer.css).
+//
+// The reveal is a frame loop: a normalized progress runs across the word, and each
+// character has its own bezier "control point" so the wave of state-changes ripples
+// smoothly instead of marching in a straight line. Per character, once progress has
+// passed it, it rolls through `cycles` random states, then settles.
+//
+// Framework-free. Attach one Typer to a [data-typer] element, then drive it with
+// in()/out()/inOut()/reset(). A TyperGroup runs several with a per-line stagger,
+// which is how a stacked block cascades in.
+
+// ── math helpers ──
+const clamp = (v: number, lo: number, hi: number) =>
+  v < lo ? lo : v > hi ? hi : v;
+
+// round v to the nearest multiple of step (quantizes the per-char progress so a
+// glyph holds each state for a beat instead of flickering every frame).
+const roundToStep = (v: number, step: number) => Math.round(v / step) * step;
+
+// linear remap of v from [inLo,inHi] into [outLo,outHi].
+const remap = (
+  v: number,
+  inLo: number,
+  inHi: number,
+  outLo: number,
+  outHi: number,
+) => ((v - inLo) * (outHi - outLo)) / (inHi - inLo) + outLo;
+
+// solve a cubic bezier easing y for a given x, control points (x1,y1)(x2,y2),
+// endpoints fixed at (0,0)(1,1). Newton's method with a bisection fallback. Used
+// once per character to place its reveal "control point" along an eased curve, so
+// the ripple accelerates and settles like the original.
+function bezierEase(
+  x: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  eps = 1e-6,
+): number {
+  const bx = (t: number) =>
+    3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t ** 2 * x2 + t ** 3;
+  const by = (t: number) =>
+    3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t ** 2 * y2 + t ** 3;
+  const bxDeriv = (t: number) =>
+    3 * (1 - t) ** 2 * x1 + 6 * (1 - t) * t * (x2 - x1) + 3 * t ** 2 * (1 - x2);
+
+  let t = x;
+  for (let i = 0; i < 8; i++) {
+    const dx = bx(t) - x;
+    if (Math.abs(dx) < eps) return by(t);
+    const d = bxDeriv(t);
+    if (Math.abs(d) < 1e-6) break;
+    t -= dx / d;
+  }
+  let lo = 0,
+    hi = 1;
+  t = x;
+  while (lo < hi) {
+    const cx = bx(t);
+    if (Math.abs(cx - x) < eps) return by(t);
+    if (cx < x) lo = t;
+    else hi = t;
+    t = (lo + hi) / 2;
+  }
+  return by(t);
+}
+
+// the full pool of per-character states (CSS class suffixes). Any subset can be
+// used; they get shuffled per run so the ripple never looks the same twice.
+export const ALL_VARIATIONS = [
+  "charFill",
+  "charInverse",
+  "charAccent",
+  "charAccentInverse",
+  "charAccentFill",
+  "charBorder",
+] as const;
+
+export type TyperType = "initial" | "in" | "out" | "inout" | "done";
+
+export interface TyperOptions {
+  fps?: number; // frames per second of the reveal loop
+  cycles?: number; // how many random states each char rolls through
+  cycleLength?: number; // fraction of frames spent settling (0..1)
+  delay?: number; // seconds before this typer's loop starts (per-line stagger)
+  variations?: string[]; // which state classes are in the pool
+  initVisible?: boolean; // start fully revealed (no animation)
+}
+
+interface CharNode {
+  el: HTMLSpanElement;
+  cp: number; // per-char control point (bezier-eased position along the word)
+  currentClass: string;
+}
+
+export class Typer {
+  private element: HTMLElement;
+  private originalContent: string;
+  private source: string;
+  private length: number;
+  private fps: number;
+  private cycles: number;
+  private cycleLength: number;
+  private frames: number;
+  private frame = 0;
+  private loop: number | null = null;
+  private delay: number;
+  private delayTimer: number | null = null;
+  private charNodes: CharNode[] = [];
+  private type: TyperType = "initial";
+  private divisor: number;
+  private denominator: number;
+  private variations: string[];
+  private initVisible: boolean;
+
+  constructor(element: HTMLElement, opts: TyperOptions = {}) {
+    this.element = element;
+    this.originalContent = element.innerHTML;
+    this.source = element.textContent || "";
+    this.length = this.source.replace(/\s/g, "").length;
+    this.fps = opts.fps ?? 20;
+    this.cycles = opts.cycles ?? 3;
+    this.cycleLength = opts.cycleLength ?? 0.5;
+    // total frames scales a little with word length so long lines don't feel rushed.
+    this.frames = this.length ? this.fps * (1 + this.length * 0.01) : 0;
+    this.delay = opts.delay ?? 0;
+    this.divisor = this.length > 1 ? this.length - 1 : 1;
+    this.denominator = this.frames - this.frames * this.cycleLength || 1;
+
+    this.variations = (opts.variations ?? [...ALL_VARIATIONS]).slice();
+    this.shuffle();
+    this.initVisible = opts.initVisible ?? false;
+
+    if (this.length) {
+      this.build();
+      if (this.initVisible) {
+        this.charNodes.forEach((n) => this.setClass(n, "char"));
+        this.type = "done";
+        this.element.dataset.typerType = "done";
+      } else {
+        this.applyFrame();
+        this.element.dataset.typerType = "initial";
+      }
+    }
+  }
+
+  // split into words (preserving whitespace nodes) and wrap each char in a span.
+  // Each char gets a bezier-eased control point from its position in the word.
+  private build() {
+    this.element.innerHTML = "";
+    this.charNodes = [];
+    const parts = this.source.split(/(\s+)/);
+    let i = 0;
+    for (const part of parts) {
+      if (part.trim() === "") {
+        this.element.append(document.createTextNode(part));
+        continue;
+      }
+      const word = document.createElement("span");
+      word.className = "word";
+      for (const ch of part.split("")) {
+        const pos = i / this.divisor;
+        // ease the control point so chars near the start reveal sooner, with a
+        // smooth ramp; quantize to 0.05 so states hold for a beat.
+        const cp = roundToStep(bezierEase(pos, 0, 0.75, 0.75, 0), 0.05);
+        const span = document.createElement("span");
+        span.className = "char charInit";
+        span.textContent = ch || " ";
+        this.charNodes.push({ el: span, cp, currentClass: "char charInit" });
+        i += 1;
+        word.appendChild(span);
+      }
+      this.element.appendChild(word);
+    }
+  }
+
+  // swap this typer to new text and rebuild (used by the "type your own" control).
+  reset(text: string) {
+    this.stopLoop();
+    this.source = text;
+    this.length = text.replace(/\s/g, "").length;
+    this.divisor = this.length > 1 ? this.length - 1 : 1;
+    this.frames = this.length ? this.fps * (1 + this.length * 0.01) : 0;
+    this.denominator = this.frames - this.frames * this.cycleLength || 1;
+    this.frame = 0;
+    this.type = "initial";
+    this.build();
+    this.applyFrame();
+    this.element.dataset.typerType = "initial";
+  }
+
+  in() {
+    this.setType("in");
+  }
+  out() {
+    this.setType("out");
+  }
+  inOut() {
+    this.setType("inout");
+  }
+
+  private setType(t: TyperType) {
+    if (t === this.type && t !== "inout") return;
+    this.type = t;
+    this.element.dataset.typerType = t;
+    this.stopLoop();
+    this.frame = 0;
+    this.applyFrame();
+    if (t !== "initial" && this.charNodes.length) this.startLoop();
+  }
+
+  private startLoop() {
+    if (this.loop || this.delayTimer || !this.charNodes.length) return;
+    if (this.type === "initial") return;
+    this.shuffle();
+    const begin = () => {
+      this.delayTimer = null;
+      if (this.loop || this.type === "initial") return;
+      this.applyFrame();
+      this.loop = window.setInterval(() => this.tick(), 1000 / this.fps);
+    };
+    if (this.delay > 0) {
+      this.delayTimer = window.setTimeout(begin, this.delay * 1000);
+    } else {
+      begin();
+    }
+  }
+
+  private stopLoop() {
+    if (this.delayTimer) {
+      window.clearTimeout(this.delayTimer);
+      this.delayTimer = null;
+    }
+    if (this.loop) {
+      window.clearInterval(this.loop);
+      this.loop = null;
+    }
+  }
+
+  private tick() {
+    // inout runs the in phase then the out phase back to back (2x the frames).
+    const total = this.type === "inout" ? this.frames * 2 : this.frames;
+    this.frame += 1;
+    this.frame = clamp(this.frame, 0, total);
+    this.applyFrame();
+    if (this.frame >= total) {
+      this.stopLoop();
+      this.type = "done";
+      this.element.dataset.typerType = "done";
+    }
+  }
+
+  // paint every char's class for the current frame.
+  private applyFrame() {
+    if (!this.length || !this.charNodes.length) return;
+    if (this.type === "initial") {
+      this.charNodes.forEach((n) => this.setClass(n, "char charInit"));
+      return;
+    }
+    // in the inout case, the second half is the "out" phase.
+    const phase =
+      this.type === "inout" && this.frame > this.frames
+        ? "out"
+        : this.type === "inout"
+          ? "in"
+          : this.type;
+    const progress =
+      (this.type === "inout" && phase === "out"
+        ? this.frame - this.frames
+        : this.frame) / this.denominator;
+
+    for (const node of this.charNodes) {
+      // this char's local progress = global progress minus its control-point offset.
+      let p = progress - node.cp;
+      p = roundToStep(p, 0.1);
+      p = clamp(p, 0, 1);
+
+      // pick a state: while mid-reveal, roll through the shuffled pool by cycle.
+      let variation = "charInit";
+      if (p > 0) {
+        const idx = Math.round(remap(p, 0, 1, 0, this.cycles));
+        variation = this.variations[idx % this.variations.length];
+      }
+      if (p >= 1) variation = ""; // settled → plain char
+      const midClass = variation ? `char ${variation}` : "char";
+
+      // "in" ramps charInit → states → plain; "out" runs it in reverse.
+      let cls: string;
+      if (phase === "in") {
+        cls = p <= 0 ? "char charInit" : p >= 1 ? "char" : midClass;
+      } else {
+        cls = p <= 0 ? "char" : p >= 1 ? "char charInit" : midClass;
+      }
+      this.setClass(node, cls);
+    }
+  }
+
+  private setClass(node: CharNode, cls: string) {
+    if (cls === node.currentClass) return;
+    node.currentClass = cls;
+    node.el.className = cls;
+  }
+
+  private shuffle() {
+    this.variations.sort(() => 0.5 - Math.random());
+  }
+
+  destroy() {
+    this.stopLoop();
+    this.element.innerHTML = this.originalContent;
+    delete this.element.dataset.typerType;
+  }
+}
+
+// Runs several typers together with a per-line stagger, so a stacked block cascades
+// in top-to-bottom. Each line's `delay` offsets when its reveal starts.
+export class TyperGroup {
+  private typers: Typer[] = [];
+
+  constructor(
+    elements: HTMLElement[],
+    opts: Omit<TyperOptions, "delay"> = {},
+    stagger = 0.15, // seconds between consecutive lines
+  ) {
+    this.typers = elements.map(
+      (el, i) => new Typer(el, { ...opts, delay: i * stagger }),
+    );
+  }
+
+  in() {
+    this.typers.forEach((t) => t.in());
+  }
+  out() {
+    this.typers.forEach((t) => t.out());
+  }
+  destroy() {
+    this.typers.forEach((t) => t.destroy());
+  }
+}
+
+```
+
+### typer/standalone/typer.css
+
+```css
+/* Typer — the styling for the character reveal. The engine (typer.ts) swaps each
+   char's class between these states; the CSS is what makes a state look like a
+   solid pill, an outlined pill, an accent block, and so on. The nicest trick is
+   pill-merging: adjacent same-state chars round only at the two outer ends, so a
+   run of them reads as one continuous rounded bar, not separate boxes.
+
+   Everything is themed from four custom properties, so a preset can recolor the
+   text, the pill fills, AND the borders all at once:
+     --typer-fg          the base ink (plain letters, ink pills, ink borders)
+     --typer-bg          the page / knockout color inside a filled pill
+     --typer-accent      the accent surface (accent pill fills, accent borders)
+     --typer-accent-ink  the text color that sits ON an accent fill
+   Set them on the [data-typer] element or any ancestor. */
+
+[data-typer] {
+  --typer-fg: #1b1b1b;
+  --typer-bg: #fcfcfc;
+  --typer-accent: #12a150;
+  --typer-accent-ink: #fcfcfc;
+  --typer-radius: 5px;
+}
+
+/* before the reveal runs, the whole line is invisible (chars are charInit). */
+[data-typer][data-typer-type="initial"] {
+  opacity: 0;
+}
+
+[data-typer] .word {
+  white-space: pre; /* keep intra-word spacing exact */
+}
+
+[data-typer] .word .char {
+  box-sizing: content-box;
+  display: inline-block;
+  color: var(--typer-fg);
+  background: transparent;
+  transition: none; /* state changes are discrete frames, not tweened */
+}
+
+/* not yet revealed → transparent (holds the layout, shows nothing). */
+[data-typer] .word .char.charInit {
+  color: transparent;
+}
+
+/* ── Solid pill: ink block, knockout text. Adjacent fills merge into one bar. ── */
+[data-typer] .word .char.charFill {
+  color: var(--typer-bg);
+  background: var(--typer-fg);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charFill:has(+ .charFill) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charFill + .charFill {
+  border-radius: 0;
+}
+[data-typer] .word .char.charFill + .charFill:last-child,
+[data-typer] .word .char.charFill + .charFill:has(+ :not(.charFill)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+/* ── Inverse: ink knockout, no rounding (a hard block). ── */
+[data-typer] .word .char.charInverse {
+  color: var(--typer-bg);
+  background: var(--typer-fg);
+}
+
+/* ── Accent: colored LETTERS on the page (no pill) — the accent reaching the
+      text itself, not just a fill. ── */
+[data-typer] .word .char.charAccent {
+  color: var(--typer-accent);
+  background: transparent;
+}
+
+/* ── Accent inverse: an accent PILL with knockout text sitting on it. Merges into
+      a bar like the ink fill. ── */
+[data-typer] .word .char.charAccentInverse {
+  color: var(--typer-accent-ink);
+  background: var(--typer-accent);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charAccentInverse:has(+ .charAccentInverse) {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charAccentInverse + .charAccentInverse {
+  border-radius: 0;
+}
+[data-typer] .word .char.charAccentInverse + .charAccentInverse:last-child,
+[data-typer]
+  .word
+  .char.charAccentInverse
+  + .charAccentInverse:has(+ :not(.charAccentInverse)) {
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+/* ── Accent fill: a briefly solid block of pure accent (both fill and text). ── */
+[data-typer] .word .char.charAccentFill {
+  color: var(--typer-accent);
+  background: var(--typer-accent);
+}
+
+/* ── Outlined pill: an ACCENT border box around ink text; a run merges like the
+      solid pill, but by dropping the inner vertical borders instead of the fill. ── */
+[data-typer] .word .char.charBorder {
+  position: relative;
+  color: var(--typer-fg);
+}
+[data-typer] .word .char.charBorder::after {
+  content: "";
+  display: inline-block;
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--typer-accent);
+  border-radius: var(--typer-radius);
+}
+[data-typer] .word .char.charBorder:has(+ .charBorder)::after {
+  border-right: 1px solid transparent;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-typer] .word .char.charBorder + .charBorder::after {
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  border-radius: 0;
+}
+[data-typer] .word .char.charBorder + .charBorder:last-child::after,
+[data-typer] .word .char.charBorder + .charBorder:has(+ :not(.charBorder))::after {
+  border-left: 1px solid transparent;
+  border-right: 1px solid var(--typer-accent);
+  border-radius: 0 var(--typer-radius) var(--typer-radius) 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* no reveal animation: show the text plainly. */
+  [data-typer][data-typer-type="initial"] {
+    opacity: 1;
+  }
+  [data-typer] .word .char.charInit {
+    color: var(--typer-fg);
+  }
+}
+
+```
+
+### typer/standalone/typer.html
+
+```html
+<!-- Typer — a stacked block of lines that reveal character by character, each glyph
+     rippling through randomized pill/highlight/border states before it settles.
+     Load typer.css, put one [data-typer] element per line, then drive them with a
+     TyperGroup (from typer.ts) for the top-to-bottom cascade.
+
+     Colors are three custom properties (set them on any ancestor):
+       --typer-fg  ink/pill · --typer-bg  page/knockout · --typer-accent  highlight -->
+
+<link rel="stylesheet" href="typer.css" />
+
+<div class="typer-block" style="display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;font-weight:600;font-size:clamp(1.4rem,4vw,2.4rem)">
+  <span data-typer data-typer-type="initial">design engineered by me :)</span>
+</div>
+
+<!-- typer.ts is an ES module. Instantiate a TyperGroup over the lines and reveal
+     them; the group staggers each line so the block cascades in top-to-bottom. -->
+<script type="module">
+  import { TyperGroup } from "./typer.js"; // built from typer.ts
+
+  const lines = [...document.querySelectorAll("[data-typer]")];
+  const group = new TyperGroup(
+    lines,
+    { fps: 20, cycles: 3 }, // tune speed and how many states each char rolls through
+    0.15, // seconds of stagger between consecutive lines
+  );
+
+  // reveal once the block scrolls into view
+  const io = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting) {
+      group.in();
+      io.disconnect();
+    }
+  }, { threshold: 0.4 });
+  io.observe(document.querySelector(".typer-block"));
+</script>
+
+```
+
+
+10. You are given the complete source for a self-contained web visual: "Realistic emboss".
+
+What it is:
+- Really liked the emboss effect people do, so I replicated it in web.
+- Type your own word or drop an SVG, then play with the depth, the light, and the surface until it feels right. The presets are good places to start.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### emboss/params.ts
+
+```ts
+// The editable emboss parameters + presets. Each preset is a distinct bevel character
+// (relief, bevel width, soften, light, highlight/shadow) paired with its own tint and
+// plaster slice. The playground edits an EmbossParams; the card renders three fixed
+// ones. One source of truth for both.
+
+export type EmbossParams = {
+  // bevel
+  depth: number; // relief strength      (~0.4..1.9)
+  size: number; // bevel width in px @ the 620px card height
+  soften: number; // extra edge softening
+  // light
+  angle: number; // degrees
+  altitude: number; // degrees (low = raking)
+  highlight: number; // 0..1 highlight opacity
+  shadow: number; // 0..1 shadow opacity
+  // surface
+  contrast: number; // plaster grain punch
+  bright: number; // panel brightness
+  tint: [number, number, number];
+  texOffset: [number, number]; // which plaster region
+  texScale: number; // plaster zoom
+};
+
+// Map a raw bevel spec (relief %, bevel size, soften, light, hi/sh) to EmbossParams,
+// normalizing the ranges to this WebGL model. Size is capped so a wide bevel stays
+// crisp rather than going soft/blobby.
+function fromSpec(a: {
+  depth: number;
+  size: number;
+  soften: number;
+  angle: number;
+  alt: number;
+  hi: number;
+  sh: number;
+}): Omit<EmbossParams, "tint" | "texOffset" | "texScale" | "contrast" | "bright"> {
+  return {
+    depth: 0.55 + (Math.min(a.depth, 1000) / 1000) * 1.2,
+    // cap at 6px: past that the bevel goes soft/blobby in this model, so the wide
+    // specs (size 15-20) are clamped to a crisp edge.
+    size: Math.min(6, Math.max(1, (a.size / 4.17) * 2.2)),
+    soften: Math.min(2, a.soften / 4.17),
+    angle: a.angle,
+    altitude: a.alt,
+    highlight: a.hi / 100,
+    shadow: a.sh / 100,
+  };
+}
+
+export type Preset = { id: string; name: string; params: EmbossParams };
+
+// Shared grain; bright ~2 so tints read as vivid colored walls. Each preset overrides
+// tint AND texture (region + zoom), so presets cycle bold color AND surface variety.
+const SURFACE = { contrast: 0.32, bright: 2.0 };
+type RGB = [number, number, number];
+type XY = [number, number];
+
+// Nine presets, each a genuinely distinct hue (spread across the wheel: red, orange,
+// yellow, green, teal, blue, indigo, violet, magenta) + its own texture slice.
+export const PRESETS: Preset[] = [
+  { id: "sharp", name: "Sharp",
+    params: { ...fromSpec({ depth: 188, size: 1, soften: 1, angle: 73, alt: 21, hi: 15, sh: 10 }), ...SURFACE, tint: [1.0, 0.42, 0.42] as RGB, texOffset: [0.0, 0.0] as XY, texScale: 1.35 } }, // red
+  { id: "press", name: "Press",
+    params: { ...fromSpec({ depth: 188, size: 5, soften: 3, angle: 73, alt: 21, hi: 20, sh: 20 }), ...SURFACE, tint: [1.0, 0.62, 0.24] as RGB, texOffset: [0.4, 0.15] as XY, texScale: 1.0 } }, // orange
+  { id: "brutal", name: "Brutal",
+    params: { ...fromSpec({ depth: 1000, size: 20, soften: 10, angle: 73, alt: 21, hi: 25, sh: 20 }), ...SURFACE, tint: [0.98, 0.85, 0.2] as RGB, texOffset: [0.6, 0.55] as XY, texScale: 1.9 } }, // yellow
+  { id: "soft", name: "Soft",
+    params: { ...fromSpec({ depth: 188, size: 15, soften: 7, angle: 73, alt: 21, hi: 12, sh: 8 }), ...SURFACE, tint: [0.42, 0.9, 0.42] as RGB, texOffset: [0.2, 0.7] as XY, texScale: 0.7 } }, // green
+  { id: "wide", name: "Wide",
+    params: { ...fromSpec({ depth: 469, size: 20, soften: 5, angle: 90, alt: 30, hi: 10, sh: 10 }), ...SURFACE, tint: [0.2, 0.85, 0.75] as RGB, texOffset: [0.75, 0.1] as XY, texScale: 1.5 } }, // teal
+  { id: "deep", name: "Deep",
+    params: { ...fromSpec({ depth: 1000, size: 12, soften: 12, angle: 90, alt: 30, hi: 10, sh: 6 }), ...SURFACE, tint: [0.34, 0.62, 1.0] as RGB, texOffset: [0.1, 0.4] as XY, texScale: 2.2 } }, // blue
+  { id: "crisp", name: "Crisp",
+    params: { ...fromSpec({ depth: 1000, size: 2, soften: 3, angle: 90, alt: 30, hi: 20, sh: 10 }), ...SURFACE, tint: [0.55, 0.45, 1.0] as RGB, texOffset: [0.55, 0.8] as XY, texScale: 1.15 } }, // indigo
+  { id: "highkey", name: "High key",
+    params: { ...fromSpec({ depth: 646, size: 4, soften: 4, angle: 90, alt: 30, hi: 25, sh: 25 }), ...SURFACE, tint: [0.82, 0.42, 1.0] as RGB, texOffset: [0.3, 0.25] as XY, texScale: 0.85 } }, // violet
+  { id: "pillow", name: "Pillow",
+    params: { ...fromSpec({ depth: 1000, size: 5, soften: 16, angle: 73, alt: 21, hi: 10, sh: 10 }), ...SURFACE, tint: [1.0, 0.42, 0.78] as RGB, texOffset: [0.85, 0.6] as XY, texScale: 0.6 } }, // magenta
+];
+
+export function defaultParams(): EmbossParams {
+  return { ...PRESETS[1].params }; // Press
+}
+
+// A tasteful random surface (tint + texture region/zoom) for Remix. Tints are kept
+// light + soft (mixed toward white) so the plaster always reads as a real wall.
+function randomSurface(): Pick<
+  EmbossParams,
+  "tint" | "texOffset" | "texScale" | "contrast" | "bright"
+> {
+  // Bold BUT bright tint: a saturated hue mixed partway toward white so no channel is
+  // ever near 0 (pure red/indigo would multiply the wall to near-black). This keeps
+  // every color vivid AND light enough to read the press.
+  const hue = Math.random() * 360;
+  const s = 0.55 + Math.random() * 0.2; // saturated, not extreme
+  const c = s;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const seg = [
+    [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+  ][Math.floor(hue / 60) % 6];
+  // lift toward white so the darkest channel stays >= ~0.55 (vivid but not dark)
+  const lift = 0.55;
+  const tint: [number, number, number] = [
+    seg[0] * (1 - lift) + lift,
+    seg[1] * (1 - lift) + lift,
+    seg[2] * (1 - lift) + lift,
+  ];
+  return {
+    tint,
+    texOffset: [Math.random(), Math.random()],
+    texScale: 0.85 + Math.random() * 0.9, // avoid extreme zoom
+    contrast: 0.25 + Math.random() * 0.2, // low grain
+    bright: 1.85 + Math.random() * 0.2,
+  };
+}
+
+// Remix: a random preset's bevel, plus a fresh random surface. Returns a full
+// EmbossParams. Remix ALWAYS produces a crisp, tight press: the wide/soft presets
+// (size 15-20, soften 7-16) read as a big blurry mush, so we force a small size and
+// low soften every time. Only the light + surface really vary between remixes.
+export function remixParams(): EmbossParams {
+  const preset = PRESETS[Math.floor(Math.random() * PRESETS.length)];
+  const surf = randomSurface();
+  return {
+    ...preset.params,
+    ...surf,
+    highlight: Math.max(preset.params.highlight, 0.22),
+    shadow: Math.max(preset.params.shadow, 0.3),
+    // a good crisp relief, not a faint one
+    depth: Math.max(preset.params.depth, 1.0),
+    // ALWAYS a tight, sharp edge: small size + low soften. This is the single biggest
+    // thing that made remixes look bad (a soft 6px bevel reads as a blurry blob).
+    size: 1 + Math.random() * 1.5,      // 1.0 - 2.5px
+    soften: Math.random() * 0.6,        // 0 - 0.6px
+  };
+}
+
+```
+
+### emboss/content-mask.ts
+
+```ts
+// Rasterizes the pressed CONTENT (a word and/or an SVG shape, composed together) into
+// a height field for the emboss shader. Blurs once on the CPU at the bevel radius.
+// Packed: R = crisp coverage, G = blurred height. Async because an SVG is drawn via an
+// <img> that must load.
+
+export type Content = {
+  word: string; // pressed word (empty in image mode)
+  svg: string | null; // raw SVG markup (null in text mode)
+};
+
+export async function makeContentField(
+  content: Content,
+  blurPx: number,
+  w: number,
+  h: number,
+  fontFamily: string,
+): Promise<HTMLCanvasElement> {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+
+  const crisp = document.createElement("canvas");
+  crisp.width = W;
+  crisp.height = H;
+  const cx = crisp.getContext("2d")!;
+  cx.clearRect(0, 0, W, H);
+
+  // One mode at a time: a centered word, or a centered SVG.
+  if (content.svg && content.svg.trim()) {
+    await drawSvg(cx, content.svg, W, H, 0.5, 0.5, 0.52);
+  } else if (content.word.trim()) {
+    drawWord(cx, content, W, H, fontFamily, 0.5, 0.36);
+  }
+
+  const soft = document.createElement("canvas");
+  soft.width = W;
+  soft.height = H;
+  const sx = soft.getContext("2d")!;
+  sx.filter = `blur(${Math.max(0.5, blurPx).toFixed(2)}px)`;
+  sx.drawImage(crisp, 0, 0);
+  sx.filter = "none";
+
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ox = out.getContext("2d")!;
+  const c = cx.getImageData(0, 0, W, H).data;
+  const s = sx.getImageData(0, 0, W, H).data;
+  const packed = ox.createImageData(W, H);
+  const p = packed.data;
+  for (let i = 0; i < p.length; i += 4) {
+    p[i] = c[i + 3];
+    p[i + 1] = s[i + 3];
+    p[i + 2] = 0;
+    p[i + 3] = 255;
+  }
+  ox.putImageData(packed, 0, 0);
+  return out;
+}
+
+function drawWord(
+  ctx: CanvasRenderingContext2D,
+  content: Content,
+  W: number,
+  H: number,
+  fontFamily: string,
+  cyFrac: number,
+  capFrac: number,
+) {
+  const text = content.word;
+  if (!text) return;
+  const cx = W / 2;
+  const cy = H * cyFrac;
+  const maxW = W * 0.82;
+
+  let size = H * capFrac;
+  ctx.font = `800 ${size}px ${fontFamily}`;
+  const wWidth = ctx.measureText(text).width;
+  if (wWidth > maxW) {
+    size *= maxW / wWidth;
+    ctx.font = `800 ${size}px ${fontFamily}`;
+  }
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, cx, cy);
+}
+
+// Draw an SVG (as a white silhouette) centered at (cxFrac,cyFrac), sized to a
+// fraction of the card. We force the fill to white via a wrapper so any SVG becomes
+// a clean coverage mask regardless of its own colors.
+async function drawSvg(
+  ctx: CanvasRenderingContext2D,
+  svg: string,
+  W: number,
+  H: number,
+  cxFrac: number,
+  cyFrac: number,
+  sizeFrac: number,
+): Promise<void> {
+  // Force every fill/stroke white so ANY svg (incl. colored uploads) becomes a clean
+  // white-on-transparent coverage mask (the shader reads alpha, so color is moot).
+  const forced = svg.replace(
+    /<svg([^>]*)>/i,
+    `<svg$1><style>*{fill:#fff!important;stroke:#fff!important}</style>`,
+  );
+  const blob = new Blob([forced], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImage(url);
+    const target = H * sizeFrac;
+    const ar = img.width / Math.max(1, img.height);
+    let dh = target;
+    let dw = target * ar;
+    const maxW = W * 0.82;
+    if (dw > maxW) {
+      dw = maxW;
+      dh = dw / ar;
+    }
+    ctx.drawImage(img, W * cxFrac - dw / 2, H * cyFrac - dh / 2, dw, dh);
+  } catch {
+    // invalid SVG -> draw nothing (playground stays usable)
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = src;
+  });
+}
+
+// Built-in marks users can drop in. Bold, solid, medium-complexity shapes read best
+// as a press (fine detail gets lost in the bevel). All draw as a white silhouette.
+export const BUILTIN_SVGS: { id: string; name: string; svg: string }[] = [
+  {
+    id: "sparkle",
+    name: "Sparkle",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M50 4 C54 34 66 46 96 50 C66 54 54 66 50 96 C46 66 34 54 4 50 C34 46 46 34 50 4 Z"/></svg>`,
+  },
+  {
+    id: "star",
+    name: "Star",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M50 4 L61 38 L97 38 L68 60 L79 94 L50 72 L21 94 L32 60 L3 38 L39 38 Z"/></svg>`,
+  },
+  {
+    id: "heart",
+    name: "Heart",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M50 88 C10 60 8 30 26 20 C40 12 50 24 50 32 C50 24 60 12 74 20 C92 30 90 60 50 88 Z"/></svg>`,
+  },
+  {
+    id: "bolt",
+    name: "Bolt",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M58 4 L26 56 L46 56 L40 96 L74 40 L52 40 Z"/></svg>`,
+  },
+  {
+    id: "flower",
+    name: "Flower",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><ellipse cx="50" cy="24" rx="15" ry="22"/><ellipse cx="50" cy="24" rx="15" ry="22" transform="rotate(72 50 50)"/><ellipse cx="50" cy="24" rx="15" ry="22" transform="rotate(144 50 50)"/><ellipse cx="50" cy="24" rx="15" ry="22" transform="rotate(216 50 50)"/><ellipse cx="50" cy="24" rx="15" ry="22" transform="rotate(288 50 50)"/><circle cx="50" cy="50" r="11"/></g></svg>`,
+  },
+  {
+    id: "sun",
+    name: "Sun",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><g><circle cx="50" cy="50" r="20"/><g stroke-width="0"><rect x="47" y="4" width="6" height="16" rx="3"/><rect x="47" y="80" width="6" height="16" rx="3"/><rect x="4" y="47" width="16" height="6" rx="3"/><rect x="80" y="47" width="16" height="6" rx="3"/><rect x="47" y="4" width="6" height="16" rx="3" transform="rotate(45 50 50)"/><rect x="47" y="80" width="6" height="16" rx="3" transform="rotate(45 50 50)"/><rect x="4" y="47" width="16" height="6" rx="3" transform="rotate(45 50 50)"/><rect x="80" y="47" width="16" height="6" rx="3" transform="rotate(45 50 50)"/></g></g></svg>`,
+  },
+  {
+    id: "flame",
+    name: "Flame",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M52 4 C52 26 74 34 70 58 C68 74 60 78 60 78 C64 66 56 60 54 52 C50 62 42 62 44 76 C36 70 30 60 32 46 C34 30 52 30 52 4 Z"/></svg>`,
+  },
+  {
+    id: "blob",
+    name: "Blob",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M60 8 C82 12 94 34 88 56 C82 78 60 94 40 88 C18 82 6 58 14 38 C22 18 38 4 60 8 Z"/></svg>`,
+  },
+  {
+    id: "moon",
+    name: "Moon",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M64 8 A44 44 0 1 0 64 92 A34 34 0 0 1 64 8 Z"/></svg>`,
+  },
+  {
+    id: "arrow",
+    name: "Arrow",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path d="M44 12 L44 62 L26 62 L50 92 L74 62 L56 62 L56 12 Z"/></svg>`,
+  },
+  {
+    id: "target",
+    name: "Target",
+    svg: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="47" y="6" width="6" height="88" rx="3"/><rect x="6" y="47" width="88" height="6" rx="3"/><circle cx="50" cy="50" r="22" fill="none" stroke-width="6"/></svg>`,
+  },
+];
+
+```
+
+### emboss/pg-shader.ts
+
+```ts
+// Single-panel parametric emboss shader for the playground. Same model as the card
+// (real plaster surface + Bevel & Emboss from the height-field gradient + grunge
+// overlay), but every lever is a live uniform so the controls can drive it. Fills
+// the whole canvas (one panel), light follows the cursor.
+
+export const PG_VERT = `
+attribute vec2 aPosition;
+attribute vec2 aUV;
+varying vec2 vUV;
+void main(){ vUV = aUV; gl_Position = vec4(aPosition, 0.0, 1.0); }
+`;
+
+export const PG_FRAG = `
+precision highp float;
+varying vec2 vUV;
+
+uniform sampler2D uField;   // R crisp, G blurred height
+uniform sampler2D uPlaster;
+uniform sampler2D uGrunge;
+uniform float uGrungeAmt;
+uniform vec2  uTexel;
+uniform vec2  uLight;       // from angle + altitude
+uniform float uLightZ;
+uniform float uDepth;
+uniform float uHi;
+uniform float uSh;
+uniform float uContrast;
+uniform float uBright;
+uniform vec3  uTint;
+uniform vec2  uTexOff;
+uniform float uTexScale;
+uniform float uReveal;
+uniform float uAspect;
+
+void main(){
+  vec2 uv = vUV;
+
+  float gs = 1.0;
+  float hL = texture2D(uField, uv - vec2(gs,0.0)*uTexel).g;
+  float hR = texture2D(uField, uv + vec2(gs,0.0)*uTexel).g;
+  float hD = texture2D(uField, uv - vec2(0.0,gs)*uTexel).g;
+  float hU = texture2D(uField, uv + vec2(0.0,gs)*uTexel).g;
+  float crisp = texture2D(uField, uv).r;
+  vec2 slope = vec2(hR-hL, hU-hD) * uDepth * 16.0 * uReveal;
+  vec3 N = normalize(vec3(-slope.x, -slope.y, 1.0));
+  float bevel = clamp(length(slope), 0.0, 1.0);
+
+  vec3 L = normalize(vec3(uLight, uLightZ));
+  float diff = dot(N, L);
+  float hi = pow(max(diff,0.0), 1.2) * bevel;
+  float sh = pow(max(-diff,0.0), 1.0) * bevel;
+
+  // clamped sub-window of the plaster (zoom + pan, no fract wrap) so there is no
+  // seam and the texture never tiles across the panel.
+  float zoom = max(1.0, uTexScale);
+  vec2 span = vec2(1.0 / zoom);
+  vec2 origin = clamp(uTexOff, 0.0, 1.0) * (1.0 - span);
+  vec2 puv = origin + uv * span;
+  float p = texture2D(uPlaster, puv).r;
+  p = clamp((p-0.5)*uContrast + 0.5, 0.0, 1.0);
+  vec3 base = uTint * p * uBright;
+
+  float face = smoothstep(0.4, 0.62, crisp);
+  base *= mix(1.0, 0.86, face * uReveal);
+
+  vec3 c = base;
+  c += hi * uHi * uReveal;
+  c -= sh * uSh * uReveal;
+
+  float gr = texture2D(uGrunge, uv).r;
+  vec3 ov = mix(2.0*c*gr, 1.0-2.0*(1.0-c)*(1.0-gr), step(0.5, c));
+  c = mix(c, ov, uGrungeAmt);
+
+  gl_FragColor = vec4(clamp(c,0.0,1.0), 1.0);
+}
+`;
+
+```
+
+### emboss/pg-engine.ts
+
+```ts
+// Parametric playground engine: one emboss panel filling the canvas, every lever a
+// live uniform. The playground calls setParams()/setContent() and it re-renders.
+// The height field is rebuilt (async) only when the CONTENT or bevel SIZE changes;
+// all other params are cheap per-frame uniforms.
+
+import { PG_VERT, PG_FRAG } from "./pg-shader";
+import { makeContentField, type Content } from "./content-mask";
+import { mediaUrl } from "../../lib/video-sources";
+import type { EmbossParams } from "./params";
+
+const PLASTER_URL = mediaUrl("/vault/emboss-plaster.webp");
+const GRUNGE_URL = mediaUrl("/vault/emboss-grunge.webp");
+const GRUNGE_AMT = 0.38;
+
+export class EmbossPlayground {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+  private prog: WebGLProgram | null = null;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+  private field: WebGLTexture | null = null;
+  private plaster: WebGLTexture | null = null;
+  private grunge: WebGLTexture | null = null;
+  private fieldW = 1;
+  private fieldH = 1;
+
+  private w = 0;
+  private h = 0;
+  private dpr = 1;
+  private fontFamily = "var(--font-neue-corp), sans-serif";
+
+  private params: EmbossParams;
+  private content: Content;
+  private lastSize = -1;
+  private fieldSeq = 0; // guards against out-of-order async field builds
+
+  private raf = 0;
+  private running = false;
+  private fieldReady = false; // the height field has been built at least once
+  private painted = false; // canvas revealed after its first real frame
+  ok = false;
+
+  constructor(host: HTMLElement, params: EmbossParams, content: Content) {
+    this.host = host;
+    this.params = params;
+    this.content = content;
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute", inset: "0", width: "100%", height: "100%", display: "block",
+      // Hidden until the first real frame, so the white host shows instead of a black
+      // undrawn canvas (matches the emboss card; avoids a black flash on mount).
+      opacity: "0",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", { alpha: false, antialias: false, premultipliedAlpha: false });
+    if (!gl) return;
+    this.gl = gl;
+    gl.clearColor(1, 1, 1, 1); // white, not the default black
+    try { this.prog = this.build(PG_VERT, PG_FRAG); } catch { this.gl = null; return; }
+
+    for (const u of [
+      "uField", "uPlaster", "uGrunge", "uGrungeAmt", "uTexel", "uLight", "uLightZ",
+      "uDepth", "uHi", "uSh", "uContrast", "uBright", "uTint", "uTexOff", "uTexScale",
+      "uReveal", "uAspect",
+    ]) this.loc[u] = gl.getUniformLocation(this.prog!, u);
+
+    const aPos = gl.getAttribLocation(this.prog!, "aPosition");
+    const aUV = gl.getAttribLocation(this.prog!, "aUV");
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1,-1,0,1, 1,-1,1,1, -1,1,0,0, 1,1,1,0,
+    ]), gl.STATIC_DRAW);
+    gl.useProgram(this.prog);
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,16,0);
+    gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV,2,gl.FLOAT,false,16,8);
+
+    this.field = gl.createTexture();
+    this.plaster = this.placeholder([128,128,128,255]);
+    this.grunge = this.placeholder([128,128,128,255]);
+    this.loadTex(PLASTER_URL, () => this.plaster, false); // CLAMP (sub-window, no wrap)
+    this.loadTex(GRUNGE_URL, () => this.grunge, false);
+
+    this.resize();
+    void this.rebuildField();
+    this.ok = true;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (t: number, s: string) => {
+      const sh = gl.createShader(t)!; gl.shaderSource(sh, s); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh) || "compile");
+      return sh;
+    };
+    const p = gl.createProgram()!;
+    gl.attachShader(p, c(gl.VERTEX_SHADER, vs)); gl.attachShader(p, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) || "link");
+    return p;
+  }
+
+  private placeholder(rgba: number[]): WebGLTexture | null {
+    const gl = this.gl; if (!gl) return null;
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array(rgba));
+    return t;
+  }
+
+  private loadTex(url: string, target: () => WebGLTexture | null, repeat: boolean) {
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const g = this.gl, tex = target(); if (!g || !tex) return;
+      g.bindTexture(g.TEXTURE_2D, tex);
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true);
+      g.texImage2D(g.TEXTURE_2D,0,g.RGBA,g.RGBA,g.UNSIGNED_BYTE,img);
+      const w = repeat ? g.REPEAT : g.CLAMP_TO_EDGE;
+      g.texParameteri(g.TEXTURE_2D,g.TEXTURE_WRAP_S,w);
+      g.texParameteri(g.TEXTURE_2D,g.TEXTURE_WRAP_T,w);
+      g.texParameteri(g.TEXTURE_2D,g.TEXTURE_MIN_FILTER,g.LINEAR);
+      g.texParameteri(g.TEXTURE_2D,g.TEXTURE_MAG_FILTER,g.LINEAR);
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
+      this.renderOnce();
+    };
+    img.src = url;
+  }
+
+  setFont(f: string) { this.fontFamily = f; void this.rebuildField(); }
+
+  setParams(p: EmbossParams) {
+    const sizeChanged = p.size !== this.params.size || p.soften !== this.params.soften;
+    this.params = p;
+    if (sizeChanged) void this.rebuildField();
+    else this.renderOnce();
+  }
+
+  setContent(c: Content) { this.content = c; void this.rebuildField(); }
+
+  private async rebuildField() {
+    const gl = this.gl; if (!gl) return;
+    // Cap the mask width (was DPR x2 supersample -> ~5000px on retina, a
+    // multi-hundred-ms CPU build). ~1500px is plenty: crispness is from the pre-blur.
+    const MAX_W = 1500;
+    const mw = Math.max(2, Math.min(MAX_W, Math.round(this.w * this.dpr)));
+    const mh = Math.max(2, Math.round(mw * (this.h / Math.max(1, this.w))));
+    // bevel width (px @ card) -> field-space blur, plus the soften amount
+    const blur = Math.max(1, (this.params.size + this.params.soften) * this.dpr * 1.2);
+    this.lastSize = this.params.size;
+    const seq = ++this.fieldSeq;
+    const art = await makeContentField(this.content, blur, mw, mh, this.fontFamily);
+    if (seq !== this.fieldSeq || !this.gl) return; // superseded
+    gl.bindTexture(gl.TEXTURE_2D, this.field);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    this.fieldW = art.width; this.fieldH = art.height;
+    this.fieldReady = true;
+    this.renderOnce();
+  }
+
+  resize() {
+    const r = this.host.getBoundingClientRect();
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = r.width; this.h = r.height;
+    const cw = Math.max(1, Math.round(this.w * this.dpr));
+    const ch = Math.max(1, Math.round(this.h * this.dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw; this.canvas.height = ch;
+      this.gl?.viewport(0, 0, cw, ch);
+      void this.rebuildField();
+    }
+  }
+
+  private renderOnce() {
+    if (this.raf) return;
+    this.raf = requestAnimationFrame(() => { this.raf = 0; this.render(); });
+  }
+
+  private render() {
+    const gl = this.gl, p = this.params; if (!gl || !this.prog) return;
+    // Don't draw until the field is built (else a fieldless frame flashes / a black
+    // canvas shows before the press). The white host shows through until then.
+    if (!this.fieldReady) return;
+    // light from the params' angle/altitude (no cursor interaction)
+    const a = (p.angle * Math.PI) / 180;
+    const lx = Math.cos(a);
+    const ly = Math.sin(a);
+    const lz = Math.max(0.25, Math.sin((p.altitude * Math.PI) / 180) + 0.3);
+    gl.useProgram(this.prog);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.field); gl.uniform1i(this.loc.uField, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.plaster); gl.uniform1i(this.loc.uPlaster, 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.grunge); gl.uniform1i(this.loc.uGrunge, 2);
+    gl.uniform1f(this.loc.uGrungeAmt, GRUNGE_AMT);
+    gl.uniform2f(this.loc.uTexel, 1 / this.fieldW, 1 / this.fieldH);
+    gl.uniform2f(this.loc.uLight, lx, ly);
+    gl.uniform1f(this.loc.uLightZ, lz);
+    gl.uniform1f(this.loc.uDepth, p.depth);
+    gl.uniform1f(this.loc.uHi, p.highlight);
+    gl.uniform1f(this.loc.uSh, p.shadow);
+    gl.uniform1f(this.loc.uContrast, p.contrast);
+    gl.uniform1f(this.loc.uBright, p.bright);
+    gl.uniform3f(this.loc.uTint, p.tint[0], p.tint[1], p.tint[2]);
+    gl.uniform2f(this.loc.uTexOff, p.texOffset[0], p.texOffset[1]);
+    gl.uniform1f(this.loc.uTexScale, p.texScale);
+    gl.uniform1f(this.loc.uReveal, 1);
+    gl.uniform1f(this.loc.uAspect, this.w / Math.max(1, this.h));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (!this.painted) { this.painted = true; this.canvas.style.opacity = "1"; }
+  }
+
+  destroy() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    const gl = this.gl;
+    if (gl) {
+      [this.field, this.plaster, this.grunge].forEach((t) => t && gl.deleteTexture(t));
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+### emboss/playground.tsx
+
+```tsx
+"use client";
+
+// Emboss playground — the detail-page editor. One live panel you press a word AND/OR
+// an SVG into, with full control over the bevel (depth/size/soften), light
+// (angle/altitude/highlight+shadow), and surface (texture/contrast/tint). Load one of
+// the presets as a starting point, then tweak. Built from the shared Vault control kit
+// so it matches the site.
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EmbossPlayground } from "./pg-engine";
+import { defaultParams, remixParams, type EmbossParams } from "./params";
+import { BUILTIN_SVGS, type Content } from "./content-mask";
+import {
+  PG_PREVIEW, PG_PANEL, Slider, ColorControl, GhostButton, SegmentedControl, Select,
+} from "../swirl/controls";
+import { SectionLabel } from "../section-label";
+import { hapticTap } from "../../lib/haptics";
+
+const LABEL = "text-[12px] text-[var(--text-tertiary)]";
+
+// rgb 0..1 <-> #hex for the ColorControl (which speaks hex)
+const toHex = (c: [number, number, number]) =>
+  "#" + c.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+const fromHex = (h: string): [number, number, number] => {
+  const n = h.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2) || "0", 16) / 255) as [number, number, number];
+};
+
+export function EmbossPlayground_() {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<EmbossPlayground | null>(null);
+
+  const [params, setParams] = useState<EmbossParams>(() => defaultParams());
+  const [mode, setMode] = useState<"text" | "image">("text");
+  const [word, setWord] = useState("emboss");
+  const [shapeId, setShapeId] = useState(BUILTIN_SVGS[0].id);
+  const [svg, setSvg] = useState<string | null>(BUILTIN_SVGS[0].svg);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // In text mode only the word presses; in image mode only the SVG presses.
+  const content: Content = useMemo(
+    () => (mode === "text" ? { word, svg: null } : { word: "", svg }),
+    [mode, word, svg],
+  );
+
+  // Mount the engine only when the playground scrolls into view. On the detail page
+  // the emboss hero card is already spinning up its own WebGL build during the
+  // view-transition morph; deferring the (also heavy) playground build until it is
+  // actually near the viewport keeps the morph smooth and avoids two CPU height-field
+  // builds racing at once.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let raf = 0;
+    let started = false;
+    const build = () => {
+      if (started) return;
+      started = true;
+      raf = requestAnimationFrame(() => {
+        const eng = new EmbossPlayground(host, params, content);
+        if (!eng.ok) return;
+        engineRef.current = eng;
+        // warm Neue Corp then refresh
+        if (document.fonts?.load) {
+          const probe = document.createElement("span");
+          probe.style.cssText = "position:absolute;visibility:hidden;font-family:var(--font-neue-corp)";
+          probe.textContent = "Ag";
+          document.body.appendChild(probe);
+          const fam = getComputedStyle(probe).fontFamily.split(",")[0].replace(/["']/g, "").trim();
+          document.body.removeChild(probe);
+          document.fonts.load(`800 1em "${fam}"`).then(() => eng.setFont(`"${fam}", sans-serif`), () => {});
+        }
+      });
+    };
+    const io = new IntersectionObserver(
+      (es) => {
+        if (es[0]?.isIntersecting) {
+          io.disconnect();
+          build();
+        }
+      },
+      { rootMargin: "200px" }, // start just before it scrolls in
+    );
+    io.observe(host);
+    const onResize = () => engineRef.current?.resize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      io.disconnect();
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      engineRef.current?.destroy();
+      engineRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // push params/content to the engine
+  useEffect(() => { engineRef.current?.setParams(params); }, [params]);
+  useEffect(() => { engineRef.current?.setContent(content); }, [content]);
+
+  const patch = (p: Partial<EmbossParams>) => setParams((prev) => ({ ...prev, ...p }));
+
+  const remix = () => {
+    hapticTap();
+    setParams(remixParams());
+  };
+
+  // Shape dropdown: the built-ins plus an "Upload SVG…" entry that opens the picker.
+  const shapeOptions = [
+    ...BUILTIN_SVGS.map((s) => ({ id: s.id, label: s.name })),
+    { id: "upload", label: "Upload SVG…" },
+  ];
+  const pickShape = (id: string) => {
+    if (id === "upload") {
+      fileRef.current?.click();
+      return;
+    }
+    const s = BUILTIN_SVGS.find((b) => b.id === id);
+    if (s) { setShapeId(id); setSvg(s.svg); }
+  };
+  const onUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      hapticTap();
+      setShapeId("upload");
+      setSvg(String(reader.result || ""));
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <SectionLabel
+        action={<GhostButton onClick={remix}>Remix</GhostButton>}
+      >
+        Playground
+      </SectionLabel>
+
+      {/* live preview */}
+      <div className={`${PG_PREVIEW} aspect-[1344/620] w-full`}>
+        <div ref={hostRef} data-canvas-card className="absolute inset-0 h-full w-full" />
+      </div>
+
+      {/* controls */}
+      <div className={PG_PANEL}>
+        {/* content: stacks on mobile (label above, controls full-width); on sm+ it's
+            one row with the toggle + input/dropdown pushed to the right. */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <span className={`${LABEL} shrink-0`}>Content</span>
+          <div className="flex items-center gap-2 sm:ml-auto">
+            <div className="w-[130px] shrink-0 sm:w-[140px]">
+              <SegmentedControl
+                activeId={mode}
+                onPick={(id) => setMode(id as "text" | "image")}
+                options={[
+                  { id: "text", label: "Text" },
+                  { id: "image", label: "Image" },
+                ]}
+              />
+            </div>
+            {mode === "text" ? (
+              <input
+                value={word}
+                onChange={(e) => setWord(e.target.value)}
+                placeholder="type a word"
+                maxLength={16}
+                className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border-line)] bg-[var(--bg-page)] px-3 text-[12px] text-[var(--text-primary)] outline-none transition-colors duration-150 ease-[var(--ease-out)] placeholder:text-[var(--text-tertiary)] hover:border-[var(--border-ring)] focus:border-[var(--border-ring)] sm:w-[150px] sm:flex-none"
+              />
+            ) : (
+              <div className="min-w-0 flex-1 sm:w-[150px] sm:flex-none">
+                <Select
+                  activeId={shapeId}
+                  onPick={pickShape}
+                  options={shapeOptions}
+                  ariaLabel="Shape"
+                />
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".svg,image/svg+xml"
+                  onChange={onUpload}
+                  className="hidden"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* two columns: Bevel+Light | Surface */}
+        <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 sm:grid-cols-2">
+          <div className="flex flex-col gap-3 self-start">
+            <span className={LABEL}>Bevel</span>
+            <Slider label="Depth" value={params.depth} min={0.2} max={2} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => patch({ depth: v })} />
+            <Slider label="Size" value={params.size} min={1} max={24} step={0.5}
+              format={(v) => `${v.toFixed(1)}px`} onChange={(v) => patch({ size: v })} />
+            <Slider label="Soften" value={params.soften} min={0} max={12} step={0.5}
+              format={(v) => `${v.toFixed(1)}px`} onChange={(v) => patch({ soften: v })} />
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <span className={LABEL}>Light</span>
+            <Slider label="Angle" value={params.angle} min={0} max={360} step={1}
+              format={(v) => `${v | 0}°`} onChange={(v) => patch({ angle: v })} />
+            <Slider label="Altitude" value={params.altitude} min={0} max={90} step={1}
+              format={(v) => `${v | 0}°`} onChange={(v) => patch({ altitude: v })} />
+            <Slider label="Highlight" value={params.highlight} min={0} max={0.6} step={0.01}
+              format={(v) => `${(v * 100) | 0}%`} onChange={(v) => patch({ highlight: v })} />
+            <Slider label="Shadow" value={params.shadow} min={0} max={0.6} step={0.01}
+              format={(v) => `${(v * 100) | 0}%`} onChange={(v) => patch({ shadow: v })} />
+          </div>
+
+          <div className="flex flex-col gap-3 sm:col-span-2">
+            <span className={LABEL}>Surface</span>
+            <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+              <Slider label="Brightness" value={params.bright} min={0.8} max={2.4} step={0.01}
+                format={(v) => v.toFixed(2)} onChange={(v) => patch({ bright: v })} />
+              <Slider label="Grain" value={params.contrast} min={0} max={1.4} step={0.01}
+                format={(v) => v.toFixed(2)} onChange={(v) => patch({ contrast: v })} />
+              <Slider label="Texture zoom" value={params.texScale} min={0.4} max={2.4} step={0.01}
+                format={(v) => `${v.toFixed(2)}×`} onChange={(v) => patch({ texScale: v })} />
+              <ColorControl
+                label="Tint"
+                value={toHex(params.tint)}
+                onChange={(hex) => patch({ tint: fromHex(hex) })}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+11. You are given the complete source for a self-contained web visual: "Chromatic glow".
+
+What it is:
+- I wanted light that blooms out soft and pulls the colors apart at the edges.
+- The word gets blurred at a few sizes and added back together, so it glows for real. Then it splits into a warm copy and a cool copy that drift a little the opposite way, and that gap is the rainbow edge. Move over it and the split leans toward your cursor. Type your own word and pick the two colors below.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### chroma/params.ts
+
+```ts
+// Chromatic Glow presets + Remix. Each preset is its own colour world (a distinct
+// background paired with a matching warm/cool/fringe palette). Remix keeps the RGB-split
+// mechanic but rolls a fresh warm/cool pair, a matching background, and a split amount.
+
+import { CHROMA_DEFAULTS, type ChromaParams } from "./engine";
+
+export type ChromaPreset = { id: string; name: string; params: Partial<ChromaParams> };
+
+// Each preset is its OWN world: a distinct background hue paired with a matching but
+// unique glow palette (warm / cool / fringe) and its own split + bloom feel. No two share
+// a background family. The first stays the default (the card renders it).
+export const CHROMA_PRESETS: ChromaPreset[] = [
+  {
+    id: "peachsteel",
+    name: "Peach / Steel",
+    // soft PEACH vs. cool STEEL-BLUE, with a rose fringe, on a deep dusk-blue wall (a lifted
+    // indigo, clearly a colour and not black). Editorial, unexpected — the default.
+    params: { warm: [1.0, 0.66, 0.5], cool: [0.42, 0.6, 0.95], red: [1.0, 0.42, 0.6], split: 9.0, bloom: 1.62, core: 1.06, noise: 0.15, spectral: 0.6, bg: [0.11, 0.13, 0.2] },
+  },
+  {
+    id: "chartviolet",
+    name: "Chartreuse / Violet",
+    // acid CHARTREUSE vs. deep VIOLET with an electric-blue fringe, on a rich PLUM wall
+    // (clearly purple, not black) — a high-tension art-book combo, wide rainbow rim.
+    params: { warm: [0.78, 0.95, 0.2], cool: [0.55, 0.3, 1.0], red: [0.3, 0.7, 1.0], split: 10.5, bloom: 1.52, core: 1.04, noise: 0.17, spectral: 0.85, bg: [0.15, 0.08, 0.19] },
+  },
+  {
+    id: "pinkamber",
+    name: "Hot Pink / Amber",
+    // HOT PINK vs. warm AMBER (two warms held in tension by the split), gold fringe, on a
+    // deep AUBERGINE wall (a lifted wine, reads as colour) — a neon-sign look that works.
+    params: { warm: [1.0, 0.22, 0.62], cool: [1.0, 0.72, 0.24], red: [1.0, 0.5, 0.85], split: 8.0, bloom: 1.55, core: 1.05, noise: 0.16, spectral: 0.5, bg: [0.19, 0.08, 0.15] },
+  },
+  {
+    id: "rustmint",
+    name: "Rust / Mint",
+    // burnt RUST vs. cool MINT with a teal fringe, on a deep PINE-GREEN wall (clearly green,
+    // not black) — a muted, grown-up pairing (terracotta against seafoam), tight fringe.
+    params: { warm: [0.92, 0.42, 0.22], cool: [0.5, 0.95, 0.78], red: [0.3, 0.85, 0.7], split: 7.5, bloom: 1.5, core: 1.02, noise: 0.13, spectral: 0.45, bg: [0.07, 0.16, 0.13] },
+  },
+  {
+    id: "sandcobalt",
+    name: "Sand / Cobalt",
+    // LIGHT mode: warm SAND wall, dark word, a deep COBALT + rose split haze — a paper-and-
+    // ink editorial feel with a cold shadow.
+    params: { warm: [1.0, 0.55, 0.42], cool: [0.24, 0.36, 0.95], red: [0.95, 0.34, 0.5], split: 9.0, bloom: 1.5, core: 1.0, noise: 0.09, spectral: 0.6, bg: [0.95, 0.9, 0.8], invert: true },
+  },
+  {
+    id: "blushsky",
+    name: "Blush / Sky",
+    // LIGHT mode: pale BLUSH wall, dark word, a SKY-BLUE + coral split haze — soft, airy,
+    // a little vaporwave.
+    params: { warm: [1.0, 0.44, 0.5], cool: [0.34, 0.72, 1.0], red: [0.6, 0.5, 1.0], split: 9.5, bloom: 1.52, core: 1.0, noise: 0.09, spectral: 0.7, bg: [0.97, 0.9, 0.92], invert: true },
+  },
+];
+
+export function defaultChromaParams(): ChromaParams {
+  return { ...CHROMA_DEFAULTS, ...CHROMA_PRESETS[0].params };
+}
+
+// The hero card cycles these funny words, each paired with its own colour world, joined
+// by the chromatic glitch-slide. Words + palettes are index-matched (they loop together).
+export const HERO_CYCLE: { word: string; params: Partial<ChromaParams> }[] = [
+  { word: "boom", params: CHROMA_PRESETS[0].params },   // peach / steel
+  { word: "poof", params: CHROMA_PRESETS[3].params },   // rust / mint
+  { word: "zap",  params: CHROMA_PRESETS[1].params },   // chartreuse / violet
+  { word: "pow",  params: CHROMA_PRESETS[2].params },   // hot pink / amber
+  { word: "yeet", params: CHROMA_PRESETS[5].params },   // blush / sky (light)
+  { word: "oof",  params: CHROMA_PRESETS[4].params },   // sand / cobalt (light)
+];
+
+// Silly sound-effect words the playground Remix rolls from.
+export const SFX_WORDS = [
+  "boom", "poop", "pow", "zap", "yeet", "oof", "bruh", "meep",
+  "honk", "blip", "splat", "womp", "boing", "poof", "zoom", "womp",
+];
+
+// rgb 0..1 <-> #hex for the ColorControl (which speaks hex)
+export const toHex = (c: [number, number, number]) =>
+  "#" + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("");
+export const fromHex = (h: string): [number, number, number] => {
+  const n = h.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2) || "0", 16) / 255) as [number, number, number];
+};
+
+// A vivid, glowy random colour: a saturated hue lifted a little so it never reads dim
+// on black. Returns rgb 0..1.
+function vividHue(hue: number, lift = 0.15): [number, number, number] {
+  const c = 1;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const seg = [
+    [c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x],
+  ][Math.floor(hue / 60) % 6];
+  return [seg[0] * (1 - lift) + lift, seg[1] * (1 - lift) + lift, seg[2] * (1 - lift) + lift];
+}
+
+// A background tint that SUITS a glow palette: take the warm+cool average hue, keep a
+// touch of that colour, but crush it very dark + low-saturation so it always reads as a
+// deep neutral wall the glow can sit on (never a bright or clashing panel).
+function suitedBg(warm: [number, number, number], cool: [number, number, number]): [number, number, number] {
+  // Average the two glow colours, boost that hue's saturation, then set it to a low
+  // (dark) value. The result is a clearly-tinted deep wall (navy / wine / plum / moss),
+  // not a flat near-black — but still dark enough for the glow to read.
+  const avg = [(warm[0] + cool[0]) / 2, (warm[1] + cool[1]) / 2, (warm[2] + cool[2]) / 2];
+  const max = Math.max(avg[0], avg[1], avg[2], 0.001);
+  const floor = 0.05; // darkest channel never goes fully black
+  const peak = 0.17;  // brightest channel of the wall (keeps it dark)
+  // normalize to push saturation up, then scale into [floor, peak]
+  return [0, 1, 2].map((i) => floor + (avg[i] / max) * (peak - floor)) as unknown as [number, number, number];
+}
+
+// Remix: a fresh complementary warm/cool pair (opposite sides of the wheel), a random
+// third fringe, a matching dark background, and varied split/bloom.
+export function remixChromaParams(): Partial<ChromaParams> {
+  const h = Math.random() * 360;
+  const warm = vividHue(h);
+  const cool = vividHue((h + 150 + Math.random() * 60) % 360);
+  const red = vividHue((h + 40 + Math.random() * 40) % 360, 0.1);
+  // ~1 in 3 remixes is a LIGHT-mode variant: a light wall (a pale tint of the palette
+  // hue) with the word pressed in dark. Otherwise the usual dark wall + glowing word.
+  const invert = Math.random() < 0.34;
+  const bg = invert ? suitedLightBg(warm, cool) : suitedBg(warm, cool);
+  return {
+    word: SFX_WORDS[Math.floor(Math.random() * SFX_WORDS.length)], // a fresh silly word
+    warm,
+    cool,
+    red,
+    bg,
+    invert,
+    split: 4 + Math.random() * 8,   // 4 - 12 px
+    bloom: 1.0 + Math.random() * 0.4,
+    noise: 0.06 + Math.random() * 0.14,
+    spectral: 0.3 + Math.random() * 0.6,  // varied rainbow-rim strength per remix
+  };
+}
+
+// A LIGHT wall that suits the palette: a very pale tint of the average glow hue (mostly
+// white, a hint of colour) so the dark pressed word + coloured fringe read cleanly.
+function suitedLightBg(warm: [number, number, number], cool: [number, number, number]): [number, number, number] {
+  const avg = [(warm[0] + cool[0]) / 2, (warm[1] + cool[1]) / 2, (warm[2] + cool[2]) / 2];
+  const max = Math.max(avg[0], avg[1], avg[2], 0.001);
+  // mostly white (~0.9), with ~8% of the normalized hue mixed in
+  return [0, 1, 2].map((i) => 0.88 + (avg[i] / max) * 0.08) as unknown as [number, number, number];
+}
+
+```
+
+### chroma/text-mask.ts
+
+```ts
+// Rasterizes ONE word into a white-on-transparent coverage mask for the chromatic
+// glow. The shader treats the white silhouette as the glow SOURCE — it's the bright
+// shape the bloom spreads out from. No blur here — the bloom is built on the GPU.
+
+export async function makeWordMask(
+  word: string,
+  w: number,
+  h: number,
+  fontFamily: string,
+): Promise<HTMLCanvasElement> {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ctx = out.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+
+  const text = (word || "").trim();
+  if (!text) return out;
+
+  const cx = W / 2;
+  const cy = H * 0.5;
+  const maxW = W * 0.78; // leave room for the bloom + split to spread past the letters
+
+  // A big, bold cap height; shrink to fit the width if the word is long.
+  let size = H * 0.42;
+  ctx.font = `800 ${size}px ${fontFamily}`;
+  const measured = ctx.measureText(text).width;
+  if (measured > maxW) {
+    size *= maxW / measured;
+    ctx.font = `800 ${size}px ${fontFamily}`;
+  }
+
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  // A touch of letter spacing so the glow between letters breathes.
+  const ls = size * 0.02;
+  const chars = [...text];
+  const widths = chars.map((c) => ctx.measureText(c).width);
+  const total = widths.reduce((a, b) => a + b, 0) + ls * (chars.length - 1);
+  let x = cx - total / 2;
+  ctx.textAlign = "left";
+  for (let i = 0; i < chars.length; i++) {
+    ctx.fillText(chars[i], x, cy);
+    x += widths[i] + ls;
+  }
+  return out;
+}
+
+```
+
+### chroma/shaders.ts
+
+```ts
+// Chromatic Glow shaders (raw WebGL1). The look:
+//   1. a white silhouette of the word = the glow source
+//   2. a BLOOM = the sum of several Gaussian blurs at growing radii -> a tight core +
+//      a huge soft halo
+//   3. CHROMATIC ABERRATION = the bloom sampled a few times, each tinted (warm, cool,
+//      and a third fringe) and offset a few px in a different direction -> a glowing RGB
+//      split fringe
+//   4. LO-FI NOISE grain over the top.
+// The bloom is built as a downsample chain (progressively smaller framebuffers, each
+// blurred cheaply and summed) — the standard real-time way to get a smooth wide halo.
+
+// A full-screen triangle used by every pass.
+export const FULL_VERT = `
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+// ── BLUR pass ────────────────────────────────────────────────────────────────
+// Separable 9-tap Gaussian. Run once horizontally, once vertically per chain level.
+// uDir is (texelX, 0) or (0, texelY) scaled by the level's blur radius.
+export const BLUR_FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uDir;   // per-tap step (texel * radius) along one axis
+
+void main() {
+  // 9-tap Gaussian weights (sigma ~ 2), normalized.
+  float w0 = 0.2270270270;
+  float w1 = 0.1945945946;
+  float w2 = 0.1216216216;
+  float w3 = 0.0540540541;
+  float w4 = 0.0162162162;
+  vec4 c = texture2D(uTex, vUv) * w0;
+  c += texture2D(uTex, vUv + uDir * 1.0) * w1;
+  c += texture2D(uTex, vUv - uDir * 1.0) * w1;
+  c += texture2D(uTex, vUv + uDir * 2.0) * w2;
+  c += texture2D(uTex, vUv - uDir * 2.0) * w2;
+  c += texture2D(uTex, vUv + uDir * 3.0) * w3;
+  c += texture2D(uTex, vUv - uDir * 3.0) * w3;
+  c += texture2D(uTex, vUv + uDir * 4.0) * w4;
+  c += texture2D(uTex, vUv - uDir * 4.0) * w4;
+  gl_FragColor = c;
+}
+`;
+
+// ── COMPOSITE pass ───────────────────────────────────────────────────────────
+// Takes the crisp mask + up to 4 blurred bloom levels and builds the final image:
+// the summed bloom, split into tinted channels each offset by uSplit, over black,
+// with lo-fi noise grain and a soft vignette. Every knob is a uniform so the same
+// shader drives the card and the playground.
+export const COMPOSITE_FRAG = `
+precision highp float;
+varying vec2 vUv;
+
+uniform sampler2D uMask;    // crisp white silhouette (the core)
+uniform sampler2D uB0;      // bloom level 0 (tightest)
+uniform sampler2D uB1;
+uniform sampler2D uB2;
+uniform sampler2D uB3;      // bloom level 3 (widest halo)
+uniform vec2  uSplit;       // chromatic aberration offset (uv units), cursor/auto driven
+uniform float uBloom;       // overall bloom gain
+uniform vec3  uWarm;        // warm/yellow tint  (yellow/blue preset)
+uniform vec3  uCool;        // cool/blue tint
+uniform vec3  uRed;         // red/cyan fringe tint
+uniform float uCore;        // brightness of the crisp white core
+uniform vec3  uBg;          // background tint (dark wall, or light wall if inverted)
+uniform float uInvert;      // 0 = dark wall + glowing word, 1 = light wall + dark press
+uniform float uNoise;       // grain amount 0..1
+uniform float uTime;        // for animated grain
+uniform float uAspect;      // w/h, to keep the split + vignette round
+uniform vec2  uResolution;
+uniform float uSpectral;    // 0..1 how much true prism rainbow rides over the base split
+uniform vec2  uCursor;      // pointer position in uv (0..1)
+uniform float uCursorOn;    // 0..1 eased cursor presence over the card
+uniform float uDisperse;    // 0..1 cycle transition: blooms the word out into a soft haze
+
+// cheap hash noise for the lo-fi grain
+float hash(vec2 p) {
+  p = fract(p * vec2(123.34, 345.45));
+  p += dot(p, p + 34.345);
+  return fract(p.x * p.y);
+}
+
+// smooth value noise (bilinear-interpolated hash) — soft blotches, not per-pixel dither.
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f); // smoothstep the cell
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// a minimal but richer wall texture, centred around 0. Kept very subtle — just enough that
+// the dark background reads as a soft, lit surface with depth instead of flat grain:
+//   - 3-octave fbm gives gentle cloudy mottling (large soft blotches + a little fine break-up)
+//   - a slow, large-scale diagonal drift so the surface feels hand-finished, not tiled
+// The amplitude is low; the caller scales it down further. No hard edges, no obvious pattern.
+float wallTex(vec2 uv, vec2 res) {
+  vec2 p = uv * vec2(res.x / res.y, 1.0);        // square the domain so blotches aren't stretched
+  float fbm =
+      vnoise(p * 2.4) * 0.55 +
+      vnoise(p * 5.1 + 11.0) * 0.30 +
+      vnoise(p * 11.7 + 3.0) * 0.15;
+  // a broad, slowly-varying sheen across the panel (one very low-freq octave), so one side
+  // of the wall sits a touch lighter — a soft raking light rather than uniform fill.
+  float sheen = vnoise(p * 0.9 + 5.0);
+  return (fbm - 0.5) * 0.8 + (sheen - 0.5) * 0.5;
+}
+
+// the summed multi-radius bloom sampled at an offset (one "channel"). CONCENTRATED:
+// the tight core levels carry most of the weight; the wide halo is only a faint skirt,
+// so the glow hugs the letters instead of washing the whole card out.
+float bloomAt(vec2 uv) {
+  float b = 0.0;
+  b += texture2D(uB0, uv).r * 0.85;  // tightest -> most of the glow
+  b += texture2D(uB1, uv).r * 0.55;
+  b += texture2D(uB2, uv).r * 0.22;
+  b += texture2D(uB3, uv).r * 0.10;  // widest halo -> just a faint skirt
+  return b;
+}
+
+// A palette-anchored spectral ramp: 0 = warm end, 1 = cool end, with the fringe tint
+// as the midpoint. Instead of 3 hard tints this gives a smooth colour walk across the
+// halo, so the split reads as a soft rainbow edge rather than a flat colour cast.
+vec3 spectralTint(float u) {
+  u = clamp(u, 0.0, 1.0);
+  if (u < 0.5) return mix(uWarm, uRed, u * 2.0);
+  return mix(uRed, uCool, (u - 0.5) * 2.0);
+}
+
+// TRUE prism dispersion, kept MINIMAL: the aberration grows with distance from the word
+// centre (real glass fans outward), and we take a few taps across the spectrum along the
+// split direction. Small radius + few taps => a refined rainbow rim, not a busy smear.
+vec3 spectralFringe(vec2 uv, vec2 split) {
+  // radial gain: ~1 near centre, a touch more toward the edges (clamped so it stays soft)
+  vec2 fromC = (uv - 0.5) * vec2(uAspect, 1.0);
+  float disp = 0.6 + 0.9 * clamp(length(fromC), 0.0, 1.0);
+  vec2 step = split * disp;
+  vec3 acc = vec3(0.0);
+  // 5 evenly-spaced taps from -1 (warm) to +1 (cool); the fringe colour sits in the middle
+  const int N = 5;
+  for (int i = 0; i < N; i++) {
+    float f = float(i) / float(N - 1);        // 0..1
+    float off = (f - 0.5) * 2.0;              // -1..1
+    float b = bloomAt(uv + step * off);
+    acc += spectralTint(f) * b;
+  }
+  return acc / float(N);
+}
+
+void main() {
+  // LIQUID-CHROME SHIMMER: a whisper-amplitude uv warp driven by slow noise, so the word
+  // and its glow gently wobble like molten metal instead of a dead silhouette. The warp
+  // is domain-distorted (noise of noise) for an organic, non-directional ripple and kept
+  // extremely small (~0.15% of the frame) so it never smears the letters.
+  vec2 uv = vUv;
+  float wx = vnoise(uv * 4.0 + vec2(uTime * 0.13, uTime * 0.05));
+  float wy = vnoise(uv * 4.0 + vec2(7.0 - uTime * 0.06, 3.0 + uTime * 0.11));
+  uv += (vec2(wx, wy) - 0.5) * 0.0016;
+
+  // ---- CYCLE DISPERSE & RE-FORM: the transition is made entirely of the effect's OWN
+  // language — bloom + split — not a glitch. uDisperse (0 at rest, 1 at mid-swap) spreads
+  // the chromatic split WIDE so the warm/cool copies pull far apart, melts the crisp core,
+  // and lifts the bloom, so the old word blooms out into a soft coloured haze; at the peak
+  // the word swaps under the cloud; then uDisperse falls and the new word condenses back
+  // out of the light as the split collapses to rest. Smooth, glowy, in-style. ----
+  vec2 s = uSplit;
+  float disp = uDisperse;                         // 0..1 dispersion strength this frame
+  // spread the split RADIALLY outward from centre (a prism blooming apart), plus a slow
+  // swirl so the haze has a little organic drift rather than a pure zoom.
+  vec2 fromMid = (uv - 0.5) * vec2(uAspect, 1.0);
+  float rr = length(fromMid) + 0.0001;
+  vec2 radial = fromMid / rr;
+  float ang = uTime * 0.6;
+  vec2 swirl = vec2(radial.x * cos(ang) - radial.y * sin(ang),
+                    radial.x * sin(ang) + radial.y * cos(ang));
+  // during dispersion the split grows (copies drift apart) and gains the radial/swirl
+  // direction, so the word softens into a gentle rainbow haze instead of tearing. Kept
+  // WEAK — the word stays put and just breathes, it never flies far out.
+  s += mix(radial, swirl, 0.5) * disp * 0.022;
+  s *= 1.0 + disp * 0.9;
+  // no per-channel tear anymore — the split alone carries the whole transition.
+  vec2 tearW = vec2(0.0), tearC = vec2(0.0), tearR = vec2(0.0);
+
+  // CURSOR POOL: a soft aspect-correct falloff around the pointer. It does NOT move the
+  // word — it just brightens the bloom + widens the rainbow locally, so the light lifts
+  // where you hover and settles back when you leave. Gentle radius, eased by presence.
+  vec2 cAsp = vec2(uAspect, 1.0);
+  vec2 toCur = uv * cAsp - uCursor * cAsp;
+  float cd = length(toCur);
+  float pool = smoothstep(0.34, 0.0, cd) * uCursorOn;   // 1 at cursor -> 0 by ~0.34
+
+  // HOVER LIFE: near the pointer the light behaves like a disturbed liquid, not just a
+  // brighter spot. Two small touches, both fading out with the pool:
+  //  1. a soft concentric RIPPLE pushes the sampled uv in/out radially around the cursor,
+  //     so the glow ripples as if the pointer pressed into it.
+  //  2. the split gains a component that leans ALONG the cursor->centre direction, so the
+  //     rainbow tilts toward where you are (felt, but it never drags the whole word).
+  if (pool > 0.001) {
+    vec2 rdir = toCur / max(cd, 0.0001);
+    float ripple = sin(cd * 46.0 - uTime * 5.0) * pool * 0.0022;
+    uv += (rdir / cAsp) * ripple;
+    s += (rdir / cAsp) * pool * 0.010;                  // split leans toward the cursor
+  }
+
+  // Chromatic aberration: sample the bloom three times, each pushed a different way, so
+  // the tinted copies pull apart at the edges:
+  //   warm  ->  +split
+  //   cool  ->  -split
+  //   fringe -> perpendicular split (a second, weaker fringe)
+  // These are SCALAR intensities per channel, tinted then blended below.
+  float bw = bloomAt(uv + s + tearW);
+  float bc = bloomAt(uv - s + tearC);
+  float br = bloomAt(uv + vec2(-s.y, s.x) * 0.6 + tearR);
+
+  // Coloured glow, tone-mapped with a soft rolloff so the letter bodies don't clip to
+  // flat white. 1 - exp(-x) saturates gently toward the tint's own colour. A small
+  // amount of the TRUE spectral fringe (radial prism, multi-tap) is mixed into the raw
+  // energy so the halo edge gains a soft rainbow without changing the overall colour.
+  vec3 baseRaw = (uWarm * bw + uCool * bc + uRed * br);
+  // near the cursor, widen the rainbow (more spectral) and lift the glow (more energy).
+  // during dispersion gently widen the spectral rainbow + lift the bloom a touch, so the
+  // word softly breathes rather than blowing into a big cloud. Kept weak.
+  float specAmt = clamp(uSpectral + pool * 0.4 + disp * 0.25, 0.0, 1.0);
+  vec3 raw = mix(baseRaw, spectralFringe(uv, s), specAmt * 0.55) * uBloom * (1.0 + pool * 0.9 + disp * 0.45);
+  vec3 glow = vec3(1.0) - exp(-raw);
+  // the crisp white core softens as the word disperses (loses its hard edge into the bloom)
+  // but never fully vanishes, so it stays readable while it re-forms.
+  float core = texture2D(uMask, uv).r * (1.0 - disp * 0.75);
+
+  // shared: vignette + a minimal plaster grain so the wall reads as a real surface
+  vec2 vc = (uv - 0.5) * vec2(uAspect, 1.0);
+  float vig = smoothstep(1.05, 0.35, length(vc));
+  float tex = wallTex(uv, uResolution);
+  float g = hash(uv * uResolution * 0.5 + uTime);
+
+  // LIVING WALL: a very slow caustic drift so the dark background breathes instead of
+  // sitting dead. Two counter-scrolling low-freq noise fields beat against each other;
+  // the result is tiny (a few % of the wall value) and tinted by the palette below.
+  float ca = vnoise(uv * vec2(uAspect, 1.0) * 2.3 + vec2(uTime * 0.012, uTime * 0.008));
+  float cb = vnoise(uv * vec2(uAspect, 1.0) * 3.7 - vec2(uTime * 0.009, uTime * 0.014));
+  float caustic = (ca * cb - 0.25);   // centred-ish, mostly small
+
+  // ---- DARK mode: dark wall + glowing word (additive) ----
+  vec3 rimC = vec3(uCore) * smoothstep(0.35, 0.55, core) * (1.0 - smoothstep(0.6, 0.9, core));
+  vec3 glowD = glow;
+  glowD += rimC;
+  glowD += (g - 0.5) * uNoise * (0.4 + 0.6 * length(glowD));
+  glowD *= mix(0.82, 1.0, vig);
+  // base wall + a soft mottle/sheen: multiply for the darker blotches, plus a gentle additive
+  // lift on the bright side of the sheen so the surface has light on it (not only shadow).
+  vec3 wallD = uBg * mix(0.82, 1.08, vig) * (1.0 + tex * 0.35) + uBg * max(tex, 0.0) * 0.25;
+  // palette-tinted caustic light on the wall (stronger toward the darker outer field, so it
+  // never fights the glow): the wall clearly shimmers in the word's own colours instead of
+  // sitting as a flat near-black panel.
+  vec3 causticTint = normalize(uWarm + uCool + 0.0001);
+  wallD += causticTint * caustic * 0.09 * (1.0 - vig * 0.4);
+  vec3 outD = wallD + glowD;
+
+  // ---- LIGHT mode: dark word with the SAME soft bloom, as a dark tinted haze ----
+  // This is dark mode's look inverted: the same soft multi-radius bloom (bw/bc/br) drives
+  // everything, so the word carries the same blurry glow — but here it DARKENS the light
+  // wall toward each split colour instead of adding light. Because we use the soft bloom
+  // (not the crisp mask), the edges are soft + glowy, and the warm/cool offsets give the
+  // coloured chromatic haze. A crisp dark core sits under it so the letters stay legible.
+  vec3 wallL = uBg * mix(1.0, 0.94, 1.0 - vig);       // light wall, faintly darker at edges
+  wallL += tex * 0.018;                               // faint mottle/sheen (subtle on paper)
+
+  // the soft bloom, tinted + split, as a "darken amount" per channel (same tone-map as
+  // dark mode). glowL is bright/coloured near the word, ~0 out on the wall.
+  vec3 rawL = mix(baseRaw, spectralFringe(uv, s), specAmt * 0.55) * uBloom * (1.0 + pool * 0.9);
+  vec3 glowL = vec3(1.0) - exp(-rawL);
+  // darken the wall toward the COMPLEMENT of the glow colour, weighted by how strong the
+  // glow is here -> a soft warm haze on one side, cool on the other, fading into the wall.
+  vec3 pressed = wallL * (vec3(1.0) - glowL * 0.9);
+
+  // a crisp dark core so the letters read solid (the soft bloom alone is too faint to be
+  // legible as text). Uses the plain mask, pressed to near-black.
+  float ink = smoothstep(0.4, 0.62, core);
+  pressed *= mix(1.0, 0.1, ink);
+  pressed += (g - 0.5) * uNoise * 0.4;                // grain
+  vec3 outL = pressed;
+
+  vec3 outc = mix(outD, outL, uInvert);
+  gl_FragColor = vec4(outc, 1.0);
+}
+`;
+
+```
+
+### chroma/engine.ts
+
+```ts
+// Chromatic Glow engine (raw WebGL1). Renders ONE word as a bright chromatic bloom on
+// a dark card. Pipeline per frame:
+//   1. the word's white mask is the glow source (uploaded once)
+//   2. BLOOM = a downsample chain: the mask is blurred + shrunk into 4 progressively
+//      smaller framebuffers, each Gaussian-blurred (H then V). Small buffers = a huge,
+//      smooth halo for almost no cost.
+//   3. COMPOSITE = the 4 bloom levels sampled 3× with per-tint offsets (warm/cool/
+//      fringe) -> the RGB chromatic-aberration fringe, + noise grain + vignette
+// Motion: an autonomous drift starts on load and gently pushes the split + bloom; the
+// cursor overrides it and intensifies the split when you move over the card.
+
+import { FULL_VERT, BLUR_FRAG, COMPOSITE_FRAG } from "./shaders";
+import { makeWordMask } from "./text-mask";
+
+export type ChromaParams = {
+  word: string;
+  bloom: number;    // overall glow gain
+  split: number;    // chromatic aberration distance (px @ 620h)
+  core: number;     // crisp white core brightness
+  noise: number;    // grain amount
+  spectral: number; // 0..1 how much true prism rainbow rides over the base split
+  warm: [number, number, number];
+  cool: [number, number, number];
+  red: [number, number, number];
+  bg: [number, number, number]; // background tint (dark wall, or light wall if invert)
+  invert: boolean;              // true = LIGHT wall + DARK pressed word (glow as fringe)
+};
+
+// Defaults: soft PEACH vs. cool STEEL-BLUE on a deep dusk-blue wall (the peach/steel world).
+export const CHROMA_DEFAULTS: ChromaParams = {
+  word: "chrome",
+  bloom: 1.62,   // gain into the tone-map (1 - exp(-x)); high enough to read, can't clip
+  split: 9.0,
+  core: 1.06,    // thin rim brightness only (not a full white fill anymore)
+  noise: 0.15,
+  spectral: 0.6, // a soft real-rainbow rim rides over the warm/cool split
+
+  warm: [1.0, 0.66, 0.5],   // soft peach
+  cool: [0.42, 0.6, 0.95],  // steel blue
+  red: [1.0, 0.42, 0.6],    // rose fringe
+  bg: [0.11, 0.13, 0.2],    // deep dusk-blue wall (a lifted indigo, clearly a colour)
+  invert: false,
+};
+
+// The downsample chain: each level is a fraction of the canvas, with a blur radius (in
+// its own texels). Growing scale-down + radius reproduces the 5/25/50/80/190px ladder.
+const LEVELS = [
+  { scale: 0.5, radius: 1.5 },
+  { scale: 0.25, radius: 2.0 },
+  { scale: 0.125, radius: 2.5 },
+  { scale: 0.0625, radius: 3.0 },
+];
+
+type Target = { fb: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number };
+
+export class ChromaGlow {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+
+  private blurProg: WebGLProgram | null = null;
+  private compProg: WebGLProgram | null = null;
+  private quad: WebGLBuffer | null = null;
+  private blurLoc: Record<string, WebGLUniformLocation | null> = {};
+  private compLoc: Record<string, WebGLUniformLocation | null> = {};
+
+  private mask: WebGLTexture | null = null;
+  private maskW = 1;
+  private maskH = 1;
+  // per level: the bloom target + a scratch target for the separable blur
+  private levels: { out: Target; tmp: Target }[] = [];
+
+  private raf = 0;
+  private running = false;
+  private awake = false;
+  private startT = 0;
+
+  private w = 0;
+  private h = 0;
+  private dpr = 1;
+  private fontFamily = "var(--font-neue-corp), sans-serif";
+  private params: ChromaParams;
+
+  // rebuild guards (mask is the only expensive CPU step)
+  private builtW = 0;
+  private builtH = 0;
+  private builtWord = "";
+  private builtFont = "";
+  private buildScheduled = 0;
+  private destroyed = false;
+  private painted = false;
+
+  // motion: eased split target (cursor) + autonomous flick + hover intensity
+  private px = 0;       // pointer x in -1..1 from center
+  private py = 0;
+  private tpx = 0;
+  private tpy = 0;
+  private active = 0;   // eased 0..1, 1 while cursor over the card
+  private tActive = 0;
+  // autonomous motion: a smoothly-followed position that wanders the word fast on a few
+  // layered sines (the LEGO virtual-cursor style), non-circular + non-linear. fx/fy.
+  private fx = 0;
+  private fy = 0;
+
+  // ---- cycle mode: the hero card walks a list of funny words + colour worlds, joined by
+  // a chromatic glitch-slide. Off by default (the playground never cycles). ----
+  private cycle = false;
+  private cycleWords: string[] = [];
+  private cyclePalettes: Partial<ChromaParams>[] = [];
+  private cycleIdx = 0;
+  private cyclePhase: "hold" | "out" | "in" = "hold";
+  private cyclePhaseT = 0;      // seconds into the current phase
+  private holdDur = 1.15;       // seconds a word rests before the next transition
+  private outDur = 0.24;        // bloom out into haze
+  private inDur = 0.32;         // condense back into the new word
+  private disperse = 0;         // 0..1 transition dispersion (bloom-out), driven by phase
+  private nextPending = false;  // set at the out->in swap point
+  private lastNow = 0;          // for real-dt cycle stepping
+  // palette tween: we lerp the colour uniforms from `palFrom` to `palTo` across a swap so
+  // the world changes smoothly under the glitch instead of popping.
+  private palFrom: Partial<ChromaParams> | null = null;
+  private palTo: Partial<ChromaParams> | null = null;
+  private palMix = 1;           // 0..1, eased across the transition
+
+  ok = false;
+
+  constructor(host: HTMLElement, params?: Partial<ChromaParams>) {
+    this.host = host;
+    this.params = { ...CHROMA_DEFAULTS, ...params };
+    this.canvas = document.createElement("canvas");
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      inset: "0",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      // Hidden until the first real frame so the dark host shows (and gets captured by
+      // the view-transition) instead of an undrawn black canvas flashing.
+      opacity: "0",
+    });
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+    this.gl = gl;
+
+    try {
+      this.blurProg = this.build(FULL_VERT, BLUR_FRAG);
+      this.compProg = this.build(FULL_VERT, COMPOSITE_FRAG);
+    } catch {
+      this.gl = null;
+      return;
+    }
+
+    for (const u of ["uTex", "uDir"]) {
+      this.blurLoc[u] = gl.getUniformLocation(this.blurProg, u);
+    }
+    for (const u of [
+      "uMask", "uB0", "uB1", "uB2", "uB3", "uSplit", "uBloom", "uWarm", "uCool",
+      "uRed", "uCore", "uBg", "uInvert", "uNoise", "uTime", "uAspect", "uResolution",
+      "uSpectral", "uCursor", "uCursorOn", "uDisperse",
+    ]) {
+      this.compLoc[u] = gl.getUniformLocation(this.compProg, u);
+    }
+
+    // full-screen triangle
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+    // clear to the current bg tint so any pre-composite frame matches the wall (no flash)
+    gl.clearColor(this.params.bg[0], this.params.bg[1], this.params.bg[2], 1);
+
+    this.resize();
+    void this.buildMaskNow();
+
+    this.canvas.addEventListener("pointermove", this.onMove);
+    this.canvas.addEventListener("pointerenter", this.onEnter);
+    this.canvas.addEventListener("pointerleave", this.onLeave);
+    this.ok = true;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "compile failed");
+      }
+      return sh;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog) || "link failed");
+    }
+    return prog;
+  }
+
+  private makeTarget(w: number, h: number): Target {
+    const gl = this.gl!;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { fb, tex, w, h };
+  }
+
+  private allocLevels() {
+    const gl = this.gl;
+    if (!gl) return;
+    this.freeLevels();
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    this.levels = LEVELS.map((l) => {
+      const w = Math.max(2, Math.round(cw * l.scale));
+      const h = Math.max(2, Math.round(ch * l.scale));
+      return { out: this.makeTarget(w, h), tmp: this.makeTarget(w, h) };
+    });
+  }
+
+  private freeLevels() {
+    const gl = this.gl;
+    if (!gl) return;
+    for (const lv of this.levels) {
+      gl.deleteFramebuffer(lv.out.fb);
+      gl.deleteTexture(lv.out.tex);
+      gl.deleteFramebuffer(lv.tmp.fb);
+      gl.deleteTexture(lv.tmp.tex);
+    }
+    this.levels = [];
+  }
+
+  setFont(family: string) {
+    if (family === this.fontFamily) return;
+    this.fontFamily = family;
+    this.scheduleBuild();
+  }
+
+  setParams(p: Partial<ChromaParams>) {
+    const wordChanged = p.word !== undefined && p.word !== this.params.word;
+    this.params = { ...this.params, ...p };
+    if (wordChanged) this.scheduleBuild();
+    else if (!this.running) this.renderOnce();
+  }
+
+  /**
+   * Turn on hero cycle mode: walk `words` paired with `palettes` (a colour world each),
+   * swapping every few seconds with a chromatic glitch-slide. The first pair is applied
+   * immediately. The playground never calls this, so it stays a single static word.
+   */
+  enableCycle(words: string[], palettes: Partial<ChromaParams>[]) {
+    if (!words.length) return;
+    this.cycle = true;
+    this.cycleWords = words;
+    this.cyclePalettes = palettes;
+    this.cycleIdx = 0;
+    this.cyclePhase = "hold";
+    this.cyclePhaseT = 0;
+    this.palMix = 1;
+    this.palFrom = palettes[0] ?? null;
+    this.palTo = palettes[0] ?? null;
+    this.params = { ...this.params, word: words[0], ...(palettes[0] ?? {}) };
+    this.scheduleBuild();
+  }
+
+  // lerp helpers for the palette tween
+  private lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+  private lerp3(
+    a: [number, number, number], b: [number, number, number], t: number,
+  ): [number, number, number] {
+    return [this.lerp(a[0], b[0], t), this.lerp(a[1], b[1], t), this.lerp(a[2], b[2], t)];
+  }
+
+  // Resolve the currently-displayed palette by easing palFrom -> palTo by palMix. Falls
+  // back to the live params for any field a palette omits.
+  private tweenedPalette(): ChromaParams {
+    const base = this.params;
+    if (!this.palFrom || !this.palTo || this.palMix >= 1) {
+      const to = this.palTo ?? {};
+      return { ...base, ...to };
+    }
+    const f = { ...base, ...this.palFrom };
+    const g = { ...base, ...this.palTo };
+    const t = this.palMix;
+    return {
+      ...base,
+      warm: this.lerp3(f.warm, g.warm, t),
+      cool: this.lerp3(f.cool, g.cool, t),
+      red: this.lerp3(f.red, g.red, t),
+      bg: this.lerp3(f.bg, g.bg, t),
+      split: this.lerp(f.split, g.split, t),
+      bloom: this.lerp(f.bloom, g.bloom, t),
+      core: this.lerp(f.core, g.core, t),
+      noise: this.lerp(f.noise, g.noise, t),
+      spectral: this.lerp(f.spectral, g.spectral, t),
+      // invert can't tween; switch it at the midpoint (when the glitch hides the pop)
+      invert: t < 0.5 ? f.invert : g.invert,
+    };
+  }
+
+  private onMove = (e: PointerEvent) => {
+    const r = this.canvas.getBoundingClientRect();
+    this.tpx = ((e.clientX - r.left) / r.width) * 2 - 1;
+    this.tpy = -(((e.clientY - r.top) / r.height) * 2 - 1);
+    this.tActive = 1;
+    this.wake();
+  };
+  private onEnter = () => {
+    this.tActive = 1;
+    this.wake();
+  };
+  private onLeave = () => {
+    this.tActive = 0;
+    this.tpx = 0;
+    this.tpy = 0;
+    this.wake();
+  };
+
+  private wake() {
+    if (this.awake && !this.running) this.start();
+  }
+
+  resize() {
+    const r = this.host.getBoundingClientRect();
+    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.w = r.width;
+    this.h = r.height;
+    const cw = Math.max(1, Math.round(this.w * this.dpr));
+    const ch = Math.max(1, Math.round(this.h * this.dpr));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+      this.gl?.viewport(0, 0, cw, ch);
+      this.allocLevels();
+      this.scheduleBuild();
+    } else if (this.levels.length === 0) {
+      this.allocLevels();
+    }
+  }
+
+  // cap the mask resolution so the (CPU) rasterize stays cheap; the bloom smooths it.
+  private maskSize(): [number, number] {
+    const MAX_W = 1400;
+    const mw = Math.max(2, Math.min(MAX_W, Math.round(this.w * this.dpr)));
+    const mh = Math.max(2, Math.round(mw * (this.h / Math.max(1, this.w))));
+    return [mw, mh];
+  }
+
+  private scheduleBuild() {
+    if (!this.gl || this.destroyed) return;
+    const [mw, mh] = this.maskSize();
+    if (
+      mw === this.builtW && mh === this.builtH &&
+      this.params.word === this.builtWord && this.fontFamily === this.builtFont
+    ) return;
+    if (this.buildScheduled) return;
+    const run = () => {
+      this.buildScheduled = 0;
+      void this.buildMaskNow();
+    };
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    this.buildScheduled = ric ? ric(run, { timeout: 200 }) : window.setTimeout(run, 0);
+  }
+
+  private async buildMaskNow() {
+    const gl = this.gl;
+    if (!gl || this.destroyed) return;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void })
+        .cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    const [mw, mh] = this.maskSize();
+    this.builtW = mw;
+    this.builtH = mh;
+    this.builtWord = this.params.word;
+    this.builtFont = this.fontFamily;
+    const art = await makeWordMask(this.params.word, mw, mh, this.fontFamily);
+    if (!this.gl || this.destroyed) return;
+    if (!this.mask) this.mask = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.mask);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    this.maskW = art.width;
+    this.maskH = art.height;
+    if (!this.running) this.renderOnce();
+  }
+
+  start() {
+    if (!this.ok) return;
+    this.awake = true;
+    if (this.running) return;
+    this.running = true;
+    this.resize();
+    if (!this.startT) this.startT = performance.now();
+    const loop = (now: number) => {
+      if (!this.running) return;
+      this.frame(now);
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+
+  /** Stop and forbid waking (offscreen / hidden). */
+  stop() {
+    this.awake = false;
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  private renderOnce() {
+    if (this.raf) return;
+    this.raf = requestAnimationFrame((t) => {
+      this.raf = 0;
+      this.render(t);
+    });
+  }
+
+  private frame(now: number) {
+    // ease pointer + active toward targets (cursor stays smooth, no overshoot)
+    const k = 0.08;
+    this.px += (this.tpx - this.px) * k;
+    this.py += (this.tpy - this.py) * k;
+    this.active += (this.tActive - this.active) * 0.06;
+
+    // Autonomous motion = the same organic wander the LEGO card's virtual cursor uses
+    // (a few sine/cosine harmonics at different frequencies, so it roams the word in a
+    // smooth non-circular, non-linear path), but MUCH faster here. Ease the actual
+    // position toward it so it always stays silky, never snappy.
+    const t = (now - (this.startT || now)) / 1000;
+    const T = t * 3.2; // faster than LEGO's wander
+    const ax =
+      0.16 * Math.sin(T * 1.15) +
+      0.09 * Math.sin(T * 2.6 + 1.0) +
+      0.05 * Math.cos(T * 4.1 + 0.4);
+    const ay =
+      0.13 * Math.cos(T * 0.95 + 2.1) +
+      0.07 * Math.sin(T * 2.2 + 0.5) +
+      0.04 * Math.cos(T * 3.7 + 1.7);
+    this.fx += (ax - this.fx) * 0.2; // smooth follow
+    this.fy += (ay - this.fy) * 0.2;
+
+    if (this.cycle) {
+      // real elapsed seconds (clamped) so the cycle runs at a steady wall-clock speed and
+      // never lags or jumps when frames are uneven.
+      const dt = this.lastNow ? Math.min(0.05, (now - this.lastNow) / 1000) : 1 / 60;
+      this.stepCycle(dt);
+    }
+    this.lastNow = now;
+
+    this.render(now);
+  }
+
+  // Advance the hero cycle clock with a real dt so it runs at steady wall-clock speed.
+  // The transition is a DISPERSE & RE-FORM built from the effect's own bloom+split:
+  //   HOLD  — the word rests (disperse = 0)
+  //   OUT   — disperse rises: the split spreads wide, the core melts, the word blooms out
+  //           into a soft coloured haze; palette crossfades halfway
+  //   IN    — disperse falls: the new word condenses back out of the light as the split
+  //           collapses; palette finishes. The word + invert swap at the OUT->IN peak,
+  //           when it's a formless cloud, so the change is invisible.
+  private stepCycle(dt: number) {
+    this.cyclePhaseT += dt;
+    // ease so the haze blooms open quickly then re-forms gently (easeOut on the way in).
+    const easeIn = (x: number) => x * x;
+    const easeOut = (x: number) => 1 - (1 - x) * (1 - x);
+
+    if (this.cyclePhase === "hold") {
+      this.disperse += (0 - this.disperse) * Math.min(1, dt * 12);
+      if (this.cyclePhaseT >= this.holdDur) {
+        // begin the transition: palette tween toward the NEXT world
+        this.palFrom = this.cyclePalettes[this.cycleIdx] ?? null;
+        const nextIdx = (this.cycleIdx + 1) % this.cycleWords.length;
+        this.palTo = this.cyclePalettes[nextIdx] ?? this.palFrom;
+        this.palMix = 0;
+        this.nextPending = true;
+        this.cyclePhase = "out";
+        this.cyclePhaseT = 0;
+      }
+    } else if (this.cyclePhase === "out") {
+      const k = Math.min(1, this.cyclePhaseT / this.outDur);
+      this.disperse = easeIn(k);          // bloom out into haze
+      this.palMix = 0.5 * k;
+      if (k >= 1) {
+        // PEAK: the word is a formless cloud -> swap word + invert now (hidden by the haze)
+        if (this.nextPending) {
+          this.nextPending = false;
+          this.cycleIdx = (this.cycleIdx + 1) % this.cycleWords.length;
+          this.params = { ...this.params, word: this.cycleWords[this.cycleIdx] };
+          void this.buildMaskNow();        // rebuild mask for the new word
+        }
+        this.cyclePhase = "in";
+        this.cyclePhaseT = 0;
+      }
+    } else {
+      // IN: the new word condenses back out of the light; palette settles.
+      const k = Math.min(1, this.cyclePhaseT / this.inDur);
+      this.disperse = 1 - easeOut(k);     // haze collapses back to a sharp word
+      this.palMix = 0.5 + 0.5 * k;
+      if (k >= 1) {
+        this.disperse = 0;
+        this.palMix = 1;
+        this.cyclePhase = "hold";
+        this.cyclePhaseT = 0;
+      }
+    }
+  }
+
+  private render(now: number) {
+    const gl = this.gl;
+    if (!gl || !this.compProg || !this.blurProg) return;
+    if (!this.mask || this.levels.length === 0) return;
+
+    const t = (now - this.startT) / 1000;
+
+    // ---- build the bloom chain ----
+    // Level 0 blurs the mask; each next level blurs the previous level's output. Each
+    // level is separable (H then V). Smaller buffers = a wider effective blur.
+    gl.useProgram(this.blurProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    const aPos = gl.getAttribLocation(this.blurProg, "aPosition");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    for (let i = 0; i < this.levels.length; i++) {
+      const lv = this.levels[i];
+      const src = i === 0 ? this.mask : this.levels[i - 1].out.tex;
+      const r = LEVELS[i].radius;
+      // H pass: src -> tmp
+      gl.bindFramebuffer(gl.FRAMEBUFFER, lv.tmp.fb);
+      gl.viewport(0, 0, lv.tmp.w, lv.tmp.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, src);
+      gl.uniform1i(this.blurLoc.uTex, 0);
+      gl.uniform2f(this.blurLoc.uDir, r / lv.tmp.w, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      // V pass: tmp -> out
+      gl.bindFramebuffer(gl.FRAMEBUFFER, lv.out.fb);
+      gl.viewport(0, 0, lv.out.w, lv.out.h);
+      gl.bindTexture(gl.TEXTURE_2D, lv.tmp.tex);
+      gl.uniform2f(this.blurLoc.uDir, 0, r / lv.out.h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // ---- composite to screen ----
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.compProg);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    const aPos2 = gl.getAttribLocation(this.compProg, "aPosition");
+    gl.enableVertexAttribArray(aPos2);
+    gl.vertexAttribPointer(aPos2, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.mask);
+    gl.uniform1i(this.compLoc.uMask, 0);
+    for (let i = 0; i < 4; i++) {
+      gl.activeTexture(gl.TEXTURE1 + i);
+      gl.bindTexture(gl.TEXTURE_2D, this.levels[i]?.out.tex ?? this.mask);
+      gl.uniform1i(this.compLoc[`uB${i}`], 1 + i);
+    }
+
+    // ---- motion: autonomous wander drives the split; the cursor lights up LOCALLY ----
+    // In cycle mode the colour world is the eased tween palFrom->palTo; otherwise it's the
+    // live params (playground). Everything below reads from `p`.
+    const p = this.cycle ? this.tweenedPalette() : this.params;
+    const splitUv = p.split / 620; // base split in uv units (px @ 620h -> uv)
+    // The split itself is driven purely by the card's own gentle wander (fx/fy) — the
+    // cursor does NOT drag it around (that felt wrong). Instead the pointer position is
+    // handed to the shader, which swells the bloom + rainbow in a soft pool right under
+    // the cursor. So moving over it lights the word up where you are, and leaving lets it
+    // settle back — no sliding, no whole-word shove.
+    const sx = this.fx * 2.4 * splitUv;
+    const sy = this.fy * 2.4 * splitUv;
+    gl.uniform2f(this.compLoc.uSplit, sx, sy);
+    // cursor uv (0..1) + eased strength; the shader makes a glow pool around it.
+    gl.uniform2f(this.compLoc.uCursor, this.px * 0.5 + 0.5, this.py * 0.5 + 0.5);
+    gl.uniform1f(this.compLoc.uCursorOn, this.active);
+    gl.uniform1f(this.compLoc.uDisperse, this.disperse);
+
+    const bloomPulse = p.bloom * (0.94 + 0.06 * Math.sin(t * 0.7));
+    gl.uniform1f(this.compLoc.uBloom, bloomPulse);
+    gl.uniform3f(this.compLoc.uWarm, p.warm[0], p.warm[1], p.warm[2]);
+    gl.uniform3f(this.compLoc.uCool, p.cool[0], p.cool[1], p.cool[2]);
+    gl.uniform3f(this.compLoc.uRed, p.red[0], p.red[1], p.red[2]);
+    gl.uniform1f(this.compLoc.uCore, p.core);
+    gl.uniform1f(this.compLoc.uSpectral, p.spectral);
+    gl.uniform3f(this.compLoc.uBg, p.bg[0], p.bg[1], p.bg[2]);
+    gl.uniform1f(this.compLoc.uInvert, p.invert ? 1 : 0);
+    gl.uniform1f(this.compLoc.uNoise, p.noise);
+    gl.uniform1f(this.compLoc.uTime, t);
+    gl.uniform1f(this.compLoc.uAspect, this.w / Math.max(1, this.h));
+    gl.uniform2f(this.compLoc.uResolution, this.canvas.width, this.canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (!this.painted) {
+      this.painted = true;
+      this.canvas.style.opacity = "1";
+    }
+  }
+
+  /** One static frame for reduced-motion. */
+  renderStill() {
+    this.resize();
+    void this.buildMaskNow();
+    this.startT = performance.now();
+    this.render(performance.now());
+  }
+
+  destroy() {
+    this.destroyed = true;
+    if (this.buildScheduled) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void })
+        .cancelIdleCallback;
+      if (cic) cic(this.buildScheduled);
+      else window.clearTimeout(this.buildScheduled);
+      this.buildScheduled = 0;
+    }
+    this.stop();
+    this.canvas.removeEventListener("pointermove", this.onMove);
+    this.canvas.removeEventListener("pointerenter", this.onEnter);
+    this.canvas.removeEventListener("pointerleave", this.onLeave);
+    const gl = this.gl;
+    if (gl) {
+      this.freeLevels();
+      if (this.mask) gl.deleteTexture(this.mask);
+      if (this.quad) gl.deleteBuffer(this.quad);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.canvas.remove();
+  }
+}
+
+```
+
+### chroma/playground.tsx
+
+```tsx
+"use client";
+
+// Chromatic Glow playground — the detail-page editor. Type a word and it blooms with
+// the RGB chromatic split live. Sliders drive the bloom, the split distance, the noise
+// grain, and the three tint colours (warm / cool / fringe). Remix rolls a fresh pair.
+// Built on the same ChromaGlow engine the card uses, from the shared Vault control kit
+// so it matches the site.
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChromaGlow, type ChromaParams } from "./engine";
+import {
+  defaultChromaParams, remixChromaParams, toHex, fromHex,
+} from "./params";
+import { PG_PREVIEW, PG_PANEL, Slider, ColorControl, GhostButton } from "../swirl/controls";
+import { SectionLabel } from "../section-label";
+import { hapticTap } from "../../lib/haptics";
+
+const LABEL = "text-[12px] text-[var(--text-tertiary)]";
+
+export function ChromaGlowPlayground() {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<ChromaGlow | null>(null);
+
+  const [params, setParams] = useState<ChromaParams>(() => defaultChromaParams());
+  const [word, setWord] = useState("chrome");
+
+  const full = useMemo<ChromaParams>(() => ({ ...params, word }), [params, word]);
+
+  // Mount the engine only when the playground scrolls into view, so the detail hero
+  // card and the playground don't both spin up WebGL during the view-transition morph.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let raf = 0;
+    let started = false;
+    let onScreen = true;
+    const sync = () => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      if (onScreen) eng.start();
+      else eng.stop();
+    };
+    const build = () => {
+      if (started) return;
+      started = true;
+      raf = requestAnimationFrame(() => {
+        const eng = new ChromaGlow(host, full);
+        if (!eng.ok) return;
+        engineRef.current = eng;
+        eng.start();
+        if (document.fonts?.load) {
+          const probe = document.createElement("span");
+          probe.style.cssText = "position:absolute;visibility:hidden;font-family:var(--font-neue-corp)";
+          probe.textContent = "Ag";
+          document.body.appendChild(probe);
+          const fam = getComputedStyle(probe).fontFamily.split(",")[0].replace(/["']/g, "").trim();
+          document.body.removeChild(probe);
+          document.fonts.load(`800 1em "${fam}"`).then(() => eng.setFont(`"${fam}", sans-serif`), () => {});
+        }
+      });
+    };
+    const io = new IntersectionObserver(
+      (es) => {
+        onScreen = es[0]?.isIntersecting ?? false;
+        if (onScreen) build();
+        sync();
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(host);
+    const onResize = () => engineRef.current?.resize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      io.disconnect();
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      engineRef.current?.destroy();
+      engineRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // push params/word to the engine
+  useEffect(() => { engineRef.current?.setParams(full); }, [full]);
+
+  const patch = (p: Partial<ChromaParams>) => setParams((prev) => ({ ...prev, ...p }));
+  const remix = () => {
+    hapticTap();
+    // keep the user's typed word — Remix only rolls a fresh colour world, so you can apply
+    // different presets to the same text.
+    const { word: _drop, ...colours } = remixChromaParams();
+    void _drop;
+    setParams((prev) => ({ ...prev, ...colours }));
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <SectionLabel action={<GhostButton onClick={remix}>Remix</GhostButton>}>
+        Playground
+      </SectionLabel>
+
+      {/* live preview */}
+      <div className={`${PG_PREVIEW} aspect-[1344/620] w-full bg-[#1c2133]`}>
+        <div ref={hostRef} data-canvas-card className="absolute inset-0 h-full w-full" />
+      </div>
+
+      {/* controls */}
+      <div className={PG_PANEL}>
+        {/* word */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <span className={`${LABEL} shrink-0`}>Word</span>
+          <input
+            value={word}
+            onChange={(e) => setWord(e.target.value)}
+            placeholder="type a word"
+            maxLength={14}
+            className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border-line)] bg-[var(--bg-page)] px-3 text-[12px] text-[var(--text-primary)] outline-none transition-colors duration-150 ease-[var(--ease-out)] placeholder:text-[var(--text-tertiary)] hover:border-[var(--border-ring)] focus:border-[var(--border-ring)] sm:ml-auto sm:w-[180px] sm:flex-none"
+          />
+        </div>
+
+        {/* two columns: Glow | Colours */}
+        <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 sm:grid-cols-2">
+          <div className="flex flex-col gap-3 self-start">
+            <span className={LABEL}>Glow</span>
+            <Slider label="Bloom" value={params.bloom} min={0.4} max={2} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => patch({ bloom: v })} />
+            <Slider label="Split" value={params.split} min={0} max={20} step={0.5}
+              format={(v) => `${v.toFixed(1)}px`} onChange={(v) => patch({ split: v })} />
+            <Slider label="Core" value={params.core} min={0} max={1.4} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => patch({ core: v })} />
+            <Slider label="Spectral" value={params.spectral} min={0} max={1} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => patch({ spectral: v })} />
+            <Slider label="Grain" value={params.noise} min={0} max={0.4} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => patch({ noise: v })} />
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <span className={LABEL}>Colours</span>
+            <ColorControl label="Warm" value={toHex(params.warm)}
+              onChange={(hex) => patch({ warm: fromHex(hex) })} />
+            <ColorControl label="Cool" value={toHex(params.cool)}
+              onChange={(hex) => patch({ cool: fromHex(hex) })} />
+            <ColorControl label="Fringe" value={toHex(params.red)}
+              onChange={(hex) => patch({ red: fromHex(hex) })} />
+            <ColorControl label="Background" value={toHex(params.bg)}
+              onChange={(hex) => patch({ bg: fromHex(hex) })} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+12. You are given the complete source for a self-contained web visual: "Ransom note".
+
+What it is:
+- I always liked the ransom-note look, where every letter is torn from a different magazine and taped down crooked. So I took a set of real cut-out letters and made it into something you can type with.
+- Each character picks a random paper scrap from the set, then gets a small random tilt, bounce and size so the line reads like it was assembled by hand, not typed. Type your own note below, tune how messy it is, and re-roll to shuffle the scraps.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+- Original inspiration: https://resourceboy.com/
+
+The full source follows, one file per block:
+
+### ransom/manifest.ts
+
+```ts
+// Ransom-note cutout manifest + per-character picker. The sprites are real torn/cut-out
+// magazine letters (Resource Boy "Ransom Note Letters" pack, royalty-free), trimmed to
+// their alpha bbox and downscaled to ~220px tall WebP. Each key (a character) maps to a
+// handful of variants; composing a word means picking one cutout per character and
+// jittering it a little so it reads like a hand-assembled ransom note.
+
+import { mediaUrl } from "../../lib/video-sources";
+import manifestJson from "../../../public/vault/ransom/manifest.json";
+
+export type Variant = { file: string; w: number; h: number };
+export type Manifest = Record<string, Variant[]>;
+
+export const RANSOM: Manifest = manifestJson as Manifest;
+
+// where the sprites are served from (R2 in prod, /public in dev)
+export const RANSOM_BASE = "/vault/ransom/";
+export function spriteUrl(file: string): string {
+  return mediaUrl(`${RANSOM_BASE}${file}`);
+}
+
+// Characters we have cutouts for. Everything else (space, unknown) is rendered as a gap.
+export function hasGlyph(ch: string): boolean {
+  return RANSOM[ch] !== undefined;
+}
+
+// A small deterministic PRNG (mulberry32) so a given seed reproduces the same note — the
+// hero holds a stable composition per phrase, and "Re-roll" just bumps the seed.
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// hash a string to a stable 32-bit seed (so the same phrase defaults to the same note)
+export function hashSeed(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+export type Placed = {
+  kind: "glyph" | "space";
+  ch: string;
+  variant?: Variant;
+  rot: number;      // deg tilt
+  dy: number;       // baseline offset, in em of the line height
+  scale: number;    // per-letter scale multiplier
+  mx: number;       // extra horizontal gap after (em)
+  depth: number;    // 0..1 parallax depth (seeded) — far scraps lean less toward the cursor
+};
+
+export type JitterConfig = {
+  rot: number;    // max |tilt| in deg
+  dy: number;     // max baseline bounce (em)
+  scale: number;  // scale variance (0.1 => 0.9..1.1)
+  gap: number;    // max extra gap between letters (em)
+};
+
+export const DEFAULT_JITTER: JitterConfig = {
+  rot: 8,     // lively but readable
+  dy: 0.06,
+  scale: 0.12,
+  gap: 0.05,
+};
+
+// All cutout variants available for a given character (via its manifest key), or [] if none.
+// Used by click-to-swap so a scrap can flip to a *different* scrap of the same letter.
+export function variantsFor(ch: string): Variant[] {
+  const key = keyFor(ch);
+  return key ? RANSOM[key] : [];
+}
+
+// Resolve a character to a manifest key. Uppercase/lowercase share a folder in the pack
+// (variants already mix cases), so we upcase letters; a few symbols map to shared keys.
+function keyFor(ch: string): string | null {
+  if (ch === " ") return null;
+  const up = ch.toUpperCase();
+  if (RANSOM[up]) return up;
+  if (RANSOM[ch]) return ch;
+  if (ch === "(" || ch === ")") return RANSOM["()"] ? "()" : null;
+  if (ch === "." && RANSOM[","]) return null; // no period cutout; render as a small gap
+  return null;
+}
+
+// Natural rendered width of a composed line at a given letter height (px). Mirrors the
+// layout in RansomLine (per-letter width = aspect*scale*lineH, spaces = 0.32em, a small
+// inter-item gap of 0.04em, plus each glyph's extra mx gap). Used to fit a line to one row.
+export function lineWidth(placed: Placed[], lineH: number): number {
+  let w = 0;
+  const gap = lineH * 0.04;
+  placed.forEach((p, i) => {
+    if (i > 0) w += gap;
+    if (p.kind === "space") {
+      w += lineH * 0.32;
+      return;
+    }
+    const v = p.variant!;
+    w += (v.w / v.h) * (lineH * p.scale) + p.mx * lineH;
+  });
+  return w;
+}
+
+// Compose a line of text into placed cutouts using a seed. Deterministic for (text, seed).
+export function composeLine(
+  text: string,
+  seed: number,
+  jitter: JitterConfig = DEFAULT_JITTER,
+): Placed[] {
+  const rnd = mulberry32(seed);
+  const out: Placed[] = [];
+  for (const ch of text) {
+    const key = keyFor(ch);
+    if (!key) {
+      out.push({ kind: "space", ch, rot: 0, dy: 0, scale: 1, mx: 0, depth: 0 });
+      continue;
+    }
+    const variants = RANSOM[key];
+    const v = variants[Math.floor(rnd() * variants.length)];
+    out.push({
+      kind: "glyph",
+      ch,
+      variant: v,
+      rot: (rnd() * 2 - 1) * jitter.rot,
+      dy: (rnd() * 2 - 1) * jitter.dy,
+      scale: 1 + (rnd() * 2 - 1) * jitter.scale,
+      mx: rnd() * jitter.gap,
+      // seeded parallax depth: 0.35..1. Near scraps (→1) lean most toward the cursor,
+      // far ones barely move, so the taped collage gets real depth on hover.
+      depth: 0.35 + rnd() * 0.65,
+    });
+  }
+  return out;
+}
+
+```
+
+### ransom/RansomLine.tsx
+
+```tsx
+"use client";
+
+// Renders one composed line of ransom-note cutouts. Each glyph is an <img> of a real
+// torn-paper letter, sized to a shared line height (width follows the sprite's aspect),
+// tilted / baseline-bounced / scaled per the composition. Spaces become a gap.
+//
+// Appear vocabulary is "slam & settle": a scrap punches in slightly too big with extra
+// tilt and overshoots flat, like it's being pressed / taped onto the page (scale + rotate,
+// no vertical drop). `direction` lets the same line animate OUT (fade + shrink) so the card
+// can crossfade one phrase into the next with no blank gap.
+//
+// Each scrap also carries a per-letter parallax `depth` (data-depth) + its resting rotation
+// (data-rot) so a cursor engine can lean the whole collage toward the pointer.
+
+import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { spriteUrl, variantsFor, type Placed, type Variant } from "./manifest";
+import { hapticTap } from "../../lib/haptics";
+
+// Back-out overshoot: scrap springs past its size then settles flat — the "tape-down" snap.
+const SLAM_EASE = "cubic-bezier(.34,1.56,.64,1)";
+// A calm ease-OUT for the box-width glide. The slam ease overshoots, which on `width` shoved
+// neighbors wider-then-back; width should settle monotonically so the row never jitters.
+const WIDTH_EASE = "cubic-bezier(.22,.61,.36,1)";
+// Switch (phrase→phrase) vertical-pass motion: a soft rise + un-blur in, a quick lift-blur out.
+const RISE_EASE = "cubic-bezier(.16,1,.3,1)"; // expo-out — fast start, long glide, no overshoot
+const IN_MS = 460; // per-scrap rise-in duration (slower than a slam → smoother, feathered)
+const OUT_MS = 240; // lift-blur-out duration (whole line together)
+const STAGGER_MS = 26; // left-to-right cascade step on the rise-in
+const SWAP_MS = 260; // click-swap flip duration
+
+export function RansomLine({
+  placed,
+  lineH,
+  revealed = true,
+  direction = "in",
+  staggerStart = 0,
+  nowrap = false,
+  className = "",
+}: {
+  placed: Placed[];
+  /** cap height of a letter in px (the sprites are 220px tall; width scales to aspect) */
+  lineH: number;
+  /** when false, letters sit hidden (for an entrance animation) */
+  revealed?: boolean;
+  /** "in" = slam/settle to rest; "out" = fade + shrink away (for the crossfade) */
+  direction?: "in" | "out";
+  /** index offset so multiple lines can stagger continuously */
+  staggerStart?: number;
+  /** keep the whole line on one row (no wrapping) — the caller sizes it to fit */
+  nowrap?: boolean;
+  className?: string;
+}) {
+  let gi = staggerStart;
+  return (
+    <div
+      className={`flex items-center justify-center ${nowrap ? "flex-nowrap" : "flex-wrap"} ${className}`}
+      style={{ gap: `${lineH * 0.04}px` }}
+    >
+      {placed.map((p, i) => {
+        if (p.kind === "space") {
+          return <span key={i} style={{ width: `${lineH * 0.32}px` }} aria-hidden />;
+        }
+        return (
+          <Scrap key={i} p={p} lineH={lineH} revealed={revealed} direction={direction} idx={gi++} />
+        );
+      })}
+    </div>
+  );
+}
+
+// One cutout letter. Owns two things beyond rendering:
+//  • the entrance/exit slam (inner <img> transform, staggered per idx),
+//  • click-to-swap — clicking flips the scrap to a DIFFERENT variant of the same character
+//    with a quick spin/scale flip (old image flips out, new one slams in over it).
+// The outer <span> is the parallax lean layer the cursor engine writes --px/--py/--pr/--ps to.
+function Scrap({
+  p,
+  lineH,
+  revealed,
+  direction,
+  idx,
+}: {
+  p: Placed;
+  lineH: number;
+  revealed: boolean;
+  direction: "in" | "out";
+  idx: number;
+}) {
+  // A click-chosen override variant, or null to show the composed one. Derived (no effect):
+  // when the composition changes (re-roll / phrase switch), p.variant changes identity and
+  // the override is dropped so the fresh cutout shows.
+  const [override, setOverride] = useState<{ base: Variant; picked: Variant } | null>(null);
+  const variant = override && override.base === p.variant ? override.picked : p.variant!;
+  // During a swap: `incoming` = the new width target (box glides to it); `outgoing` = the OLD
+  // cutout, rendered as an overlay that flips OUT on top of the already-promoted base.
+  const [incoming, setIncoming] = useState<Variant | null>(null);
+  const [outgoing, setOutgoing] = useState<Variant | null>(null);
+  const swapTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (swapTimer.current) window.clearTimeout(swapTimer.current);
+  }, []);
+
+  const h = lineH * p.scale;
+  const aspect = (vr: Variant) => (vr.w / vr.h) * h;
+  const w = aspect(variant); // width of the currently-shown variant
+  // While swapping, the box targets the INCOMING variant's width immediately (on click), so
+  // it glides to the real size right away and neighbors slide along with it — no end-of-swap
+  // jump. The two images inside keep their own true widths so neither distorts mid-animation.
+  const boxW = incoming ? aspect(incoming) : w;
+
+  const baseY = (p.dy * lineH).toFixed(2);
+  const leanTransform = `translate(var(--px, 0px), calc(${baseY}px + var(--py, 0px))) rotate(var(--pr, 0deg)) scale(var(--ps, 1))`;
+  const restInner = `translateY(0px) rotate(${p.rot}deg) scale(1)`;
+  // Switch vocabulary — a soft VERTICAL PASS with a feathered blur (the note re-assembling):
+  //   • in  → the scrap rises from just below, un-blurs and settles (staggered L→R);
+  //   • out → the scrap lifts up, blurs and fades away (peeled off the board).
+  const RISE = Math.max(10, lineH * 0.18);
+  const hiddenInner =
+    direction === "in"
+      ? `translateY(${RISE.toFixed(1)}px) rotate(${(p.rot * 1.25).toFixed(2)}deg) scale(0.96)`
+      : `translateY(${(-RISE * 0.8).toFixed(1)}px) rotate(${(p.rot * 0.8).toFixed(2)}deg) scale(0.98)`;
+  // drop-shadow is constant (the paper contact); the blur is what animates on the switch.
+  const SHADOW = "drop-shadow(0 2px 3px rgba(20,20,25,0.16)) drop-shadow(0 6px 10px rgba(20,20,30,0.10))";
+  const blurAmt = revealed ? 0 : direction === "in" ? 3.5 : 5;
+
+  const swap = () => {
+    if (incoming) return; // already mid-swap
+    const all = variantsFor(p.ch);
+    const others = all.filter((v) => v.file !== variant.file);
+    if (!others.length) return; // only one cutout for this letter — nothing to swap to
+    hapticTap();
+    const next = others[Math.floor(Math.random() * others.length)];
+    // Promote immediately: the BASE image now shows `next` (fully opaque, at rest), and the
+    // OLD variant becomes a transient overlay that flips OUT on top of it. So when the overlay
+    // is removed at the end, the base is already the final letter — no empty blink frame.
+    setOverride({ base: p.variant!, picked: next });
+    setOutgoing(variant); // the letter we're leaving, flips out over the new base
+    setIncoming(next); // (kept for the box-width target)
+    swapTimer.current = window.setTimeout(() => {
+      setOutgoing(null);
+      setIncoming(null);
+    }, SWAP_MS);
+  };
+
+  const outerStyle: CSSProperties = {
+    transform: leanTransform,
+    // No CSS transition here: the magnetism/drag/breathe hook eases every value per frame in
+    // JS, so a CSS transition on top would just add lag and fight the spring. When the hook is
+    // inactive (reduced-motion / touch) the vars stay 0 and this is a plain static transform.
+    willChange: "transform",
+    marginRight: `${p.mx * lineH}px`,
+    lineHeight: 0,
+    cursor: "grab",
+    touchAction: "none", // let the scrap own drag gestures (no scroll hijack fighting)
+  };
+  const wrapStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+    width: `${boxW}px`,
+    height: `${h}px`,
+    transformOrigin: "center center",
+    transform: revealed ? restInner : hiddenInner,
+    opacity: revealed ? 1 : 0,
+    transition:
+      direction === "in"
+        ? // rise + un-blur + fade in, per-letter staggered L→R on a smooth ease-out.
+          `transform ${IN_MS}ms ${RISE_EASE} ${idx * STAGGER_MS}ms, opacity ${Math.round(IN_MS * 0.7)}ms ease ${idx * STAGGER_MS}ms, filter ${IN_MS}ms ease ${idx * STAGGER_MS}ms, width ${SWAP_MS}ms ${WIDTH_EASE}`
+        : // lift + blur + fade out, quick, all letters together (no cascade) so it clears fast.
+          `transform ${OUT_MS}ms cubic-bezier(.4,0,.7,1), opacity ${OUT_MS}ms ease, filter ${OUT_MS}ms ease, width ${SWAP_MS}ms ${WIDTH_EASE}`,
+    filter: `${SHADOW} blur(${blurAmt}px)`,
+    willChange: "transform, opacity, filter, width",
+  };
+
+  // Each image keeps its OWN true aspect width (centered in the box) so the animating box
+  // width never stretches/distorts a scrap. Both are absolute + centered so they overlap.
+  const imgBase = (vr: Variant): CSSProperties => ({
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    width: `${aspect(vr)}px`,
+    height: `${h}px`,
+    transition: `transform ${SWAP_MS}ms ${SLAM_EASE}, opacity ${SWAP_MS}ms ease`,
+  });
+
+  return (
+    <span
+      style={outerStyle}
+      data-depth={p.depth ?? 0.5}
+      onPointerDown={(e) => {
+        // don't begin a native text selection / image drag when grabbing a scrap
+        e.preventDefault();
+      }}
+      onClick={(e) => {
+        // a real drag sets data-dragging on this element (see use-magnetism); a click that
+        // follows a drag should NOT swap — only a genuine tap does.
+        if (e.currentTarget.dataset.dragging) return;
+        swap();
+      }}
+    >
+      <span style={wrapStyle}>
+        {/* BASE: always the shown variant, fully at rest. During a swap it's already the NEW
+            cutout underneath, so removing the overlay reveals it with no empty frame. */}
+        <img
+          src={spriteUrl(variant.file)}
+          alt={p.ch}
+          draggable={false}
+          decoding="async"
+          className="select-none"
+          style={{
+            ...imgBase(variant),
+            transform: "translate(-50%,-50%)",
+            // during a swap the new letter slams in via the overlay, so keep the base itself
+            // steady (no reverse transition = no blink); at rest it's just the letter.
+            transition: "none",
+          }}
+        />
+        {/* OVERLAY: the OLD cutout, flipping OUT on top of the already-swapped base (spin +
+            shrink + fade). When it finishes and unmounts, the new base is simply revealed. */}
+        {outgoing && (
+          <img
+            src={spriteUrl(outgoing.file)}
+            alt=""
+            aria-hidden
+            draggable={false}
+            decoding="async"
+            className="select-none"
+            style={{
+              ...imgBase(outgoing),
+              animation: `ransom-swap-out ${SWAP_MS}ms ${SLAM_EASE} both`,
+            }}
+          />
+        )}
+      </span>
+    </span>
+  );
+}
+
+// A RansomLine that manages its OWN entrance: mounts hidden, then slams in on the next
+// frame. Remount it (change its `key`) to replay the slam — used by the playground's
+// Re-roll / live edits so a fresh composition punches back in with no shared reveal state.
+export function SlammingLine(props: Omit<Parameters<typeof RansomLine>[0], "revealed">) {
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => {
+    const r = requestAnimationFrame(() => setRevealed(true));
+    return () => cancelAnimationFrame(r);
+  }, []);
+  return <RansomLine {...props} revealed={revealed} />;
+}
+
+```
+
+### ransom/RansomNoteCard.tsx
+
+```tsx
+"use client";
+
+// A live, display-only Vault card: short phrases assembled as a ransom note out of real
+// torn-paper cutout letters. Each phrase SLAMS in letter-by-letter (scale + tilt overshoot,
+// like it's taped down), holds, then CROSSFADES straight into the next — the outgoing line
+// shrinks/fades out while the incoming line is already slamming in over it, so there's no
+// blank gap. Moving the cursor magnetizes each scrap toward the pointer by its own proximity
+// (near letters lean + lift, far ones stay put). Pauses when offscreen / hidden.
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { RansomLine } from "./RansomLine";
+import { useMagnetism } from "./use-magnetism";
+import { composeLine, hashSeed, lineWidth, DEFAULT_JITTER, type Placed } from "./manifest";
+
+// kept short so they compose cleanly on one card and stay readable
+const PHRASES = ["stay weird", "make stuff", "be kind", "trust me", "keep going", "no rules"];
+
+// cycle timing
+const REVEAL_HOLD = 1800; // ms held fully revealed (quicker resting state)
+const CROSS_OVERLAP = 150; // ms after the old line lifts off before the new one rises in
+const OUT_MS = 260; // how long the outgoing line stays mounted while it lifts + blurs away
+
+type Slot = { key: number; phraseIdx: number; placed: Placed[]; direction: "in" | "out"; revealed: boolean };
+
+export function RansomNoteCard({
+  bare = false,
+  viewTransitionName,
+}: {
+  bare?: boolean;
+  viewTransitionName?: string;
+} = {}) {
+  void bare;
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [avail, setAvail] = useState(900);
+
+  // The card renders 1 or 2 stacked lines: the current one (slamming in / resting) and,
+  // briefly during a switch, the outgoing one (fading out underneath). A monotonic key
+  // guarantees React remounts each line so its enter transition re-fires. The counter lives
+  // in a ref and is only ever bumped inside effects/handlers (never during render).
+  const seq = useRef(1);
+  const makeSlot = (phraseIdx: number): Slot => ({
+    key: seq.current++,
+    phraseIdx,
+    placed: composeLine(PHRASES[phraseIdx].toUpperCase(), hashSeed(PHRASES[phraseIdx]), DEFAULT_JITTER),
+    direction: "in",
+    revealed: false,
+  });
+  // Initial slot built without touching the ref (key 0), so nothing is read during render.
+  const [slots, setSlots] = useState<Slot[]>(() => [
+    {
+      key: 0,
+      phraseIdx: 0,
+      placed: composeLine(PHRASES[0].toUpperCase(), hashSeed(PHRASES[0]), DEFAULT_JITTER),
+      direction: "in",
+      revealed: false,
+    },
+  ]);
+
+  // fit the CURRENT phrase to ONE row: comfortable target height, scaled down if it would
+  // overflow the card's usable width (padding leaves ~86% for the letters). The outgoing
+  // line reuses this height (it's leaving, exact fit doesn't matter).
+  const current = slots[slots.length - 1];
+  const lineH = useMemo(() => {
+    const usable = avail * 0.86;
+    const target = Math.max(34, Math.min(80, Math.round(avail * 0.062)));
+    const natural = lineWidth(current.placed, target);
+    return natural > usable ? Math.max(30, Math.floor((target * usable) / natural)) : target;
+  }, [current.placed, avail]);
+
+  // ── cycle: slam in → hold → crossfade to next ──────────────────────────────
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const ro = new ResizeObserver(() => setAvail(host.clientWidth));
+    ro.observe(host);
+
+    if (reduced) {
+      // static: just show the current phrase revealed, no cycling. Deferred a frame so it
+      // isn't a synchronous set in the effect body (avoids a cascading render).
+      const raf = requestAnimationFrame(() =>
+        setSlots((s) => [{ ...s[s.length - 1], revealed: true }]),
+      );
+      return () => {
+        cancelAnimationFrame(raf);
+        ro.disconnect();
+      };
+    }
+
+    let onScreen = false;
+    let hidden = false;
+    let hovering = false; // freeze the phrase while the cursor is on the card
+    let running = false;
+    const timers = new Set<number>();
+    const after = (fn: () => void, ms: number) => {
+      const id = window.setTimeout(() => {
+        timers.delete(id);
+        fn();
+      }, ms);
+      timers.add(id);
+      return id;
+    };
+    const clearTimers = () => {
+      for (const id of timers) window.clearTimeout(id);
+      timers.clear();
+    };
+
+    const revealCurrent = () => {
+      // flip the just-mounted line to revealed so it slams in.
+      setSlots((s) => s.map((sl, i) => (i === s.length - 1 ? { ...sl, revealed: true } : sl)));
+    };
+
+    const toNext = () => {
+      if (!running) return;
+      setSlots((s) => {
+        const cur = s[s.length - 1];
+        const nextIdx = (cur.phraseIdx + 1) % PHRASES.length;
+        // mark current as leaving (out), add the next as an incoming hidden line on top.
+        const leaving: Slot = { ...cur, direction: "out", revealed: false };
+        const incoming = makeSlot(nextIdx);
+        return [leaving, incoming];
+      });
+      // drop the outgoing line once it's faded, and slam the incoming one in.
+      after(() => setSlots((s) => s.slice(-1)), OUT_MS);
+      after(revealCurrent, CROSS_OVERLAP);
+      // schedule the next switch.
+      after(toNext, CROSS_OVERLAP + REVEAL_HOLD);
+    };
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      // reveal whatever's current, then begin the loop.
+      revealCurrent();
+      after(toNext, REVEAL_HOLD);
+    };
+    const stop = () => {
+      running = false;
+      clearTimers();
+    };
+    // Freeze the auto-cycle while hovering, so a phrase never switches out from under the
+    // cursor mid-interaction (the letters you're leaning / dragging stay put). Because a
+    // switch only ever fires from a queued timer, stopping before it fires leaves the current
+    // phrase fully settled; leaving resumes the loop and the next switch happens then.
+    const sync = () => (onScreen && !hidden && !hovering ? start() : stop());
+
+    const io = new IntersectionObserver(
+      (es) => {
+        onScreen = es[0]?.isIntersecting ?? false;
+        sync();
+      },
+      { threshold: 0.2 },
+    );
+    io.observe(host);
+    const onVis = () => {
+      hidden = document.hidden;
+      sync();
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    // pause on hover, resume on leave (pointer devices only — a touch has no lingering hover)
+    const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    const onEnter = () => {
+      hovering = true;
+      sync();
+      // if a crossfade was mid-flight when the pointer arrived, collapse to a single clean,
+      // fully-revealed line so it freezes tidily (no half-faded outgoing scrap left behind).
+      setSlots((s) => {
+        if (s.length === 1 && s[0].revealed && s[0].direction === "in") return s;
+        const cur = s[s.length - 1];
+        return [{ ...cur, direction: "in", revealed: true }];
+      });
+    };
+    const onLeave = () => {
+      hovering = false;
+      sync();
+    };
+    if (canHover) {
+      host.addEventListener("pointerenter", onEnter);
+      host.addEventListener("pointerleave", onLeave);
+    }
+
+    return () => {
+      stop();
+      ro.disconnect();
+      io.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
+      host.removeEventListener("pointerenter", onEnter);
+      host.removeEventListener("pointerleave", onLeave);
+    };
+  }, []);
+
+  // cursor magnetism: each scrap reacts to the pointer's proximity to ITSELF (near letters
+  // lean toward it + lift, far ones stay put) — a per-letter field, not a flat card tilt.
+  useMagnetism(hostRef);
+
+  return (
+    <div
+      ref={hostRef}
+      data-canvas-card
+      aria-label="Short phrases spelled out as a ransom note from torn-paper cutout letters, revealing one letter at a time."
+      style={viewTransitionName ? { viewTransitionName } : undefined}
+      className="relative mx-auto flex aspect-[1344/620] w-full select-none items-center justify-center overflow-hidden rounded-[12px] border border-[var(--border-line)] bg-[var(--bg-page)] px-10 sm:px-16"
+    >
+      {/* Stacked lines: outgoing (leaving) sits under the incoming during a crossfade.
+          Absolute so both occupy the same centered box; the current one is last. */}
+      {slots.map((sl) => (
+        <div key={sl.key} className="absolute inset-0 flex items-center justify-center px-10 sm:px-16">
+          <RansomLine
+            placed={sl.placed}
+            lineH={lineH}
+            revealed={sl.revealed}
+            direction={sl.direction}
+            nowrap
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+```
+
+### ransom/playground.tsx
+
+```tsx
+"use client";
+
+// Ransom-note playground — the detail-page editor. Type any text and it composes into a
+// note built from real torn-paper cutout letters, with live jitter controls (tilt, bounce,
+// scale variance, spacing, size) and a Re-roll that reshuffles which cutouts are used.
+// Built on the shared composeLine picker the display card uses.
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { SlammingLine } from "./RansomLine";
+import { useMagnetism } from "./use-magnetism";
+import { composeLine, hashSeed, lineWidth, type JitterConfig } from "./manifest";
+import { PG_PREVIEW, PG_PANEL, Slider, GhostButton } from "../swirl/controls";
+import { SectionLabel } from "../section-label";
+import { hapticTap } from "../../lib/haptics";
+
+const LABEL = "text-[12px] text-[var(--text-tertiary)]";
+
+export function RansomNotePlayground() {
+  const [text, setText] = useState("stay weird");
+  const [seed, setSeed] = useState(() => hashSeed("stay weird"));
+  const [jit, setJit] = useState<JitterConfig>({ rot: 8, dy: 0.06, scale: 0.12, gap: 0.2 });
+  const [size, setSize] = useState(78);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [avail, setAvail] = useState(900); // usable inner width of the preview
+  // bumps on every Re-roll so the lines remount (via key) and slam back in.
+  const [playKey, setPlayKey] = useState(0);
+
+  // split into lines (Enter breaks a line); compose each with a per-line seed so re-roll
+  // reshuffles everything at once.
+  const lines = useMemo(() => {
+    const raw = (text || " ").split("\n");
+    return raw.map((ln, i) => composeLine(ln.toUpperCase(), seed + i * 101, jit));
+  }, [text, seed, jit]);
+
+  // track the stage width so we can shrink each line to fit on ONE row (never wrap)
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setAvail(el.clientWidth));
+    ro.observe(el);
+    setAvail(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+
+  // cursor magnetism: each scrap reacts to the pointer's proximity to itself (same per-letter
+  // field as the display card), scoped to the preview stage.
+  useMagnetism(stageRef);
+
+  // per line: use the Size slider as the max height, but scale down if the line would
+  // overflow the stage width, so the whole note always stays on a single row.
+  const fittedH = (placed: (typeof lines)[number]) => {
+    // small safety factor: tilt expands each letter's box a little beyond its upright width
+    const room = avail * 0.94;
+    const natural = lineWidth(placed, size);
+    if (natural <= room || natural <= 0) return size;
+    return Math.max(20, Math.floor((size * room) / natural));
+  };
+
+  const reroll = () => {
+    hapticTap();
+    setSeed((s) => (s + 0x9e3779b1) >>> 0);
+    setPlayKey((k) => k + 1); // remount → slam the fresh scraps back in
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <SectionLabel action={<GhostButton onClick={reroll}>Re-roll</GhostButton>}>
+        Playground
+      </SectionLabel>
+
+      {/* live preview */}
+      <div className={`${PG_PREVIEW} aspect-[1344/620] w-full bg-[var(--bg-page)]`}>
+        <div
+          ref={stageRef}
+          className="absolute inset-0 flex flex-col items-center justify-center gap-[3%] overflow-hidden px-[5%]"
+        >
+          {/* Keyed on playKey only, so Re-roll remounts → slams the fresh scraps in, while
+              live typing / slider edits update the same lines in place (no replayed slam). */}
+          {lines.map((placed, i) => (
+            <SlammingLine key={`${playKey}-${i}`} placed={placed} lineH={fittedH(placed)} nowrap />
+          ))}
+        </div>
+      </div>
+
+      {/* controls */}
+      <div className={PG_PANEL}>
+        {/* text */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <span className={`${LABEL} shrink-0`}>Text</span>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="type a note"
+            maxLength={40}
+            className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border-line)] bg-[var(--bg-page)] px-3 text-[12px] text-[var(--text-primary)] outline-none transition-colors duration-150 ease-[var(--ease-out)] placeholder:text-[var(--text-tertiary)] hover:border-[var(--border-ring)] focus:border-[var(--border-ring)] sm:ml-auto sm:w-[220px] sm:flex-none"
+          />
+        </div>
+
+        {/* two columns of sliders */}
+        <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 sm:grid-cols-2">
+          <div className="flex flex-col gap-3 self-start">
+            <span className={LABEL}>Chaos</span>
+            <Slider label="Tilt" value={jit.rot} min={0} max={22} step={0.5}
+              format={(v) => `${v.toFixed(0)}°`} onChange={(v) => setJit((j) => ({ ...j, rot: v }))} />
+            <Slider label="Bounce" value={jit.dy} min={0} max={0.2} step={0.005}
+              format={(v) => v.toFixed(2)} onChange={(v) => setJit((j) => ({ ...j, dy: v }))} />
+          </div>
+          <div className="flex flex-col gap-3 self-start">
+            <span className={LABEL}>Layout</span>
+            <Slider label="Scale mix" value={jit.scale} min={0} max={0.3} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => setJit((j) => ({ ...j, scale: v }))} />
+            <Slider label="Spacing" value={jit.gap} min={0} max={0.25} step={0.01}
+              format={(v) => v.toFixed(2)} onChange={(v) => setJit((j) => ({ ...j, gap: v }))} />
+            <Slider label="Size" value={size} min={40} max={120} step={1}
+              format={(v) => `${v.toFixed(0)}px`} onChange={setSize} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+13. You are given the complete source for a self-contained web visual: "Apple's corners".
+
+What it is:
+- A normal rounded corner has a tiny kink where it meets the flat edge. You feel it before you can name it. Apple fixes this with a squircle, a corner that eases in smooth. Here is the real one on a live button you can play with.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+- Original inspiration: https://www.figma.com/blog/desperately-seeking-squircles/
+
+The full source follows, one file per block:
+
+### squircle/superellipse.ts
+
+```ts
+// Squircle path generator. A border-radius is one circular arc per corner, and
+// the arc meets the straight edge at a hard tangent, so curvature jumps 0→max in
+// one step. A squircle is the superellipse |x|ⁿ+|y|ⁿ=1, where curvature ramps in
+// continuously and the corner flows into the edge with no kink. We emit it as an
+// SVG path and apply it with `clip-path: path(...)`.
+
+export interface SquircleOptions {
+  width: number;
+  height: number;
+  /** Corner radius in px (clamped to half the shorter side). */
+  radius: number;
+  /** Corner extent along the edge (0..1). 1 = full corner, ~0.6 is a common look. */
+  smoothing: number;
+  /** Superellipse exponent n: 2 = circle, ~5 = classic squircle, higher = boxier. */
+  exponent?: number;
+}
+
+const DEFAULT_EXPONENT = 5;
+
+const n = (v: number) => v.toFixed(4);
+
+// A three-cubic-bézier fit of one superellipse corner at the default exponent, on
+// a unit box: it starts at the top edge (0,0), ends at the side edge (1,1), and is
+// symmetric across the (1,0)-(0,1) diagonal. Each row is [control1, control2, end];
+// segment 0 starts at (0,0), each next segment starts where the previous ended.
+const CORNER: readonly [number, number][][] = [
+  [ [0.3, 0],       [0.473, 0],     [0.619, 0.039] ],
+  [ [0.804, 0.088], [0.912, 0.196], [0.961, 0.381] ],
+  [ [1, 0.527],     [1, 0.7],       [1, 1] ],
+];
+
+// rotate a unit-corner point 90°·k clockwise (k = 0 top-right … 3 top-left)
+function rot90([x, y]: [number, number], k: number): [number, number] {
+  switch (((k % 4) + 4) % 4) {
+    case 1: return [y, -x];
+    case 2: return [-x, -y];
+    case 3: return [-y, x];
+    default: return [x, y];
+  }
+}
+
+// The three cubic segments for one corner, scaled by `radius`, placed at `start`
+// (where the straight edge meets the corner) and rotated by k.
+function cornerCubics(sx: number, sy: number, radius: number, k: number): string {
+  const put = (p: [number, number]) => {
+    const [rx, ry] = rot90(p, k);
+    return `${n(sx + rx * radius)} ${n(sy + ry * radius)}`;
+  };
+  return CORNER.map(([c1, c2, end]) => `C ${put(c1)} ${put(c2)} ${put(end)}`).join(" ");
+}
+
+// For any other exponent, sample the superellipse arc directly. In unit-corner
+// coords the top-right quarter of |x|ⁿ+|y|ⁿ=1 is x = sin(θ)^(2/n),
+// y = 1 - cos(θ)^(2/n) for θ ∈ [0, π/2]; 32 line segments read as smooth.
+function cornerSampled(sx: number, sy: number, radius: number, k: number, exponent: number): string {
+  const STEPS = 32;
+  const e = 2 / exponent;
+  const pts: string[] = [];
+  for (let i = 1; i <= STEPS; i++) {
+    const t = (i / STEPS) * (Math.PI / 2);
+    const ux = Math.pow(Math.sin(t), e);
+    const uy = 1 - Math.pow(Math.cos(t), e);
+    const [rx, ry] = rot90([ux, uy], k);
+    pts.push(`L ${n(sx + rx * radius)} ${n(sy + ry * radius)}`);
+  }
+  return pts.join(" ");
+}
+
+// Closed SVG path for a squircle-cornered rectangle. `smoothing` scales how far
+// the corner reaches along each edge; `exponent` sets its squareness.
+export function squirclePath({ width, height, radius, smoothing, exponent = DEFAULT_EXPONENT }: SquircleOptions): string {
+  const budget = Math.min(width, height) / 2;
+  const s = Math.max(0, Math.min(1, smoothing));
+  const r = Math.max(0, Math.min(radius, budget)) * (0.4 + 0.6 * s);
+
+  if (r <= 0) {
+    return `M 0 0 L ${n(width)} 0 L ${n(width)} ${n(height)} L 0 ${n(height)} Z`;
+  }
+
+  // The bézier fit is exact at the default exponent; sample for anything else.
+  const useBezier = Math.abs(exponent - DEFAULT_EXPONENT) < 0.05;
+  const corner = (sx: number, sy: number, k: number) =>
+    useBezier ? cornerCubics(sx, sy, r, k) : cornerSampled(sx, sy, r, k, exponent);
+
+  return [
+    `M ${n(r)} 0`,
+    `L ${n(width - r)} 0`,
+    corner(width - r, 0, 0),
+    `L ${n(width)} ${n(height - r)}`,
+    corner(width, height - r, 3),
+    `L ${n(r)} ${n(height)}`,
+    corner(r, height, 2),
+    `L 0 ${n(r)}`,
+    corner(0, r, 1),
+    "Z",
+  ].join(" ");
+}
+
+// The plain border-radius path for the same box (one arc per corner), drawn as a
+// dashed reference in compare mode.
+export function roundRectPath(w: number, h: number, r: number): string {
+  const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  return `M ${rr} 0 L ${w - rr} 0 A ${rr} ${rr} 0 0 1 ${w} ${rr} L ${w} ${h - rr} A ${rr} ${rr} 0 0 1 ${w - rr} ${h} L ${rr} ${h} A ${rr} ${rr} 0 0 1 0 ${h - rr} L 0 ${rr} A ${rr} ${rr} 0 0 1 ${rr} 0 Z`;
+}
+
+// Pick the shape path: a plain border-radius when `plain` is set, else the
+// squircle. Used so the "Compare" toggle can swap every component to a plain
+// rounded rect in one place.
+export function shapePath(o: SquircleOptions & { plain?: boolean }): string {
+  return o.plain
+    ? roundRectPath(o.width, o.height, o.radius)
+    : squirclePath(o);
+}
+
+// Native one-liner (Chromium-only for now; falls back to plain border-radius).
+export function nativeCornerShape(radius: number): { borderRadius: string; cornerShape: string } {
+  return { borderRadius: `${radius}px`, cornerShape: "squircle" };
+}
+
+```
+
+### squircle/tokens.ts
+
+```ts
+// One source of truth for every squircle demo, so they read as a single family
+// instead of six independently hand-tuned components.
+//
+// Two control heights (a default and a small tier), one radius formula tied to
+// the element's own height (so a 36px control and a 28px control get
+// proportionally identical corners, and stay proportional as the sliders move),
+// and shared text/tracking/padding.
+
+/** Default control height (button, input, tabs, dropdown). */
+export const CONTROL_H = 36;
+/** Small control height (toggle, stepper key). */
+export const CONTROL_H_SM = 28;
+
+/** Corner radius as a fixed fraction of the element's own height. */
+export function radiusFor(height: number): number {
+  return Math.round(height * 0.42);
+}
+
+/** Shared label size and tracking, in px. Horizontal padding is `px-3` (12px). */
+export const TEXT = 14;
+export const TRACKING = -0.3;
+
+```
+
+### squircle/Squircle.tsx
+
+```tsx
+"use client";
+
+// Renders content inside a squircle. The body is painted (as an SVG fill or a
+// clipped gradient div) and the border is a stroke on the exact outline, so the
+// border is never sliced in half the way `clip-path` on the container would do.
+// The element measures its own box so the path always matches its size.
+
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { squirclePath, roundRectPath } from "./superellipse";
+
+export interface SquircleProps {
+  radius: number;
+  smoothing: number;
+  /** Superellipse exponent (squareness): 2=circle, 5=squircle, higher=boxier. */
+  exponent?: number;
+  children?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  /** Fill color or CSS gradient for the body. */
+  fill?: string;
+  /** Border color on the outline. */
+  stroke?: string;
+  /** Vertical gradient border (top → bottom), 2+ stops; overrides `stroke`. */
+  strokeGradient?: string[];
+  strokeWidth?: number;
+  /** Overlay the plain border-radius outline (dashed) to show the delta. */
+  compare?: boolean;
+  /** Classes for the content overlay (padding, gap, text); centered by default. */
+  contentClassName?: string;
+}
+
+export function Squircle({
+  radius,
+  smoothing,
+  exponent,
+  children,
+  className = "",
+  style,
+  fill,
+  stroke,
+  strokeGradient,
+  strokeWidth = 1,
+  compare = false,
+  contentClassName = "",
+}: SquircleProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const uid = useId().replace(/:/g, "");
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      // Layout size, not getBoundingClientRect (which is scaled by any ancestor
+      // transform), so the path stays matched to the box under a `scale()`.
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      setSize((p) => (p.w === w && p.h === h ? p : { w, h }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const { w, h } = size;
+  // `compare` swaps the shape to a PLAIN border-radius (a single circular arc per
+  // corner), so toggling it shows the ordinary rounded rect vs the squircle.
+  const body = w && h
+    ? compare
+      ? roundRectPath(w, h, radius)
+      : squirclePath({ width: w, height: h, radius, smoothing, exponent })
+    : "";
+  // A CSS gradient can't be an SVG fill, so it's painted on a clipped div instead.
+  const isCssGradient = !!fill && /gradient\(/.test(fill);
+
+  return (
+    <div ref={ref} className={className} style={{ position: "relative", ...style }}>
+      {isCssGradient && w > 0 && h > 0 && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: fill,
+            clipPath: `path("${body}")`,
+            WebkitClipPath: `path("${body}")`,
+            zIndex: 0,
+          }}
+        />
+      )}
+      {w > 0 && h > 0 && (
+        <svg
+          aria-hidden
+          width={w}
+          height={h}
+          viewBox={`0 0 ${w} ${h}`}
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", display: "block", zIndex: 0 }}
+        >
+          {fill && !isCssGradient && <path d={body} fill={fill} />}
+        </svg>
+      )}
+      {/* Content overlay: fills the box and centers by default. */}
+      {children != null && (
+        <div
+          className={`absolute inset-0 flex items-center justify-center ${contentClassName}`}
+          style={{ zIndex: 1 }}
+        >
+          {children}
+        </div>
+      )}
+      {/* Border on top of everything, clipped to the shape so only its inner half
+          shows (drawn at 2× so the visible half equals strokeWidth). This keeps
+          the hairline uniform on flats and corners and stops any body/shadow layer
+          from painting over it. */}
+      {(stroke || strokeGradient) && w > 0 && h > 0 && (
+        <svg
+          aria-hidden
+          width={w}
+          height={h}
+          viewBox={`0 0 ${w} ${h}`}
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", display: "block", zIndex: 3 }}
+        >
+          <clipPath id={`sq-clip-${uid}`}>
+            <path d={body} />
+          </clipPath>
+          {strokeGradient && (
+            <linearGradient id={`sq-stroke-${uid}`} x1="0" y1="0" x2="0" y2="1">
+              {strokeGradient.map((c, i) => (
+                <stop key={i} offset={i / (strokeGradient.length - 1)} stopColor={c} />
+              ))}
+            </linearGradient>
+          )}
+          <path
+            d={body}
+            fill="none"
+            stroke={strokeGradient ? `url(#sq-stroke-${uid})` : stroke}
+            strokeWidth={strokeWidth * 2}
+            clipPath={`url(#sq-clip-${uid})`}
+          />
+        </svg>
+      )}
+    </div>
+  );
+}
+
+```
+
+### squircle/parts.tsx
+
+```tsx
+"use client";
+
+// Squircle demo components, all sharing one glossy neutral surface.
+//
+// GlossySquircle is a deep stack of ~18 very low-opacity greyscale layers, each
+// clipped to the squircle so it follows the corner:
+//   surface: porcelain gradient · corner vignette · centre glow · fine grain ·
+//            brushed streaks · diagonal light sweep · middle sheen band
+//   light:   side edge-lights · top sheen · glass rim · bottom counter-sheen ·
+//            light lift · grounding shadow
+//   edge:    tri-stop bevel border · inner shadow wall · fresnel edge-brighten ·
+//            ambient-occlusion ring · corner glints · double outer hairline
+// The button, chat bubbles and segmented control are all built on it, so they read
+// as one material.
+
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Squircle } from "./Squircle";
+import { shapePath } from "./superellipse";
+import { CONTROL_H, CONTROL_H_SM, radiusFor, TEXT, TRACKING } from "./tokens";
+
+interface Shape {
+  radius: number;
+  smoothing: number;
+  /** Superellipse exponent (squareness): 2=circle, 5=squircle, higher=boxier. */
+  exponent?: number;
+  compare?: boolean;
+}
+
+// The glossy neutral surface. Pass a fixed size (w/h in px) OR omit them to size to
+// content — it measures its own box and clips every gloss layer to the exact
+// squircle of that size. Give it the corner params + content.
+function GlossySquircle({
+  w,
+  h,
+  radius,
+  smoothing,
+  exponent,
+  compare,
+  children,
+  className = "",
+  contentClassName,
+  interactive = true,
+}: Shape & {
+  w?: number;
+  h?: number;
+  children?: ReactNode;
+  className?: string;
+  contentClassName?: string;
+  /** press feedback (scale + shimmer). Off for passive surfaces like AI bubbles. */
+  interactive?: boolean;
+}) {
+  const auto = w === undefined || h === undefined;
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [size, setSize] = useState({ w: w ?? 0, h: h ?? 0 });
+  useLayoutEffect(() => {
+    if (!auto) return;
+    const el = measureRef.current;
+    if (!el) return;
+    const m = () => setSize((p) =>
+      p.w === el.offsetWidth && p.h === el.offsetHeight ? p : { w: el.offsetWidth, h: el.offsetHeight });
+    m();
+    const ro = new ResizeObserver(m);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [auto]);
+
+  const cw = auto ? size.w : (w as number);
+  const ch = auto ? size.h : (h as number);
+  const clip = cw && ch ? `path("${shapePath({ width: cw, height: ch, radius, smoothing, exponent, plain: compare })}")` : "none";
+  const layer = (style: CSSProperties) => (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute inset-0"
+      style={{ clipPath: clip, WebkitClipPath: clip, ...style }}
+    />
+  );
+
+  // double outer hairline only (faint dark contact ring, near-white cut), no shadow
+  const HAIRLINE =
+    "drop-shadow(0 0 0.5px rgba(0,0,0,0.18)) drop-shadow(0 0.5px 0.5px rgba(255,255,255,0.9))";
+  const press = interactive
+    ? "active:scale-[0.97] active:brightness-[1.04] transition-[transform,filter] duration-150"
+    : "";
+
+  const gloss = (
+    <>
+      {/* corner vignette */}
+      {layer({ background: "radial-gradient(120% 130% at 50% 50%, rgba(0,0,0,0) 62%, rgba(0,0,0,0.045) 100%)" })}
+      {/* centre glow */}
+      {layer({ background: "radial-gradient(70% 120% at 50% 45%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0) 70%)" })}
+      {/* fine grain */}
+      {layer({
+        opacity: 0.05,
+        mixBlendMode: "overlay",
+        backgroundImage:
+          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
+      })}
+      {/* brushed streaks */}
+      {layer({
+        opacity: 0.5,
+        mixBlendMode: "overlay",
+        backgroundImage:
+          "repeating-linear-gradient(90deg, rgba(255,255,255,0.06) 0px, rgba(0,0,0,0.03) 1px, rgba(255,255,255,0.06) 2px)",
+      })}
+      {/* diagonal light sweep */}
+      {layer({
+        mixBlendMode: "screen",
+        background: "linear-gradient(115deg, rgba(255,255,255,0) 30%, rgba(255,255,255,0.28) 46%, rgba(255,255,255,0) 60%)",
+      })}
+      {/* middle sheen band */}
+      {layer({
+        background: "linear-gradient(180deg, rgba(255,255,255,0) 34%, rgba(255,255,255,0.5) 50%, rgba(255,255,255,0) 66%)",
+        opacity: 0.45,
+      })}
+      {/* side edge-lights */}
+      {layer({
+        background: "linear-gradient(90deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 8%, rgba(255,255,255,0) 92%, rgba(255,255,255,0.5) 100%)",
+        opacity: 0.5,
+      })}
+      {/* top sheen */}
+      {layer({ background: "radial-gradient(78% 82% at 50% -34%, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.28) 42%, rgba(255,255,255,0) 72%)" })}
+      {/* glass rim */}
+      {layer({ boxShadow: "inset 0 2px 0 -1px rgba(255,255,255,0.85)" })}
+      {/* bottom counter-sheen */}
+      {layer({ mixBlendMode: "screen", background: "radial-gradient(90% 60% at 50% 118%, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%)" })}
+      {/* light lift along the bottom */}
+      {layer({ mixBlendMode: "screen", boxShadow: "inset 0 -15px 2px -12px rgba(255,255,255,0.25)" })}
+      {/* grounding shadow along the bottom */}
+      {layer({ mixBlendMode: "color-burn", boxShadow: "inset 0 -6px 5px -2px #d2d2d2" })}
+      {/* inner shadow wall */}
+      {layer({ boxShadow: "inset 0 0 0 0.5px rgba(0,0,0,0.06)" })}
+      {/* fresnel edge-brighten */}
+      {layer({ mixBlendMode: "screen", boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.28)" })}
+      {/* ambient occlusion ring */}
+      {layer({ boxShadow: "inset 0 0 6px 0 rgba(0,0,0,0.05)" })}
+      {/* corner glints */}
+      {layer({
+        mixBlendMode: "screen",
+        background:
+          "radial-gradient(6px 5px at 14% 14%, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0) 100%), radial-gradient(6px 5px at 86% 14%, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0) 100%)",
+      })}
+    </>
+  );
+
+  const squircleBg = (extraStyle: CSSProperties) => (
+    <Squircle
+      radius={radius}
+      smoothing={smoothing}
+      exponent={exponent}
+      compare={compare}
+      fill="linear-gradient(180deg, #ffffff 0%, #f4f4f5 52%, #ececed 100%)"
+      strokeGradient={["#d3d6db", "#b4b7bd", "#7f8288"]}
+      strokeWidth={1}
+      style={extraStyle}
+    >
+      {gloss}
+    </Squircle>
+  );
+
+  // Fixed size: the Squircle is the box; content is centred inside it.
+  if (!auto) {
+    return (
+      <Squircle
+        radius={radius}
+        smoothing={smoothing}
+        exponent={exponent}
+        compare={compare}
+        contentClassName={contentClassName}
+        fill="linear-gradient(180deg, #ffffff 0%, #f4f4f5 52%, #ececed 100%)"
+        strokeGradient={["#d3d6db", "#b4b7bd", "#7f8288"]}
+        strokeWidth={1}
+        className={`${press} ${className}`}
+        style={{ width: w, height: h, filter: HAIRLINE }}
+      >
+        {gloss}
+        {children}
+      </Squircle>
+    );
+  }
+
+  // Auto size: the in-flow content (with its own padding) drives the box size; the
+  // Squircle background is absolute and sized to the measured content.
+  return (
+    <span
+      className={`relative inline-flex ${press} ${className}`}
+      style={{ filter: HAIRLINE }}
+    >
+      {cw > 0 && ch > 0 && squircleBg({ position: "absolute", inset: 0 })}
+      <span ref={measureRef} className={`relative z-[1] inline-flex items-center justify-center ${contentClassName ?? ""}`}>
+        {children}
+      </span>
+    </span>
+  );
+}
+
+// Debossed neutral label — two-tone near-black ink, cut into the surface with a
+// base-occlusion halo, a bottom highlight, a chiselled top-highlight and a faint
+// top shadow. Reused by every demo so text reads consistently.
+function InkLabel({
+  children,
+  size = TEXT,
+  tracking = TRACKING,
+  className = "",
+}: {
+  children: ReactNode;
+  size?: number;
+  tracking?: number;
+  className?: string;
+}) {
+  const ls = `${tracking}px`;
+  return (
+    <span className={`relative inline-flex items-center justify-center whitespace-nowrap ${className}`}>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute font-medium text-black/20 blur-[2px]"
+        style={{ fontSize: size, letterSpacing: ls }}
+      >
+        {children}
+      </span>
+      <span
+        className="relative z-[2] font-medium"
+        style={{
+          fontSize: size,
+          letterSpacing: ls,
+          // a hair of horizontal padding so background-clip:text never clips a glyph edge
+          padding: "0 0.5px",
+          backgroundImage: "linear-gradient(180deg, #14151a 0%, #33353b 100%)",
+          WebkitBackgroundClip: "text",
+          backgroundClip: "text",
+          color: "transparent",
+          filter:
+            "drop-shadow(0 1px 1px rgba(255,255,255,0.8)) drop-shadow(0 -0.5px 0.3px rgba(255,255,255,0.5)) drop-shadow(0 -0.5px 0.5px rgba(0,0,0,0.12))",
+        }}
+      >
+        {children}
+      </span>
+    </span>
+  );
+}
+
+// ── Demo 1: the glossy button ────────────────────────────────────────────────
+export function SquircleGlossyButton({ smoothing, exponent, compare }: Shape & { label?: string }) {
+  const h = CONTROL_H;
+  return (
+    <GlossySquircle w={132} h={h} radius={radiusFor(h)} smoothing={smoothing} exponent={exponent} compare={compare}>
+      <InkLabel>Get the app</InkLabel>
+    </GlossySquircle>
+  );
+}
+
+// ── Demo 2: a chat — user bubble → AI (no bubble) → user bubble ───────────────
+export function SquircleChat({ smoothing, exponent, compare }: Shape) {
+  // radius keyed to the default control height so bubbles match the family
+  const br = radiusFor(CONTROL_H);
+  const bubble = (text: string) => (
+    <div className="flex justify-end">
+      <GlossySquircle
+        radius={br}
+        smoothing={smoothing}
+        exponent={exponent}
+        compare={compare}
+        interactive={false}
+        contentClassName="px-3 py-2"
+      >
+        <InkLabel>{text}</InkLabel>
+      </GlossySquircle>
+    </div>
+  );
+  return (
+    <div className="flex w-[300px] flex-col gap-2.5">
+      {bubble("hey, what’s a squircle?")}
+      {/* AI answer — no bubble, just quiet text */}
+      <p className="max-w-[86%] text-[14px] leading-[1.5] text-[var(--text-secondary)]">
+        A corner that eases into the edge with no kink, like on iOS.
+      </p>
+      {bubble("love it")}
+    </div>
+  );
+}
+
+// ── Demo 3: an iOS segmented control (glossy squircle thumb slides under active)
+export function SquircleTabs({
+  smoothing,
+  exponent,
+  compare,
+  active = 0,
+  onChange,
+}: Shape & { active?: number; onChange?: (i: number) => void }) {
+  const items = ["Design", "Code", "Ship"];
+  const W = 224;
+  const H = CONTROL_H;
+  const pad = 3;
+  const seg = (W - pad * 2) / items.length;
+  const trackR = radiusFor(H); // the track is a squircle too
+  const tr = radiusFor(H - pad * 2); // thumb corner keyed to the thumb's height
+
+  const trackClip = `path("${shapePath({ width: W, height: H, radius: trackR, smoothing, exponent, plain: compare })}")`;
+
+  return (
+    <div className="relative" style={{ width: W, height: H }}>
+      {/* recessed track — a squircle well the thumb sits inside */}
+      <span
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          clipPath: trackClip,
+          WebkitClipPath: trackClip,
+          background: "linear-gradient(180deg, #e9eaec 0%, #f3f4f5 100%)",
+          boxShadow: "inset 0 1px 3px rgba(0,0,0,0.12)",
+        }}
+      />
+      {/* sliding glossy thumb under the active segment */}
+      <div
+        className="absolute transition-[left] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
+        style={{ top: pad, left: pad + active * seg, width: seg, height: H - pad * 2 }}
+      >
+        <GlossySquircle
+          w={seg}
+          h={H - pad * 2}
+          radius={tr}
+          smoothing={smoothing}
+          exponent={exponent}
+          compare={compare}
+          interactive={false}
+        />
+      </div>
+      {/* labels — same tracking whether active or not, so they don't shift width */}
+      <div className="absolute inset-0 flex items-center" style={{ padding: pad }}>
+        {items.map((it, i) => (
+          <button
+            key={it}
+            type="button"
+            onClick={() => onChange?.(i)}
+            className="relative z-[1] flex h-full flex-1 items-center justify-center font-medium transition-colors"
+            style={{
+              fontSize: TEXT,
+              letterSpacing: `${TRACKING}px`,
+              color: i === active ? "transparent" : "var(--text-secondary)",
+            }}
+          >
+            {i === active ? <InkLabel>{it}</InkLabel> : it}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Demo 4: an iOS toggle switch (glossy squircle thumb slides in a squircle track)
+export function SquircleToggle({
+  smoothing,
+  exponent,
+  compare,
+  on = true,
+  onChange,
+}: Shape & { on?: boolean; onChange?: (v: boolean) => void }) {
+  const H = CONTROL_H_SM;
+  const W = Math.round(H * 1.6);
+  const pad = 4;
+  const thumb = H - pad * 2;
+  const trackR = radiusFor(H);
+  const thumbR = radiusFor(thumb);
+  const trackClip = `path("${shapePath({ width: W, height: H, radius: trackR, smoothing, exponent, plain: compare })}")`;
+
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={() => onChange?.(!on)}
+      className="relative active:brightness-[1.04] transition-[filter] duration-150"
+      style={{ width: W, height: H }}
+    >
+      {/* track — a squircle well; darker when on, recessed light when off */}
+      <span
+        aria-hidden
+        className="absolute inset-0 transition-[background] duration-300"
+        style={{
+          clipPath: trackClip,
+          WebkitClipPath: trackClip,
+          background: on
+            ? "linear-gradient(180deg, #4b4d52 0%, #3a3c41 100%)"
+            : "linear-gradient(180deg, #e5e6e8 0%, #eef0f1 100%)",
+          boxShadow: on
+            ? "inset 0 1px 2px rgba(0,0,0,0.35)"
+            : "inset 0 1px 2px rgba(0,0,0,0.14)",
+        }}
+      />
+      {/* sliding glossy thumb */}
+      <div
+        className="absolute transition-[left] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
+        style={{ top: pad, left: on ? W - pad - thumb : pad, width: thumb, height: thumb }}
+      >
+        <GlossySquircle
+          w={thumb}
+          h={thumb}
+          radius={thumbR}
+          smoothing={smoothing}
+          exponent={exponent}
+          compare={compare}
+          interactive={false}
+        />
+      </div>
+    </button>
+  );
+}
+
+// A recessed squircle surface — a light inset well with a real squircle border
+// (for input fields / menus). Fixed-size (w/h in px). Content is a child that
+// overlays the well; it is NOT clipped, so menu rows never get cut.
+function RecessedSquircle({
+  w,
+  h,
+  radius,
+  smoothing,
+  exponent,
+  compare,
+  children,
+  contentClassName = "",
+}: Shape & {
+  w: number;
+  h: number;
+  children?: ReactNode;
+  contentClassName?: string;
+}) {
+  const uid = useId().replace(/:/g, "");
+  const path = shapePath({ width: w, height: h, radius, smoothing, exponent, plain: compare });
+  const clip = `path("${path}")`;
+  return (
+    <span className="relative inline-flex" style={{ width: w, height: h }}>
+      {/* the recessed well: light fill + inset shadow, clipped to the squircle */}
+      <span
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          clipPath: clip,
+          WebkitClipPath: clip,
+          background: "linear-gradient(180deg, #f5f6f7 0%, #ffffff 100%)",
+          boxShadow: "inset 0 1.5px 3px rgba(0,0,0,0.10)",
+        }}
+      />
+      {/* a hairline border on the squircle outline — clipped to itself so only the
+          inner half shows (uniform on flats + corners) */}
+      <svg
+        aria-hidden
+        width={w}
+        height={h}
+        viewBox={`0 0 ${w} ${h}`}
+        className="pointer-events-none absolute inset-0 z-[1]"
+      >
+        <clipPath id={`rec-${uid}`}>
+          <path d={path} />
+        </clipPath>
+        <path d={path} fill="none" stroke="#c7cace" strokeWidth={2} clipPath={`url(#rec-${uid})`} />
+      </svg>
+      {/* content overlays the well; not clipped */}
+      <span className={`relative z-[2] flex w-full ${contentClassName}`}>{children}</span>
+    </span>
+  );
+}
+
+// ── Demo 5: a text input — a recessed squircle field with a placeholder ───────
+export function SquircleInput({ smoothing, exponent, compare }: Shape) {
+  const h = CONTROL_H;
+  return (
+    <RecessedSquircle
+      w={200}
+      h={h}
+      radius={radiusFor(h)}
+      smoothing={smoothing}
+      exponent={exponent}
+      compare={compare}
+      contentClassName="h-full items-center gap-1.5 px-3"
+    >
+      {/* search glyph */}
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="shrink-0 text-[var(--text-tertiary)]">
+        <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+        <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+      <span className="text-[var(--text-tertiary)]" style={{ fontSize: TEXT }}>Search</span>
+    </RecessedSquircle>
+  );
+}
+
+// ── Demo 6: a stepper — − / value / + as glossy squircle keys around a readout ─
+export function SquircleStepper({ smoothing, exponent, compare }: Shape) {
+  const [n, setN] = useState(3);
+  const h = CONTROL_H_SM;
+  const key = (label: string, onClick: () => void) => (
+    <GlossySquircle
+      w={h}
+      h={h}
+      radius={radiusFor(h)}
+      smoothing={smoothing}
+      exponent={exponent}
+      compare={compare}
+      className="cursor-pointer"
+    >
+      {/* label is non-interactive; the covering button on top takes the click */}
+      <span className="pointer-events-none">
+        <InkLabel>{label}</InkLabel>
+      </span>
+      <button type="button" onClick={onClick} className="absolute inset-0 z-[4]" aria-label={label} />
+    </GlossySquircle>
+  );
+  return (
+    <div className="flex items-center gap-2">
+      {key("−", () => setN((v) => Math.max(0, v - 1)))}
+      <span className="w-6 text-center font-medium tabular-nums text-[var(--text-primary)]" style={{ fontSize: TEXT }}>{n}</span>
+      {key("+", () => setN((v) => v + 1))}
+    </div>
+  );
+}
+
+// ── Demo 7: a dropdown — a glossy squircle field that opens a squircle menu ────
+export function SquircleDropdown({ smoothing, exponent, compare }: Shape) {
+  const options = ["Squircle", "Rounded", "Circle"];
+  const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState(0);
+  const W = 180;
+  const r = radiusFor(CONTROL_H);
+  return (
+    <div className="relative">
+      <GlossySquircle
+        w={W}
+        h={CONTROL_H}
+        radius={r}
+        smoothing={smoothing}
+        exponent={exponent}
+        compare={compare}
+        className="cursor-pointer"
+        contentClassName="justify-between px-3 pointer-events-none"
+      >
+        <InkLabel>{options[sel]}</InkLabel>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="ml-2 shrink-0 text-[var(--text-secondary)]" style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform .2s" }}>
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {/* the click target, on top of the gloss + label */}
+        <button type="button" onClick={() => setOpen((o) => !o)} className="pointer-events-auto absolute inset-0 z-[4]" aria-haspopup="listbox" aria-expanded={open} />
+      </GlossySquircle>
+
+      {open && (
+        // opens UPWARD (bottom-full) so it isn't clipped by the preview's bottom edge
+        <div className="absolute bottom-full left-0 z-10 mb-2" style={{ width: W }}>
+          <RecessedSquircle
+            w={W}
+            h={options.length * 34 + 8}
+            radius={r}
+            smoothing={smoothing}
+            exponent={exponent}
+            compare={compare}
+            contentClassName="flex-col p-1"
+          >
+            {options.map((o, i) => (
+              <button
+                key={o}
+                type="button"
+                onClick={() => { setSel(i); setOpen(false); }}
+                className="flex h-[34px] w-full items-center rounded-lg px-3 text-left transition-colors hover:bg-black/[0.05]"
+                style={{ fontSize: TEXT, color: i === sel ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: i === sel ? 600 : 400 }}
+              >
+                {o}
+              </button>
+            ))}
+          </RecessedSquircle>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
+
+### squircle/playground.tsx
+
+```tsx
+"use client";
+
+// The squircle on a few real components — a glossy button, a chat, an iOS
+// segmented control — all sharing one neutral material. Remix shuffles which one
+// is shown; two sliders tune the corner; Compare / Remix sit beside the title.
+
+import { useState } from "react";
+import { PG_PREVIEW, PG_PANEL, Slider, GhostButton } from "../swirl/controls";
+import { SectionLabel } from "../section-label";
+import { hapticTap } from "../../lib/haptics";
+import {
+  SquircleGlossyButton,
+  SquircleChat,
+  SquircleTabs,
+  SquircleToggle,
+  SquircleInput,
+  SquircleStepper,
+  SquircleDropdown,
+} from "./parts";
+
+const DEFAULT_SMOOTHING = 1;
+const DEFAULT_EXPONENT = 5;
+const RADIUS = 22;
+const DEMOS = 7;
+
+export function SquirclePlayground() {
+  const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
+  const [exponent, setExponent] = useState(DEFAULT_EXPONENT);
+  const [compare, setCompare] = useState(false);
+  const [demo, setDemo] = useState(0);
+  const [tab, setTab] = useState(0);
+  const [toggleOn, setToggleOn] = useState(false);
+
+  // Remix: step to the next demo in order.
+  const remix = () => {
+    hapticTap();
+    setDemo((d) => (d + 1) % DEMOS);
+  };
+
+  const shape = { radius: RADIUS, smoothing, exponent, compare };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <SectionLabel
+        action={
+          <div className="flex items-center gap-2">
+            <GhostButton onClick={() => setCompare((c) => !c)}>
+              {compare ? "Compare on" : "Compare"}
+            </GhostButton>
+            <GhostButton onClick={remix}>Remix</GhostButton>
+          </div>
+        }
+      >
+        Playground
+      </SectionLabel>
+
+      <div className="flex flex-col">
+        <div className={`${PG_PREVIEW} flex min-h-[260px] items-center justify-center px-6 py-12`}>
+          {demo === 0 && <SquircleGlossyButton {...shape} />}
+          {demo === 1 && <SquircleChat {...shape} />}
+          {demo === 2 && <SquircleTabs {...shape} active={tab} onChange={setTab} />}
+          {demo === 3 && <SquircleToggle {...shape} on={toggleOn} onChange={setToggleOn} />}
+          {demo === 4 && <SquircleInput {...shape} />}
+          {demo === 5 && <SquircleStepper {...shape} />}
+          {/* nudged down so the upward-opening menu clears the top without growing the stage */}
+          {demo === 6 && (
+            <div className="translate-y-10">
+              <SquircleDropdown {...shape} />
+            </div>
+          )}
+        </div>
+
+        <div className={PG_PANEL}>
+          <Slider
+            label="Smoothing"
+            value={smoothing}
+            min={0}
+            max={1}
+            step={0.01}
+            format={(v) =>
+              v < 0.005
+                ? "0.00 · plain"
+                : Math.abs(v - 0.6) < 0.005
+                  ? "0.60 · iOS"
+                  : v.toFixed(2)
+            }
+            onChange={setSmoothing}
+          />
+          <Slider
+            label="Squareness"
+            value={exponent}
+            min={2}
+            max={8}
+            step={0.1}
+            format={(v) =>
+              Math.abs(v - 2) < 0.05
+                ? "2.0 · circle"
+                : Math.abs(v - 5) < 0.05
+                  ? "5.0 · iOS"
+                  : `n ${v.toFixed(1)}`
+            }
+            onChange={setExponent}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+14. You are given the complete source for a self-contained web visual: "Kinetic typography".
+
+What it is:
+- A letter is cut into a grid of tiles, and each tile slips on its own wave, so the whole letter ripples like water.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### kinetic-a/engine.ts
+
+```ts
+// Kinetic typography — a letter warped through a tile grid, in duotone.
+//
+// The core: draw the letter once to an offscreen buffer, cut the frame into a
+// grid of tiles, and for each tile copy from a SOURCE rectangle offset by a sine
+// wave whose phase depends on frameCount and the tile's position. That slips
+// neighbouring tiles out of phase and the letter ripples.
+//
+// Four upgrades on top of that base:
+//   1. Two-axis interference — the source offset is the SUM of two waves at
+//      different frequencies, so the ripple crosses itself (cloth/water) instead
+//      of sliding as one flat sheet.
+//   2. Chromatic split — the warped letter is composited in the ink colour plus
+//      two accent copies pushed a few px apart, so warped edges bloom into a
+//      coloured fringe.
+//   3. Depth shading — each warped tile is drawn at an alpha set by how much it
+//      moved, so tiles in motion catch a bit of light and the letter gains relief.
+//   4. A faint grain + scanline veil over the whole card for analog warmth.
+//
+// PERFORMANCE: the warp is done ONCE per frame with plain drawImage tile copies
+// (no per-tile compositing — that was the slow path). Duotone + chroma are three
+// whole-frame composites, so their cost is constant no matter the tile count.
+
+export interface KineticParams {
+  text: string;
+  paper: string;
+  ink: string;
+  accent: string;
+  tiles: number; // grid columns; rows derived from aspect
+  offset: number; // max source displacement, CSS px
+  speed: number; // wave speed per frame
+  spread: number; // the x*y phase term — low = uniform, high = turbulent
+  chroma: number; // chromatic-split strength 0..1
+  shade: number; // depth-shading strength 0..1
+  grain: number; // grain/scanline strength 0..1
+}
+
+// ── small colour helpers ────────────────────────────────────────────────────
+function parseHex(hex: string): [number, number, number] {
+  let h = hex.replace("#", "").trim();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
+}
+const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+const rgb = ([r, g, b]: [number, number, number], a = 1) => `rgba(${r},${g},${b},${a})`;
+
+function token(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+const ASPECT = 16 / 9;
+
+export class KineticA {
+  private stage: HTMLDivElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  // `mask`: the letter drawn once as WHITE on BLACK (opaque), so warping it is a
+  // plain fast drawImage copy. `warp`: the warped letter each frame (also
+  // white-on-black). We tint `warp` onto the main canvas at composite time.
+  private mask: HTMLCanvasElement;
+  private mctx: CanvasRenderingContext2D;
+  private warp: HTMLCanvasElement;
+  private wctx: CanvasRenderingContext2D;
+  private grainCanvas: HTMLCanvasElement | null = null;
+
+  private dpr = 1;
+  private w = 0;
+  private h = 0;
+  private frame = 0;
+  private raf = 0;
+  private running = false;
+
+  private p: KineticParams;
+  private paperRGB: [number, number, number] = [252, 252, 252];
+  private inkRGB: [number, number, number] = [27, 27, 27];
+  private accentRGB: [number, number, number] = [59, 130, 246];
+  private accentInv: [number, number, number] = [196, 125, 9];
+  private box = { x0: 0, y0: 0, x1: 0, y1: 0 };
+
+  constructor(stage: HTMLDivElement, params: KineticParams) {
+    this.stage = stage;
+    this.p = params;
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.style.width = "100%";
+    this.canvas.style.height = "100%";
+    this.canvas.style.display = "block";
+    stage.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext("2d")!;
+
+    this.mask = document.createElement("canvas");
+    this.mctx = this.mask.getContext("2d", { willReadFrequently: true })!;
+    this.warp = document.createElement("canvas");
+    this.wctx = this.warp.getContext("2d")!;
+
+    this.applyColors();
+    this.resize();
+  }
+
+  setParams(params: KineticParams) {
+    const textChanged = params.text !== this.p.text;
+    const colorsChanged =
+      params.paper !== this.p.paper ||
+      params.ink !== this.p.ink ||
+      params.accent !== this.p.accent;
+    const grainChanged = params.grain !== this.p.grain;
+    this.p = params;
+    if (colorsChanged) this.applyColors();
+    if (textChanged) this.drawLetter();
+    if (grainChanged) this.buildGrain();
+    if (!this.running) this.renderStatic();
+  }
+
+  private applyColors() {
+    this.paperRGB = parseHex(this.p.paper);
+    this.inkRGB = parseHex(this.p.ink);
+    this.accentRGB = parseHex(this.p.accent);
+    this.accentInv = [
+      255 - this.accentRGB[0],
+      255 - this.accentRGB[1],
+      255 - this.accentRGB[2],
+    ];
+  }
+
+  resize() {
+    const rect = this.stage.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.w = rect.width;
+    this.h = rect.height;
+
+    const pw = Math.round(this.w * this.dpr);
+    const ph = Math.round(this.h * this.dpr);
+    for (const c of [this.canvas, this.mask, this.warp]) {
+      c.width = pw;
+      c.height = ph;
+    }
+
+    this.buildGrain();
+    this.drawLetter();
+    if (!this.running) this.renderStatic();
+  }
+
+  // Draw the letter once as an opaque white shape on a TRANSPARENT background, so
+  // the warped tiles carry real alpha and can be tinted to any ink and placed
+  // over any paper. Warping is a plain drawImage copy (the fast tutorial path).
+  private drawLetter() {
+    const { mctx, mask } = this;
+    const W = mask.width;
+    const H = mask.height;
+    mctx.clearRect(0, 0, W, H);
+
+    const text = (this.p.text || "A").slice(0, 12);
+    const single = text.length === 1;
+    const family = token("--font-woodland", "").split(",")[0].trim();
+    let size = Math.round(H * (single ? 0.86 : 0.6));
+    mctx.fillStyle = "#fff";
+    mctx.textAlign = "center";
+    mctx.textBaseline = "middle";
+    const setFont = (s: number) =>
+      (mctx.font = family ? `700 ${s}px ${family}, system-ui` : `800 ${s}px system-ui`);
+    setFont(size);
+    if (!single) {
+      const maxW = W * 0.9;
+      let guard = 0;
+      while (mctx.measureText(text).width > maxW && size > 12 && guard++ < 40) {
+        size -= 4;
+        setFont(size);
+      }
+    }
+    mctx.fillText(text, W / 2, H * 0.54);
+    this.measureBox();
+  }
+
+  // Bounding box of the ink so the tile loop skips empty tiles. Runs only on
+  // text/size change (not per frame), so getImageData here is fine.
+  private measureBox() {
+    const { mctx, mask } = this;
+    const W = mask.width;
+    const H = mask.height;
+    try {
+      const data = mctx.getImageData(0, 0, W, H).data;
+      let x0 = W, y0 = H, x1 = 0, y1 = 0;
+      for (let y = 0; y < H; y += 2) {
+        for (let x = 0; x < W; x += 2) {
+          // letter is opaque on a transparent bg → alpha channel marks ink
+          if (data[(y * W + x) * 4 + 3] > 20) {
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          }
+        }
+      }
+      if (x1 < x0) { x0 = 0; y0 = 0; x1 = W; y1 = H; }
+      this.box = { x0, y0, x1, y1 };
+    } catch {
+      this.box = { x0: 0, y0: 0, x1: W, y1: H };
+    }
+  }
+
+  private buildGrain() {
+    if (this.p.grain <= 0) { this.grainCanvas = null; return; }
+    const W = this.mask.width;
+    const H = this.mask.height;
+    if (!W || !H) return;
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const g = c.getContext("2d")!;
+    const img = g.createImageData(W, H);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (Math.sin(i * 12.9898) * 43758.5453) % 1;
+      const v = 128 + (n - 0.5) * 255;
+      d[i] = d[i + 1] = d[i + 2] = clamp255(v);
+      d[i + 3] = 12;
+    }
+    g.putImageData(img, 0, 0);
+    g.globalAlpha = 0.06;
+    g.fillStyle = "#000";
+    const step = Math.max(2, Math.round(3 * this.dpr));
+    for (let y = 0; y < H; y += step) g.fillRect(0, y, W, Math.max(1, Math.round(this.dpr)));
+    this.grainCanvas = c;
+  }
+
+  // ── the frame ────────────────────────────────────────────────────────────
+  private renderFrame() {
+    const { ctx, wctx, mask } = this;
+    const W = mask.width;
+    const H = mask.height;
+    const p = this.p;
+    const off = p.offset * this.dpr;
+
+    // 1) Build the warped letter into `warp` (white shape on transparent). Plain
+    //    tile copies — the fast tutorial path. Depth shade is baked in per-tile.
+    wctx.globalCompositeOperation = "source-over";
+    wctx.globalAlpha = 1;
+    wctx.clearRect(0, 0, W, H);
+
+    const TILES_X = Math.max(2, Math.round(p.tiles));
+    const TILES_Y = Math.max(2, Math.round(p.tiles / ASPECT));
+    const tileW = Math.floor(W / TILES_X);
+    const tileH = Math.floor(H / TILES_Y);
+    if (tileW > 0 && tileH > 0) {
+      const cx0 = Math.max(0, Math.floor(this.box.x0 / tileW) - 1);
+      const cy0 = Math.max(0, Math.floor(this.box.y0 / tileH) - 1);
+      const cx1 = Math.min(TILES_X - 1, Math.ceil(this.box.x1 / tileW) + 1);
+      const cy1 = Math.min(TILES_Y - 1, Math.ceil(this.box.y1 / tileH) + 1);
+      const t = this.frame * p.speed;
+
+      for (let y = cy0; y <= cy1; y++) {
+        for (let x = cx0; x <= cx1; x++) {
+          const phase = x * y;
+          const wave1 = Math.sin(t + phase * p.spread);
+          const wave2 = Math.sin(t * 0.7 + (x + y) * p.spread * 1.9 + 1.3);
+          const mix = wave1 * 0.65 + wave2 * 0.45; // ~[-1.1, 1.1]
+          const waveX = Math.round(mix * off);
+          const waveY = Math.round(Math.sin(t * 0.9 + phase * p.spread * 0.6) * off * 0.7);
+
+          const sx = x * tileW + waveX;
+          const sy = y * tileH + waveY;
+          const dx = x * tileW;
+          const dy = y * tileH;
+          const dw = x === TILES_X - 1 ? W - dx : tileW;
+          const dh = y === TILES_Y - 1 ? H - dy : tileH;
+          if (dw <= 0 || dh <= 0) continue;
+          if (sx + dw <= 0 || sy + dh <= 0 || sx >= W || sy >= H) continue;
+
+          // depth shade → alpha: tiles that moved most are a touch brighter.
+          wctx.globalAlpha = p.shade > 0
+            ? 1 - p.shade * 0.5 + Math.min(1, Math.abs(mix)) * p.shade * 0.5
+            : 1;
+          wctx.drawImage(mask, sx, sy, dw, dh, dx, dy, dw, dh);
+        }
+      }
+      wctx.globalAlpha = 1;
+    }
+
+    // 2) Composite `warp` onto the main canvas in DUOTONE, with a chromatic split.
+    //    Constant cost: three full-frame draws max. The accent copies go down
+    //    FIRST (offset, so their fringe peeks out from behind), then the ink on
+    //    top at true position, so the letter body stays clean ink and only the
+    //    warped edges show colour.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = rgb(this.paperRGB);
+    ctx.fillRect(0, 0, W, H);
+
+    if (p.chroma > 0) {
+      const shiftPx = Math.round(p.chroma * 5 * this.dpr) + 1;
+      this.compositeTinted(this.accentRGB, shiftPx, 0.7 * p.chroma);
+      this.compositeTinted(this.accentInv, -shiftPx, 0.6 * p.chroma);
+    }
+    this.compositeTinted(this.inkRGB, 0, 1);
+
+    // 3) grain + scanline veil
+    if (this.grainCanvas && p.grain > 0) {
+      ctx.globalCompositeOperation = "overlay";
+      ctx.globalAlpha = p.grain;
+      ctx.drawImage(this.grainCanvas, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    }
+  }
+
+  // Tint the warped letter (white shape on transparent) to `col` and composite it
+  // onto the main canvas, shifted by `dxPx`. One reusable scratch buffer:
+  //   scratch = warp            (white letter, real alpha)
+  //   scratch 'source-in' col   (fill col only where the letter is) → tinted letter
+  //   main    'source-over'     (place it over the paper at any offset)
+  // Correct for ANY ink/paper combo (no luminance-key assumptions).
+  private tintScratch: HTMLCanvasElement | null = null;
+  private tctx: CanvasRenderingContext2D | null = null;
+  private compositeTinted(
+    col: [number, number, number],
+    dxPx: number,
+    alpha: number,
+  ) {
+    const W = this.warp.width;
+    const H = this.warp.height;
+    if (!this.tintScratch) {
+      this.tintScratch = document.createElement("canvas");
+      this.tctx = this.tintScratch.getContext("2d")!;
+    }
+    if (this.tintScratch.width !== W || this.tintScratch.height !== H) {
+      this.tintScratch.width = W;
+      this.tintScratch.height = H;
+    }
+    const s = this.tctx!;
+    s.globalCompositeOperation = "source-over";
+    s.globalAlpha = 1;
+    s.clearRect(0, 0, W, H);
+    s.drawImage(this.warp, 0, 0);
+    s.globalCompositeOperation = "source-in";
+    s.fillStyle = rgb(col);
+    s.fillRect(0, 0, W, H);
+    s.globalCompositeOperation = "source-over";
+
+    this.ctx.globalAlpha = alpha;
+    this.ctx.drawImage(this.tintScratch, dxPx, 0);
+    this.ctx.globalAlpha = 1;
+  }
+
+  renderStatic() {
+    this.frame = 0;
+    this.renderFrame();
+  }
+
+  private tick = () => {
+    if (!this.running) return;
+    this.frame++;
+    this.renderFrame();
+    this.raf = requestAnimationFrame(this.tick);
+  };
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  refreshLetter() {
+    this.drawLetter();
+    if (!this.running) this.renderStatic();
+  }
+
+  destroy() {
+    this.stop();
+    this.canvas.remove();
+  }
+}
+
+```
+
+### kinetic-a/KineticACard.tsx
+
+```tsx
+"use client";
+
+// The kinetic-typography Vault card: a bold letter warped through a tile grid in
+// duotone (see ./engine.ts). Thin wrapper — mounts the framework-free engine,
+// keeps it in sync with `params`, and pauses it offscreen or when the tab is
+// hidden. Used both as the gallery card and the detail-page hero (share a
+// view-transition-name so the card morphs into the hero).
+
+import { useEffect, useRef, type CSSProperties } from "react";
+import { KineticA as Engine, type KineticParams } from "./engine";
+import { onTransitionChange } from "../../lib/view-transition";
+
+// The card's default look: ink on paper, a calm ripple with a blue edge-split.
+// The playground passes its own live params instead.
+export const DEFAULT_PARAMS: KineticParams = {
+  text: "a",
+  paper: "#fcfcfc",
+  ink: "#1b1b1b",
+  accent: "#3b82f6",
+  tiles: 34,
+  offset: 26,
+  speed: 0.02,
+  spread: 0.025,
+  chroma: 0.35,
+  shade: 0.35,
+  grain: 0.7,
+};
+
+export function KineticACard({
+  flush = false,
+  params = DEFAULT_PARAMS,
+  viewTransitionName,
+}: {
+  /** Playground mode: round only the TOP so the control panel tucks under the
+   *  flat bottom (matches PG_PREVIEW + PG_PANEL used by the other playgrounds). */
+  flush?: boolean;
+  params?: KineticParams;
+  viewTransitionName?: string;
+} = {}) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<Engine | null>(null);
+
+  // Mount once; lifecycle wiring lives here.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const engine = new Engine(stage, params);
+    engineRef.current = engine;
+
+    // Repaint the letter once the heavy display face loads (first paint may have
+    // used the fallback).
+    if (typeof document !== "undefined" && document.fonts) {
+      const fam = getComputedStyle(document.documentElement)
+        .getPropertyValue("--font-woodland")
+        .split(",")[0]
+        .trim();
+      if (fam) {
+        document.fonts.load(`700 64px ${fam}`).then(() => engine.refreshLetter()).catch(() => {});
+      }
+    }
+
+    if (reduced) {
+      engine.renderStatic();
+      return () => {
+        engine.destroy();
+        engineRef.current = null;
+      };
+    }
+
+    let onScreen = true;
+    let hidden = false;
+    let inTransition = false;
+    // Freeze the rAF loop while a cross-route morph is running — the browser is
+    // compositing page snapshots then, so a live canvas underneath only steals
+    // the main thread / GPU (and can't visibly update anyway).
+    const running = () => onScreen && !hidden && !inTransition;
+    const sync = () => {
+      if (running()) engine.start();
+      else engine.stop();
+    };
+    sync();
+
+    const ro = new ResizeObserver(() => engine.resize());
+    ro.observe(stage);
+    const io = new IntersectionObserver((es) => {
+      onScreen = es[0]?.isIntersecting ?? true;
+      sync();
+    });
+    io.observe(stage);
+    const onVis = () => {
+      hidden = document.hidden;
+      sync();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    const offTransition = onTransitionChange((active) => {
+      inTransition = active;
+      sync();
+    });
+
+    return () => {
+      ro.disconnect();
+      io.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
+      offTransition();
+      engine.destroy();
+      engineRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Push live param changes to the running engine (playground drives this).
+  useEffect(() => {
+    engineRef.current?.setParams(params);
+  }, [params]);
+
+  // The engine paints its own paper colour, so the frame bg only shows for the
+  // split second before mount. In `flush` (playground) mode the bottom is square
+  // and the panel tucks under it; otherwise it's a fully-rounded card.
+  // flush = the PG_PREVIEW recipe: a FULLY-rounded box at z-10, so PG_PANEL's
+  // -mt-5 slides up BEHIND it and the preview keeps its own rounded bottom.
+  const shape = flush
+    ? "relative z-10 rounded-xl border"
+    : "rounded-[12px] border";
+
+  const style: CSSProperties | undefined = viewTransitionName
+    ? { viewTransitionName, background: params.paper }
+    : { background: params.paper };
+
+  return (
+    <div
+      ref={stageRef}
+      data-canvas-card
+      style={style}
+      className={`relative mx-auto aspect-video w-full select-none overflow-hidden border-[var(--border-line)] ${shape}`}
+    />
+  );
+}
+
+```
+
+
+15. You are given the complete source for a self-contained web visual: "Liquid UI".
+
+What it is:
+- I love UI where two cards fuse and the corner between them bends inward, like they were poured together, so I built a tiny engine that just makes it from code instead of drawing it by hand. Drag the cards below to watch the join re-flow, and turn one knob to go from crisp joints all the way to soft gooey blobs.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### liquid/sdf.ts
+
+```ts
+// The signed-distance field that powers the liquid fusion.
+//
+// The whole "liquid UI" trick is one idea: don't stack shapes, take the UNION of
+// their signed-distance fields with a SMOOTH minimum. A plain min() gives a hard
+// union (shapes touch at a sharp seam); a smooth-min blends the fields near the
+// seam, and that blend IS the concave (inverse) fillet where two cards meet. Turn
+// the blend `k` up and the fillet grows into a full gooey neck — so a single knob
+// spans "crisp inverse-rounded joint" -> "organic metaball melt".
+//
+// Everything here is CPU/TS (ported from the repo's GLSL: sdRoundBox + smin live in
+// lego/shaders.ts, smin also in liquid-wipe/shader.ts). marching-squares.ts samples
+// Field.eval over a grid to trace the fused outline into an SVG path.
+//
+// Convention: the field is NEGATIVE inside a shape, 0 on the surface, POSITIVE
+// outside (standard SDF). The fused outline is the iso-contour at 0.
+
+/** Signed distance from point (px,py) to an axis-aligned rounded box. `hw`,`hh`
+ *  are half-extents, `r` the corner radius. Ported from lego/shaders.ts sdRoundBox. */
+export function sdRoundBox(
+  px: number,
+  py: number,
+  cx: number,
+  cy: number,
+  hw: number,
+  hh: number,
+  r: number,
+): number {
+  // clamp the radius so it never exceeds the box
+  const rr = Math.min(r, Math.min(hw, hh));
+  const qx = Math.abs(px - cx) - hw + rr;
+  const qy = Math.abs(py - cy) - hh + rr;
+  const ax = Math.max(qx, 0);
+  const ay = Math.max(qy, 0);
+  const outside = Math.hypot(ax, ay);
+  const inside = Math.min(Math.max(qx, qy), 0);
+  return outside + inside - rr;
+}
+
+/** Signed distance to a capsule (a line segment of radius `r`) from (ax,ay) to
+ *  (bx,by). Used for explicit "bridges" that connect two cards with a pipe. */
+export function sdCapsule(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  r: number,
+): number {
+  const pax = px - ax;
+  const pay = py - ay;
+  const bax = bx - ax;
+  const bay = by - ay;
+  const denom = bax * bax + bay * bay || 1e-6;
+  // projection of P onto AB, clamped to the segment
+  const h = Math.max(0, Math.min(1, (pax * bax + pay * bay) / denom));
+  const dx = pax - bax * h;
+  const dy = pay - bay * h;
+  return Math.hypot(dx, dy) - r;
+}
+
+/** Polynomial smooth-minimum (the fillet maker). k=0 → hard min (sharp seam);
+ *  larger k → wider blend → bigger concave fillet / gooey neck. Ported from
+ *  lego/shaders.ts (the mix() form — no derivative kink at the seam). */
+export function smin(a: number, b: number, k: number): number {
+  if (k <= 0) return Math.min(a, b);
+  const h = Math.max(0, Math.min(1, 0.5 + (0.5 * (b - a)) / k));
+  return b * (1 - h) + a * h - k * h * (1 - h);
+}
+
+// ── Shapes ───────────────────────────────────────────────────────────────────
+export interface RoundBox {
+  kind: "box";
+  cx: number;
+  cy: number;
+  hw: number;
+  hh: number;
+  r: number;
+}
+export interface Bridge {
+  kind: "bridge";
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  r: number;
+}
+export type Shape = RoundBox | Bridge;
+
+export function shapeSD(s: Shape, px: number, py: number): number {
+  return s.kind === "box"
+    ? sdRoundBox(px, py, s.cx, s.cy, s.hw, s.hh, s.r)
+    : sdCapsule(px, py, s.ax, s.ay, s.bx, s.by, s.r);
+}
+
+/** The whole group as one field: the smooth-union of every shape. `eval` returns
+ *  the fused signed distance at (x,y). Proximity auto-fuse is automatic — two boxes
+ *  close enough that their k-blend overlaps merge with a fillet, with no explicit
+ *  connection. Add Bridge shapes for deliberate pipes between distant cards. */
+export class Field {
+  shapes: Shape[];
+  k: number;
+
+  constructor(shapes: Shape[] = [], k = 12) {
+    this.shapes = shapes;
+    this.k = k;
+  }
+
+  eval(x: number, y: number): number {
+    const { shapes, k } = this;
+    if (shapes.length === 0) return Infinity;
+    let d = shapeSD(shapes[0], x, y);
+    for (let i = 1; i < shapes.length; i++) {
+      d = smin(d, shapeSD(shapes[i], x, y), k);
+    }
+    return d;
+  }
+
+  /** Axis-aligned bounds of the whole group, padded so the fused skin (which bulges
+   *  OUTSIDE each box by up to ~k at the fillets) is fully contained in the sample
+   *  grid. Without the pad the marching-squares grid would clip the blend. */
+  bounds(pad = 0): { minX: number; minY: number; maxX: number; maxY: number } {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const grow = pad + this.k; // the smin bulge reaches ~k past a box edge
+    for (const s of this.shapes) {
+      if (s.kind === "box") {
+        minX = Math.min(minX, s.cx - s.hw - grow);
+        minY = Math.min(minY, s.cy - s.hh - grow);
+        maxX = Math.max(maxX, s.cx + s.hw + grow);
+        maxY = Math.max(maxY, s.cy + s.hh + grow);
+      } else {
+        minX = Math.min(minX, Math.min(s.ax, s.bx) - s.r - grow);
+        minY = Math.min(minY, Math.min(s.ay, s.by) - s.r - grow);
+        maxX = Math.max(maxX, Math.max(s.ax, s.bx) + s.r + grow);
+        maxY = Math.max(maxY, Math.max(s.ay, s.by) + s.r + grow);
+      }
+    }
+    if (!isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    return { minX, minY, maxX, maxY };
+  }
+}
+
+```
+
+### liquid/marching-squares.ts
+
+```ts
+// Trace the fused outline of a Field into an SVG path.
+//
+// This is the one piece with nothing to reuse in the repo. We sample the field's
+// signed distance on a grid, then run marching squares at the iso-contour 0 (the
+// surface). Each grid cell looks at its 4 corners' inside/outside state (16 cases)
+// and emits 0, 1, or 2 short edges; we place each edge endpoint by LINEAR
+// INTERPOLATION along the cell edge (where the field actually crosses 0), not at
+// the midpoint — that's what turns a blocky staircase into a smooth curve. Then we
+// stitch the loose segments into closed loops and CHAIKIN-smooth them so the path
+// reads as fluid, not faceted, and doesn't wobble frame-to-frame while morphing.
+//
+// Output: a single `d` string (possibly multiple subpaths if the group has
+// disconnected islands). SVG path formatting matches squircle/superellipse.ts.
+
+import { Field } from "./sdf";
+
+const fmt = (v: number) => v.toFixed(2);
+
+export interface MarchOptions {
+  /** Grid cell size in the field's units (px). Smaller = crisper + slower. */
+  cell?: number;
+  /** Chaikin smoothing passes (0 = raw marching-squares polyline). */
+  smooth?: number;
+}
+
+type Pt = { x: number; y: number };
+
+// Marching-squares edge table. For each of the 16 corner-mask cases, which cell
+// edges the contour crosses, as pairs [edgeA, edgeB]. Edges: 0=top,1=right,2=bottom,
+// 3=left. Corner bit order: 0=TL,1=TR,2=BR,3=BL (bit set = INSIDE, field < 0).
+// Cases 5 and 10 are saddles → two segments; we resolve them by the cell-center sign.
+const EDGES: number[][][] = [
+  [], // 0000
+  [[3, 2]], // 0001 BL
+  [[2, 1]], // 0010 BR
+  [[3, 1]], // 0011 BL+BR
+  [[0, 1]], // 0100 TR
+  [[3, 2], [0, 1]], // 0101 saddle TL?/TR/BL
+  [[0, 2]], // 0110 TR+BR
+  [[3, 0]], // 0111 TR+BR+BL
+  [[3, 0]], // 1000 TL
+  [[0, 2]], // 1001 TL+BL
+  [[3, 0], [2, 1]], // 1010 saddle
+  [[0, 1]], // 1011 TL+BL+BR
+  [[3, 1]], // 1100 TL+TR
+  [[2, 1]], // 1101 TL+TR+BL
+  [[3, 2]], // 1110 TL+TR+BR
+  [], // 1111
+];
+
+// interpolate the 0-crossing along a cell edge between two corner samples
+function lerpEdge(x0: number, y0: number, v0: number, x1: number, y1: number, v1: number): Pt {
+  const denom = v0 - v1;
+  const t = Math.abs(denom) < 1e-6 ? 0.5 : v0 / denom; // where field hits 0
+  const tc = Math.max(0, Math.min(1, t));
+  return { x: x0 + (x1 - x0) * tc, y: y0 + (y1 - y0) * tc };
+}
+
+/** Marching squares → array of closed loops (each a list of points). */
+export function contour(field: Field, opts: MarchOptions = {}): Pt[][] {
+  const cell = Math.max(2, opts.cell ?? 6);
+  const b = field.bounds();
+  const w = b.maxX - b.minX;
+  const h = b.maxY - b.minY;
+  if (w <= 0 || h <= 0) return [];
+
+  const cols = Math.ceil(w / cell) + 1;
+  const rows = Math.ceil(h / cell) + 1;
+  if (cols * rows > 400_000) return []; // safety cap
+
+  // sample the field once per grid vertex
+  const val = new Float32Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    const y = b.minY + j * cell;
+    for (let i = 0; i < cols; i++) {
+      val[j * cols + i] = field.eval(b.minX + i * cell, y);
+    }
+  }
+  const at = (i: number, j: number) => val[j * cols + i];
+
+  // collect loose segments (each: two points); we key endpoints to stitch them.
+  const segs: [Pt, Pt][] = [];
+
+  for (let j = 0; j < rows - 1; j++) {
+    for (let i = 0; i < cols - 1; i++) {
+      const x0 = b.minX + i * cell;
+      const y0 = b.minY + j * cell;
+      const x1 = x0 + cell;
+      const y1 = y0 + cell;
+      const vTL = at(i, j);
+      const vTR = at(i + 1, j);
+      const vBR = at(i + 1, j + 1);
+      const vBL = at(i, j + 1);
+      // inside = field < 0
+      let mask = 0;
+      if (vTL < 0) mask |= 8;
+      if (vTR < 0) mask |= 4;
+      if (vBR < 0) mask |= 2;
+      if (vBL < 0) mask |= 1;
+      if (mask === 0 || mask === 15) continue;
+
+      // point on each edge (lazily)
+      const edgePt = (edge: number): Pt => {
+        switch (edge) {
+          case 0: return lerpEdge(x0, y0, vTL, x1, y0, vTR); // top
+          case 1: return lerpEdge(x1, y0, vTR, x1, y1, vBR); // right
+          case 2: return lerpEdge(x0, y1, vBL, x1, y1, vBR); // bottom
+          default: return lerpEdge(x0, y0, vTL, x0, y1, vBL); // left
+        }
+      };
+
+      let cases = EDGES[mask];
+      // saddle disambiguation via the cell-center sample
+      if (mask === 5 || mask === 10) {
+        const center = field.eval((x0 + x1) / 2, (y0 + y1) / 2);
+        if (mask === 5) cases = center < 0 ? [[3, 0], [2, 1]] : [[3, 2], [0, 1]];
+        else cases = center < 0 ? [[3, 2], [0, 1]] : [[3, 0], [2, 1]];
+      }
+      for (const [ea, eb] of cases) segs.push([edgePt(ea), edgePt(eb)]);
+    }
+  }
+
+  return stitch(segs, cell);
+}
+
+// Stitch loose segments into closed loops by snapping near-equal endpoints together.
+function stitch(segs: [Pt, Pt][], cell: number): Pt[][] {
+  const eps = cell * 0.5;
+  const key = (p: Pt) => `${Math.round(p.x / eps)},${Math.round(p.y / eps)}`;
+  // adjacency: endpoint key -> list of {seg index, which end}
+  const map = new Map<string, { seg: number; end: 0 | 1 }[]>();
+  segs.forEach((s, idx) => {
+    for (const end of [0, 1] as const) {
+      const k = key(s[end]);
+      const arr = map.get(k);
+      if (arr) arr.push({ seg: idx, end });
+      else map.set(k, [{ seg: idx, end }]);
+    }
+  });
+
+  const used = new Array(segs.length).fill(false);
+  const loops: Pt[][] = [];
+
+  for (let start = 0; start < segs.length; start++) {
+    if (used[start]) continue;
+    const loop: Pt[] = [];
+    let cur = start;
+    let end: 0 | 1 = 0;
+    let guard = 0;
+    while (!used[cur] && guard++ < segs.length + 2) {
+      used[cur] = true;
+      const a = segs[cur][end];
+      const bEnd = (end === 0 ? 1 : 0) as 0 | 1;
+      const bPt = segs[cur][bEnd];
+      loop.push(a);
+      // find an unused segment sharing bPt
+      const cands = map.get(key(bPt)) ?? [];
+      let next = -1;
+      let nextEnd: 0 | 1 = 0;
+      for (const c of cands) {
+        if (!used[c.seg]) {
+          next = c.seg;
+          nextEnd = c.end;
+          break;
+        }
+      }
+      if (next === -1) break;
+      cur = next;
+      end = nextEnd;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
+// Chaikin corner-cutting: each pass replaces every point with two points 1/4 and
+// 3/4 along its edges, rounding the polyline. Closed-loop variant.
+function chaikin(pts: Pt[], passes: number): Pt[] {
+  let out = pts;
+  for (let p = 0; p < passes; p++) {
+    const next: Pt[] = [];
+    const n = out.length;
+    for (let i = 0; i < n; i++) {
+      const a = out[i];
+      const b = out[(i + 1) % n];
+      next.push({ x: a.x * 0.75 + b.x * 0.25, y: a.y * 0.75 + b.y * 0.25 });
+      next.push({ x: a.x * 0.25 + b.x * 0.75, y: a.y * 0.25 + b.y * 0.75 });
+    }
+    out = next;
+  }
+  return out;
+}
+
+/** Full pipeline: field → contour loops → smoothed → one SVG path `d`. Coordinates
+ *  are in the field's own space; the caller sets the SVG viewBox to match. Returns
+ *  the path plus the bounds used, so the caller can size the <svg>. */
+export function fieldToPath(
+  field: Field,
+  opts: MarchOptions = {},
+): { d: string; minX: number; minY: number; width: number; height: number } {
+  const b = field.bounds();
+  const loops = contour(field, opts);
+  const smooth = opts.smooth ?? 2;
+  const parts: string[] = [];
+  for (const loop of loops) {
+    const s = smooth > 0 ? chaikin(loop, smooth) : loop;
+    if (s.length < 3) continue;
+    parts.push(
+      `M ${fmt(s[0].x)} ${fmt(s[0].y)} ` +
+        s.slice(1).map((p) => `L ${fmt(p.x)} ${fmt(p.y)}`).join(" ") +
+        " Z",
+    );
+  }
+  return {
+    d: parts.join(" "),
+    minX: b.minX,
+    minY: b.minY,
+    width: b.maxX - b.minX,
+    height: b.maxY - b.minY,
+  };
+}
+
+```
+
+### liquid/engine.ts
+
+```ts
+// The orchestration layer between the React API and the geometry.
+//
+// A LiquidEngine holds the current cards (measured rounded boxes) + explicit
+// bridges + the fusion params, and turns them into one SVG path via the field +
+// marching squares. It is framework-free and stateless beyond its inputs, so both
+// the React <LiquidGroup> and the playground drive it the same way. The heavy work
+// (grid sample + contour) only runs when something actually changed — the caller
+// sets inputs then calls compute(); identical inputs return the cached path.
+
+import { Field, type Shape, type Bridge } from "./sdf";
+import { fieldToPath, type MarchOptions } from "./marching-squares";
+
+export interface LiquidBox {
+  id: string;
+  cx: number;
+  cy: number;
+  hw: number;
+  hh: number;
+  /** per-card base corner radius */
+  r: number;
+}
+
+export interface LiquidParams {
+  /** Blend amount — the star knob. Low = crisp inverse-rounded joints; high = goo. */
+  k: number;
+  /** Grid cell size (px). Smaller = crisper outline, more cost. */
+  cell: number;
+  /** Chaikin smoothing passes on the traced outline. */
+  smooth: number;
+}
+
+export interface LiquidPath {
+  d: string;
+  minX: number;
+  minY: number;
+  width: number;
+  height: number;
+}
+
+export const DEFAULT_PARAMS: LiquidParams = { k: 26, cell: 6, smooth: 2 };
+
+export class LiquidEngine {
+  private boxes: LiquidBox[] = [];
+  private bridges: Bridge[] = [];
+  private params: LiquidParams = { ...DEFAULT_PARAMS };
+  private cachedPath: LiquidPath | null = null;
+  private sig = ""; // signature of the last inputs, to skip redundant recompute
+
+  setBoxes(boxes: LiquidBox[]) {
+    this.boxes = boxes;
+  }
+  setBridges(bridges: Bridge[]) {
+    this.bridges = bridges;
+  }
+  setParams(p: Partial<LiquidParams>) {
+    this.params = { ...this.params, ...p };
+  }
+
+  private signature(): string {
+    const b = this.boxes
+      .map((x) => `${x.cx.toFixed(1)},${x.cy.toFixed(1)},${x.hw},${x.hh},${x.r}`)
+      .join("|");
+    const br = this.bridges
+      .map((x) => `${x.ax.toFixed(1)},${x.ay.toFixed(1)},${x.bx.toFixed(1)},${x.by.toFixed(1)},${x.r}`)
+      .join("|");
+    const p = this.params;
+    return `${b}#${br}#${p.k},${p.cell},${p.smooth}`;
+  }
+
+  /** Compute the fused path. Returns the cached result if nothing changed. */
+  compute(): LiquidPath {
+    const sig = this.signature();
+    if (sig === this.sig && this.cachedPath) return this.cachedPath;
+    this.sig = sig;
+
+    const shapes: Shape[] = [
+      ...this.boxes.map<Shape>((b) => ({
+        kind: "box",
+        cx: b.cx,
+        cy: b.cy,
+        hw: b.hw,
+        hh: b.hh,
+        r: b.r,
+      })),
+      ...this.bridges,
+    ];
+    const field = new Field(shapes, this.params.k);
+    const opts: MarchOptions = { cell: this.params.cell, smooth: this.params.smooth };
+    this.cachedPath = fieldToPath(field, opts);
+    return this.cachedPath;
+  }
+
+  /** Whether the inputs changed since the last compute() (drives the rAF morph). */
+  isDirty(): boolean {
+    return this.signature() !== this.sig;
+  }
+}
+
+```
+
+### liquid/LiquidGroup.tsx
+
+```tsx
+"use client";
+
+// The reusable liquid-UI API. Drop cards into a <LiquidGroup> and they FUSE: near
+// cards merge with a concave (inverse-rounded) joint, and the whole group is drawn
+// as ONE smooth SVG "skin" behind the real, accessible card content.
+//
+//   <LiquidGroup>
+//     <LiquidCard id="a" x={20}  y={20} w={220} h={140}>…</LiquidCard>
+//     <LiquidCard id="b" x={210} y={90} w={160} h={120}>…</LiquidCard>
+//   </LiquidGroup>
+//
+// The group reads each card's rect from its props (explicit geometry — no DOM
+// measurement, so it morphs cleanly and works on the server), feeds them to the
+// LiquidEngine (SDF smooth-union + marching squares), and paints the resulting
+// path. Content sits on top in normal flow: selectable text, real <img>, links.
+// Turn `k` up for a gooey melt, down for crisp geometric joints; add `bridges` for
+// deliberate pipes between distant cards.
+
+import {
+  Children,
+  isValidElement,
+  useMemo,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { LiquidEngine, DEFAULT_PARAMS, type LiquidBox } from "./engine";
+import type { Bridge } from "./sdf";
+
+export interface LiquidCardProps {
+  id: string;
+  /** top-left position + size, in the group's local px coordinates */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** per-card corner radius (defaults to the group's cardRadius) */
+  radius?: number;
+  className?: string;
+  style?: CSSProperties;
+  children?: ReactNode;
+}
+
+// LiquidCard is a data+content holder; LiquidGroup reads its props and renders the
+// actual positioned box. Rendering it directly (outside a group) just lays the box.
+export function LiquidCard(props: LiquidCardProps) {
+  const { x, y, w, h, className, style, children } = props;
+  return (
+    <div
+      className={className}
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        width: w,
+        height: h,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+export interface LiquidGroupProps {
+  children: ReactNode;
+  /** Blend amount: low = crisp inverse-rounded joints, high = gooey melt. */
+  k?: number;
+  /** Default per-card corner radius. */
+  cardRadius?: number;
+  /** Outline crispness (grid cell px) + smoothing passes. */
+  cell?: number;
+  smooth?: number;
+  /** Explicit pipes between card ids, with an optional width. */
+  bridges?: { from: string; to: string; width?: number }[];
+  /** Fill of the fused skin (any CSS color / gradient via `fillStyle`). */
+  fill?: string;
+  fillStyle?: CSSProperties;
+  className?: string;
+  style?: CSSProperties;
+  /** Forwarded onto the skin <svg> for the card→detail view transition. */
+  viewTransitionName?: string;
+}
+
+type CardEl = ReactElement<LiquidCardProps>;
+
+function isLiquidCard(node: ReactNode): node is CardEl {
+  return isValidElement(node) && (node.props as LiquidCardProps).id !== undefined;
+}
+
+export function LiquidGroup({
+  children,
+  k = DEFAULT_PARAMS.k,
+  cardRadius = 26,
+  cell = DEFAULT_PARAMS.cell,
+  smooth = DEFAULT_PARAMS.smooth,
+  bridges = [],
+  fill = "var(--bg-hover)",
+  fillStyle,
+  className,
+  style,
+  viewTransitionName,
+}: LiquidGroupProps) {
+  const cards = useMemo(
+    () => Children.toArray(children).filter(isLiquidCard),
+    [children],
+  );
+
+  // Build boxes (center-based) + bridge capsules from the card rects, then compute
+  // the fused path. useMemo so it only recomputes when geometry / params change.
+  const { d, viewBox, skinStyle } = useMemo(() => {
+    const boxes: LiquidBox[] = cards.map((c) => {
+      const p = c.props;
+      return {
+        id: p.id,
+        cx: p.x + p.w / 2,
+        cy: p.y + p.h / 2,
+        hw: p.w / 2,
+        hh: p.h / 2,
+        r: p.radius ?? cardRadius,
+      };
+    });
+    const byId = new Map(boxes.map((b) => [b.id, b]));
+    const capsules: Bridge[] = [];
+    for (const br of bridges) {
+      const a = byId.get(br.from);
+      const b = byId.get(br.to);
+      if (!a || !b) continue;
+      capsules.push({
+        kind: "bridge",
+        ax: a.cx,
+        ay: a.cy,
+        bx: b.cx,
+        by: b.cy,
+        r: br.width ? br.width / 2 : Math.min(a.hh, b.hh) * 0.5,
+      });
+    }
+
+    const engine = new LiquidEngine();
+    engine.setBoxes(boxes);
+    engine.setBridges(capsules);
+    engine.setParams({ k, cell, smooth });
+    const path = engine.compute();
+
+    return {
+      d: path.d,
+      viewBox: `${path.minX} ${path.minY} ${path.width} ${path.height}`,
+      // The <svg> is positioned so its viewBox origin lines up with the group's
+      // local (0,0): the path is in group coordinates, and the svg is inset by the
+      // negative bounds so the bulge that extends past (0,0) is not clipped.
+      skinStyle: {
+        position: "absolute" as const,
+        left: path.minX,
+        top: path.minY,
+        width: path.width,
+        height: path.height,
+        overflow: "visible" as const,
+        pointerEvents: "none" as const,
+      },
+    };
+  }, [cards, k, cardRadius, cell, smooth, bridges]);
+
+  return (
+    <div className={className} style={{ position: "relative", ...style }}>
+      {/* the fused skin, behind the content */}
+      <svg
+        aria-hidden
+        viewBox={viewBox}
+        style={{ ...skinStyle, viewTransitionName, ...fillStyle }}
+      >
+        <path d={d} fill={fill} />
+      </svg>
+      {/* real card content on top, in normal DOM */}
+      {cards}
+    </div>
+  );
+}
+
+```
+
+### liquid/LiquidCard.tsx
+
+```tsx
+"use client";
+
+// Re-exported from LiquidGroup, where it's defined alongside the group that reads
+// its props. Kept as its own module so it can be imported directly and shown as a
+// distinct file in the Vault Code tab.
+export { LiquidCard, type LiquidCardProps } from "./LiquidGroup";
+
+```
+
+### liquid/scenes.tsx
+
+```tsx
+// The scene data shared by the preview card and the playground, in two sizes.
+//
+// Why two: the desktop compositions live in a wide fixed-px design space (640×360
+// for the card, 720×380 for the playground) that gets CSS-scaled to the container.
+// On a phone the container is ~326px wide, so that scale collapses to ~0.45 — the
+// whole scene shrinks until the 11px labels render at 5px and the 2px content bars
+// land under one device pixel. Rescaling alone can't fix that: a wide landscape
+// composition is simply the wrong layout for a narrow screen.
+//
+// So mobile gets its OWN space (COMPACT_VW×COMPACT_VH), sized so the scale lands
+// near 1.0 at phone widths — content then renders at roughly its true design size.
+// The pieces are re-placed tighter for the narrower box, and the small "appendage"
+// pieces are grown so they clear the ~44px touch minimum when dragged.
+//
+// The card and the playground MUST agree on which set they use: they share a
+// view-transition-name for the card→hero morph, and a mismatch would make the
+// shape visibly jump mid-transition.
+
+import type { ReactNode } from "react";
+
+// ── Design spaces ────────────────────────────────────────────────────────────
+/** Desktop space for the preview card / hero. */
+export const CARD_VW = 640;
+export const CARD_VH = 360;
+/** Desktop space for the draggable playground stage. */
+export const PG_VW = 720;
+export const PG_VH = 380;
+
+/** The shared mobile space. 16:9 so it matches the card's aspect exactly, and
+ *  small enough that `100cqw / COMPACT_*_DIV` lands near 1.0 on a phone. */
+export const COMPACT_VW = 360;
+export const COMPACT_VH = 202;
+
+/** Divisors for the CSS `scale: calc(100cqw / N)`. The card divides by the width
+ *  of the box the shapes actually occupy (not the full space) so the content
+ *  fills the frame; the playground divides by its full width so the whole
+ *  draggable area stays reachable. */
+export const CARD_DIV = 460;
+export const PG_DIV = 720;
+// Tuned by eye rather than to a pure fit: at a 1.0 scale the scene filled the frame
+// edge to edge and felt cramped, so both divisors are pushed past the exact-fit
+// value to leave breathing room. The floor on the playground is the touch target —
+// its smallest draggable piece is 60 design-px, and 430 keeps that at ~45 CSS px on
+// a 390px phone, just above the ~44px minimum.
+export const COMPACT_CARD_DIV = 380;
+export const COMPACT_PG_DIV = 430;
+
+/** The breakpoint. Matches Tailwind `sm` (and ImageGalaxyCard's mobile check). */
+export const MOBILE_QUERY = "(max-width: 639px)";
+
+// ── Types ────────────────────────────────────────────────────────────────────
+export interface ScenePiece {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  radius: number;
+  content?: ReactNode;
+}
+
+export interface SceneSpec {
+  k: number;
+  /** Grid cell size for the marching-squares sample, in field units. */
+  cell: number;
+  pieces: ScenePiece[];
+}
+
+/** Everything a consumer needs for one size: the space, the CSS divisors, and
+ *  the scenes placed inside that space. */
+export interface SceneSet {
+  vw: number;
+  vh: number;
+  cardDiv: number;
+  pgDiv: number;
+  cardRadius: number;
+  /** cycling scenes for the preview card / hero */
+  card: SceneSpec[];
+  /** presets for the draggable playground */
+  playground: SceneSpec[];
+}
+
+// ── Content ──────────────────────────────────────────────────────────────────
+// Content is authored at two sizes too. Because the whole space is CSS-scaled,
+// an 11px label in the desktop space renders at ~5px on a phone — so the mobile
+// variants use larger design-px values that land near the intended size once the
+// compact scale (~1.0) is applied.
+
+const swatch = "rounded-[6px] bg-[var(--bg-hover)]";
+
+const bar = (w: string, h: string) => (
+  <div className={`${h} rounded-full bg-[var(--bg-hover)]`} style={{ width: w }} />
+);
+
+/** 2×2 tile grid (the "grid panel" body). */
+function GridBody({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`grid h-full grid-cols-2 grid-rows-2 ${compact ? "gap-1.5 p-2 pt-2.5" : "gap-1.5 p-2 pt-2.5"}`}
+    >
+      <div className={swatch} />
+      <div className={swatch} />
+      <div className={swatch} />
+      <div className={swatch} />
+    </div>
+  );
+}
+
+/** A small text label (the "Grid" / "Share" tab). */
+function Label({ children, compact = false, center = false }: { children: ReactNode; compact?: boolean; center?: boolean }) {
+  return (
+    <div
+      className={`flex h-full items-center ${center ? "justify-center pl-1" : "px-3 pb-1"}`}
+    >
+      <span
+        className={`font-semibold text-[var(--text-secondary)] ${compact ? "text-[13px]" : "text-[11px]"}`}
+      >
+        {children}
+      </span>
+    </div>
+  );
+}
+
+/** Avatar + two message lines (the chat bubble body). */
+function BubbleBody({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`flex h-full items-center ${compact ? "gap-3 px-4" : "gap-2.5 px-4"}`}>
+      <div
+        className={`${compact ? "size-10" : "size-9"} shrink-0 rounded-full bg-[var(--bg-hover)]`}
+      />
+      <div className="flex flex-1 flex-col gap-1.5">
+        {bar("80%", compact ? "h-2.5" : "h-2")}
+        {bar("55%", compact ? "h-2.5" : "h-2")}
+      </div>
+    </div>
+  );
+}
+
+/** Overlapping avatar stack + two lines (the share card body). */
+function ShareBody({ compact = false }: { compact?: boolean }) {
+  const av = `${compact ? "size-9" : "size-8"} rounded-full border-2 border-[var(--bg-surface)] bg-[var(--bg-hover)]`;
+  return (
+    <div className="flex h-full items-center gap-3 px-4">
+      <div className="flex -space-x-2">
+        <div className={av} />
+        <div className={av} />
+        <div className={av} />
+      </div>
+      <div className="flex flex-1 flex-col gap-1.5">
+        {bar("70%", compact ? "h-2.5" : "h-2")}
+        {bar("45%", compact ? "h-2.5" : "h-2")}
+      </div>
+    </div>
+  );
+}
+
+/** The search-bar input line. */
+function SearchBody({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="flex h-full items-center px-5">
+      {bar("55%", compact ? "h-3" : "h-2.5")}
+    </div>
+  );
+}
+
+/** The magnifier glyph on the search "go" button. */
+function SearchIcon({ size = 20 }: { size?: number }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center text-[var(--text-secondary)]">
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-3.2-3.2" />
+      </svg>
+    </div>
+  );
+}
+
+// ── Desktop scenes ───────────────────────────────────────────────────────────
+// The card cycles these three; every scene shares the SAME two ids ("main" +
+// "tab") so pieces tween 1:1 and content swaps at the morph midpoint.
+const CARD_SCENES: SceneSpec[] = [
+  // Grid panel — 2×2 tiles + a "Grid" tab fused at the top-left.
+  {
+    k: 20,
+    cell: 6,
+    pieces: [
+      { id: "main", x: 170, y: 82, w: 300, h: 196, radius: 22, content: <GridBody /> },
+      { id: "tab", x: 178, y: 46, w: 92, h: 46, radius: 18, content: <Label>Grid</Label> },
+    ],
+  },
+  // Chat bubble — avatar + message lines, tail fused at the bottom-right.
+  {
+    k: 30,
+    cell: 6,
+    pieces: [
+      { id: "main", x: 160, y: 128, w: 300, h: 108, radius: 40, content: <BubbleBody /> },
+      { id: "tab", x: 428, y: 206, w: 50, h: 50, radius: 14 },
+    ],
+  },
+  // Share card — avatar stack + a "Share" button fused to the right edge (gooey).
+  {
+    k: 60,
+    cell: 6,
+    pieces: [
+      { id: "main", x: 150, y: 120, w: 280, h: 116, radius: 26, content: <ShareBody /> },
+      { id: "tab", x: 418, y: 151, w: 90, h: 54, radius: 18, content: <Label center>Share</Label> },
+    ],
+  },
+];
+
+// The playground's four presets, hand-placed by dragging in the playground
+// itself, in the wider 720×380 stage (absolute coords, no auto-centering).
+const PG_SCENES: SceneSpec[] = [
+  // 1 · Chat bubble — tail fused at the bottom-right (a sent message).
+  {
+    k: 28,
+    cell: 12,
+    pieces: [
+      { id: "bubble", x: 188, y: 123, w: 300, h: 116, radius: 40, content: <BubbleBody /> },
+      { id: "tail", x: 472, y: 212, w: 52, h: 52, radius: 14 },
+    ],
+  },
+  // 2 · Grid panel — a "Grid" tab fused at the top-left.
+  {
+    k: 20,
+    cell: 12,
+    pieces: [
+      { id: "tab", x: 178, y: 80, w: 92, h: 46, radius: 18, content: <Label>Grid</Label> },
+      { id: "panel", x: 247, y: 104, w: 300, h: 196, radius: 22, content: <GridBody /> },
+    ],
+  },
+  // 3 · Share card — a "Share" button fused to the right edge with a gooey neck.
+  {
+    k: 77,
+    cell: 11,
+    pieces: [
+      { id: "card", x: 176, y: 131, w: 288, h: 120, radius: 26, content: <ShareBody /> },
+      { id: "btn", x: 483, y: 165, w: 96, h: 52, radius: 18, content: <Label center>Share</Label> },
+    ],
+  },
+  // 4 · Search bar — a pill input with a round button fused near the right end.
+  {
+    k: 20,
+    cell: 3,
+    pieces: [
+      { id: "input", x: 208, y: 167, w: 300, h: 64, radius: 32, content: <SearchBody /> },
+      { id: "go", x: 452, y: 132, w: 56, h: 56, radius: 26, content: <SearchIcon /> },
+    ],
+  },
+];
+
+// ── Compact (mobile) scenes ──────────────────────────────────────────────────
+// Re-placed for the 360×202 space rather than rescaled: the compositions are
+// tighter and more vertical, the bodies are proportionally larger relative to the
+// frame, and every draggable appendage is at least 60 design-px so it stays a
+// comfortable touch target once the ~1.0 compact scale is applied.
+//
+// `cell` is raised across the board. It's a grid step in FIELD units, so a small
+// cell in a small space oversamples badly — the compact space is ~half the width
+// of the desktop one, so the same visual crispness needs roughly half the cell
+// count, and the weakest devices are the ones running it.
+const COMPACT_CARD_SCENES: SceneSpec[] = [
+  // Grid panel — tab tucked at the top-left of the body.
+  {
+    k: 16,
+    cell: 5,
+    pieces: [
+      { id: "main", x: 76, y: 49, w: 208, h: 132, radius: 20, content: <GridBody compact /> },
+      { id: "tab", x: 84, y: 21, w: 78, h: 38, radius: 15, content: <Label compact>Grid</Label> },
+    ],
+  },
+  // Chat bubble — tail fused at the bottom-right.
+  {
+    k: 22,
+    cell: 5,
+    pieces: [
+      { id: "main", x: 64, y: 62, w: 232, h: 92, radius: 32, content: <BubbleBody compact /> },
+      { id: "tab", x: 262, y: 128, w: 46, h: 46, radius: 13 },
+    ],
+  },
+  // Share card — button fused to the right edge (gooey).
+  {
+    k: 44,
+    cell: 5,
+    pieces: [
+      { id: "main", x: 46, y: 60, w: 210, h: 96, radius: 22, content: <ShareBody compact /> },
+      { id: "tab", x: 246, y: 78, w: 74, h: 48, radius: 16, content: <Label compact center>Share</Label> },
+    ],
+  },
+];
+
+const COMPACT_PG_SCENES: SceneSpec[] = [
+  // 1 · Chat bubble + tail. The tail is the smallest draggable piece anywhere, so
+  //     it sets the floor: 64px keeps it a usable target even on a 320px phone.
+  {
+    k: 22,
+    cell: 6,
+    pieces: [
+      { id: "bubble", x: 52, y: 56, w: 232, h: 92, radius: 32, content: <BubbleBody compact /> },
+      { id: "tail", x: 250, y: 120, w: 64, h: 64, radius: 17 },
+    ],
+  },
+  // 2 · Grid panel + tab. The tab is short by nature, so it's the piece most at risk
+  //     of becoming an unusable target — 64 tall keeps it draggable, and the panel
+  //     drops to meet it so the pair still reads as a tab fused to a panel.
+  {
+    k: 16,
+    cell: 6,
+    pieces: [
+      { id: "tab", x: 60, y: 18, w: 92, h: 64, radius: 20, content: <Label compact>Grid</Label> },
+      { id: "panel", x: 96, y: 62, w: 204, h: 122, radius: 20, content: <GridBody compact /> },
+    ],
+  },
+  // 3 · Share card + button, gooey neck.
+  {
+    k: 52,
+    cell: 6,
+    pieces: [
+      { id: "card", x: 40, y: 56, w: 204, h: 100, radius: 22, content: <ShareBody compact /> },
+      { id: "btn", x: 242, y: 74, w: 82, h: 64, radius: 20, content: <Label compact center>Share</Label> },
+    ],
+  },
+  // 4 · Search bar + go button, both at the 64px floor.
+  {
+    k: 16,
+    cell: 5,
+    pieces: [
+      { id: "input", x: 42, y: 80, w: 224, h: 64, radius: 32, content: <SearchBody compact /> },
+      { id: "go", x: 238, y: 50, w: 64, h: 64, radius: 29, content: <SearchIcon size={22} /> },
+    ],
+  },
+];
+
+// ── The two sets ─────────────────────────────────────────────────────────────
+export const DESKTOP_SET: SceneSet = {
+  vw: PG_VW,
+  vh: PG_VH,
+  cardDiv: CARD_DIV,
+  pgDiv: PG_DIV,
+  cardRadius: 26,
+  card: CARD_SCENES,
+  playground: PG_SCENES,
+};
+
+export const COMPACT_SET: SceneSet = {
+  vw: COMPACT_VW,
+  vh: COMPACT_VH,
+  cardDiv: COMPACT_CARD_DIV,
+  pgDiv: COMPACT_PG_DIV,
+  cardRadius: 20,
+  card: COMPACT_CARD_SCENES,
+  playground: COMPACT_PG_SCENES,
+};
+
+/** The card/hero uses its own space (640×360) on desktop but shares the compact
+ *  space on mobile — so the two sets differ in `vw`/`vh` for the card path. */
+export const CARD_SPACE = { vw: CARD_VW, vh: CARD_VH };
+export const COMPACT_CARD_SPACE = { vw: COMPACT_VW, vh: COMPACT_VH };
+
+```
+
+### liquid/playground.tsx
+
+```tsx
+"use client";
+
+// Liquid UI playground — drag the pieces and watch the fused skin re-flow: a small
+// tab fused to a card keeps a concave (inverse-rounded) joint; pull it away and the
+// neck stretches then snaps. Remix MORPHS between real UI objects — a chat bubble, a
+// grid panel, a share card, a search bar — tweening every piece + the blend, so it
+// pours from one shape into the next instead of snapping. Each preset is hand-placed
+// with its own corner radii and tight content. The bottom panel tunes the blend /
+// detail live. Built on the same <LiquidGroup> the Code tab ships.
+//
+// The presets live in scenes.tsx in two sizes. On a phone the 720×380 stage scales
+// to ~0.45, which turns the 52px tail into a 24px drag target and the 11px labels
+// into 5px — so mobile swaps in a compact stage with larger, re-placed pieces. Every
+// coordinate below therefore reads the ACTIVE space (vw/vh) rather than a constant.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LiquidGroup, LiquidCard } from "./LiquidGroup";
+import { PG_PREVIEW, PG_PANEL, Slider, SegmentedControl, GhostButton } from "../swirl/controls";
+import { SectionLabel } from "../section-label";
+import { hapticTap } from "../../lib/haptics";
+import { useSceneSet } from "./use-compact";
+import { COMPACT_SET, type ScenePiece } from "./scenes";
+
+// Mode presets the blend + grid: geometric = tight blend, fine grid (crisp inverse
+// fillets); goo = wide blend (organic melt). The compact space is about half the
+// width of the desktop one, so its k (a distance in field units) and cell scale
+// down with it — otherwise "Goo" at k=64 would swallow the whole compact scene.
+const MODES = [
+  { id: "geometric", label: "Geometric", k: 22, cell: 5 },
+  { id: "goo", label: "Goo", k: 64, cell: 7 },
+];
+const COMPACT_MODES = [
+  { id: "geometric", label: "Geometric", k: 14, cell: 5 },
+  { id: "goo", label: "Goo", k: 42, cell: 6 },
+];
+
+// ── Remix morph ──────────────────────────────────────────────────────────────
+// Remix doesn't snap to the next preset — it TWEENS every piece to its new spot
+// (position, size, radius) and blends k, exactly like the hero card. Presets have
+// different ids/order, so we tween by ROLE: the largest card (the main body) morphs
+// into the next main body, the smaller one (the appendage) into the next appendage.
+const REMIX_MS = 620;
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+// order a preset's cards as [main, appendage] by area, so we can tween 1:1.
+function byRole(cards: ScenePiece[]): ScenePiece[] {
+  return [...cards].sort((a, b) => b.w * b.h - a.w * a.h); // [largest = main, ...smaller]
+}
+// tween two same-length role-ordered card lists; content comes from whichever side
+// dominates (target past the midpoint) so labels swap cleanly.
+function tweenCards(from: ScenePiece[], to: ScenePiece[], p: number): ScenePiece[] {
+  const a = byRole(from);
+  const b = byRole(to);
+  return a.map((fc, i) => {
+    const tc = b[i] ?? fc;
+    const src = p < 0.5 ? fc : tc;
+    return {
+      id: src.id,
+      x: lerp(fc.x, tc.x, p),
+      y: lerp(fc.y, tc.y, p),
+      w: lerp(fc.w, tc.w, p),
+      h: lerp(fc.h, tc.h, p),
+      radius: lerp(fc.radius, tc.radius, p),
+      content: src.content,
+    };
+  });
+}
+
+export function LiquidPlayground() {
+  const set = useSceneSet();
+  const compact = set === COMPACT_SET;
+  const presets = set.playground;
+  const { vw: VW, vh: VH } = set;
+  const modes = compact ? COMPACT_MODES : MODES;
+
+  const [presetIdx, setPresetIdx] = useState(0);
+  const [cards, setCards] = useState<ScenePiece[]>(() => presets[0].pieces.map((c) => ({ ...c })));
+  const [mode, setMode] = useState("");
+  const [k, setK] = useState(presets[0].k);
+  const [cell, setCell] = useState(presets[0].cell);
+
+  // Crossing the breakpoint swaps the whole coordinate space, so the current cards
+  // (placed in the OLD space) are meaningless. Reset during render — the standard
+  // "adjust state when a prop changes" pattern — rather than in an effect, which
+  // would paint one frame of old-space coordinates in the new space first.
+  const [activePresets, setActivePresets] = useState(presets);
+  if (activePresets !== presets) {
+    setActivePresets(presets);
+    setPresetIdx(0);
+    setCards(presets[0].pieces.map((c) => ({ ...c })));
+    setK(presets[0].k);
+    setCell(presets[0].cell);
+    setMode("");
+  }
+
+  const stageRef = useRef<HTMLDivElement>(null);
+  // the scaled VW×VH space; its rect reflects the real transform, so pointer→local
+  // mapping stays correct at any container width (and in the compact space).
+  const spaceRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  // active Remix morph: null when idle. rAF tweens cards + k from → to.
+  const morph = useRef<{ from: ScenePiece[]; to: ScenePiece[]; fromK: number; toK: number; start: number; raf: number } | null>(null);
+
+  // The render-phase reset above drops the old cards; this cancels the imperative
+  // work that can't be touched during render (an in-flight morph rAF, a live drag).
+  useEffect(() => {
+    if (morph.current?.raf) cancelAnimationFrame(morph.current.raf);
+    morph.current = null;
+    drag.current = null;
+  }, [presets]);
+
+  // Remix: MORPH to the next UI object (tween every piece + blend), like the hero.
+  const remix = () => {
+    hapticTap();
+    const i = (presetIdx + 1) % presets.length;
+    const target = presets[i];
+    setPresetIdx(i);
+    setMode("");
+    setCell(target.cell);
+
+    // cancel any in-flight morph and start a fresh one from the CURRENT pieces
+    if (morph.current?.raf) cancelAnimationFrame(morph.current.raf);
+    const m = {
+      from: cards.map((c) => ({ ...c })),
+      to: target.pieces.map((c) => ({ ...c })),
+      fromK: k,
+      toK: target.k,
+      start: 0,
+      raf: 0,
+    };
+    morph.current = m;
+    const step = (now: number) => {
+      if (!m.start) m.start = now;
+      const p = ease(Math.min(1, (now - m.start) / REMIX_MS));
+      setCards(tweenCards(m.from, m.to, p));
+      setK(Math.round(lerp(m.fromK, m.toK, p)));
+      if (p < 1) {
+        m.raf = requestAnimationFrame(step);
+      } else {
+        // land exactly on the target
+        setCards(target.pieces.map((c) => ({ ...c })));
+        setK(target.k);
+        morph.current = null;
+      }
+    };
+    m.raf = requestAnimationFrame(step);
+  };
+
+  // stop a running morph if the user grabs a piece or the component unmounts.
+  useEffect(() => () => { if (morph.current?.raf) cancelAnimationFrame(morph.current.raf); }, []);
+
+  const applyMode = (id: string) => {
+    setMode(id);
+    const m = modes.find((x) => x.id === id);
+    if (m) {
+      setK(m.k);
+      setCell(m.cell);
+    }
+  };
+
+  const toLocal = useCallback(
+    (clientX: number, clientY: number) => {
+      // map against the SCALED SPACE's rect (not the stage), so the mapping is exact
+      // whatever the container width or active space.
+      const el = spaceRef.current ?? stageRef.current;
+      if (!el) return { x: 0, y: 0 };
+      const r = el.getBoundingClientRect();
+      return {
+        x: ((clientX - r.left) / r.width) * VW,
+        y: ((clientY - r.top) / r.height) * VH,
+      };
+    },
+    [VW, VH],
+  );
+
+  const onPointerDown = (id: string) => (e: React.PointerEvent) => {
+    // grabbing a piece cancels any in-flight Remix morph so it doesn't fight the drag
+    if (morph.current?.raf) {
+      cancelAnimationFrame(morph.current.raf);
+      morph.current = null;
+    }
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const p = toLocal(e.clientX, e.clientY);
+    const card = cards.find((c) => c.id === id);
+    if (!card) return;
+    drag.current = { id, dx: p.x - card.x, dy: p.y - card.y };
+    hapticTap();
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!drag.current) return;
+    const p = toLocal(e.clientX, e.clientY);
+    const { id, dx, dy } = drag.current;
+    // let a piece hang slightly off-stage, proportional to the space so the compact
+    // one doesn't allow a piece to wander half its own width out of frame.
+    const slack = VW * 0.055;
+    setCards((cs) =>
+      cs.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              x: Math.max(-slack, Math.min(VW - c.w + slack, p.x - dx)),
+              y: Math.max(-slack, Math.min(VH - c.h + slack, p.y - dy)),
+            }
+          : c,
+      ),
+    );
+  };
+  const endDrag = () => {
+    drag.current = null;
+  };
+
+  // no explicit bridges in these UI presets — proximity fusing does the joins.
+  const groupBridges = useMemo(() => [], []);
+
+  // Blend/detail ranges track the space: k is a distance in field units, so the
+  // compact space needs a proportionally smaller ceiling to span the same look.
+  const kMax = compact ? 60 : 90;
+  const cellMin = compact ? 4 : 3;
+  const cellMax = compact ? 10 : 14;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-4">
+      <SectionLabel action={<GhostButton onClick={remix}>Remix</GhostButton>}>
+        Implementation
+      </SectionLabel>
+
+      {/* Preview stage — drag the pieces. */}
+      <div className={`${PG_PREVIEW} touch-none`}>
+        <div
+          ref={stageRef}
+          className="relative w-full"
+          style={{ aspectRatio: `${VW} / ${VH}` }}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <div className="absolute inset-0" style={{ containerType: "size" }}>
+            {/* Center-anchored scale (matches LiquidPreviewCard): the fixed VW×VH
+                space is pinned to the stage center and scaled to fit its width, so
+                it never drifts down-right the way an origin-top-left scale does when
+                the container width isn't exactly VW. The divisor is the space's own
+                width so the WHOLE draggable area stays visible (the card scales
+                tighter, to its content box). */}
+            <div
+              ref={spaceRef}
+              className="absolute left-1/2 top-1/2"
+              style={{
+                width: VW,
+                height: VH,
+                transform: "translate(-50%, -50%)",
+                transformOrigin: "center",
+                scale: `calc(100cqw / ${set.pgDiv})`,
+              }}
+            >
+              <LiquidGroup
+                k={k}
+                cardRadius={set.cardRadius}
+                cell={cell}
+                smooth={2}
+                bridges={groupBridges}
+                fill="var(--bg-surface)"
+                className="h-full w-full"
+              >
+                {cards.map((c) => (
+                  <LiquidCard key={c.id} id={c.id} x={c.x} y={c.y} w={c.w} h={c.h} radius={c.radius}>
+                    <div
+                      onPointerDown={onPointerDown(c.id)}
+                      className="h-full w-full cursor-grab active:cursor-grabbing"
+                    >
+                      {c.content}
+                    </div>
+                  </LiquidCard>
+                ))}
+              </LiquidGroup>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Panel */}
+      <div className={`${PG_PANEL} gap-3.5`}>
+        <SegmentedControl
+          options={modes.map((m) => ({ id: m.id, label: m.label }))}
+          activeId={mode}
+          onPick={applyMode}
+          fill
+        />
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Slider label="Blend" value={k} min={0} max={kMax} step={1}
+            format={(v) => `${v}`} onChange={(v) => { setMode(""); setK(v); }} />
+          <Slider label="Detail" value={cell} min={cellMin} max={cellMax} step={1}
+            format={(v) => `${v}px`} onChange={(v) => { setMode(""); setCell(v); }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+
+16. You are given the complete source for a self-contained web visual: "Fade motion".
+
+What it is:
+- Thought this was a blur. It's two hundred copies of the word stacked almost invisibly, and the fade is just where a lot of them piled up.
+- Did it the dumb way first, two hundred draws a frame, and it choked exactly when you moved your cursor. Now every pixel just walks back up the trail and counts.
+
+How to use this code:
+- It is a React + TypeScript component tree (Next.js App Router) that renders to an HTML canvas; the entry point is the playground component.
+- Drop the files into a project under the same relative paths, mount the playground component, and it runs as-is. No external assets beyond what's inline.
+- To adapt it: change the resolved word/logo, the color controls, or the experiment parameters. Ask me to modify, explain, or port any part.
+
+The full source follows, one file per block:
+
+### smear/shaders.ts
+
+```ts
+// Fade motion shaders (WebGL1 / GLSL ES 1.0).
+//
+// The Canvas 2D version stamped the word ~210 times and let the copies overlap.
+// This does the SAME accumulation, but per-pixel and backwards: for each fragment
+// we march UP the trail direction, asking "how many copies of the word would have
+// covered me?", and combine them with the identical coverage law
+//
+//     coverage after k overlapping stamps at alpha a  =  1 - (1-a)^k
+//
+// Marching backward from the pixel is what makes it one draw call instead of 210:
+// the CPU version had to touch every pixel of every copy (~400 blits a frame once
+// the chromatic pass kicked in, which is what made moving the cursor — the exact
+// moment the pass turned on — the slowest thing the card ever did). Here the cost
+// is fixed and independent of the copy count.
+//
+// Depth is a real perspective divide, same as before: a copy `z` behind the plane
+// is scaled by focal/(focal+z) about the anchor. We invert that per step, so the
+// trail still tapers and converges toward the vanishing point rather than shearing.
+
+export const FULL_VERT = `
+attribute vec2 aPosition;
+varying vec2 vUv;
+void main() {
+  vUv = aPosition * 0.5 + 0.5;
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}
+`;
+
+export const TRAIL_FRAG = `
+precision highp float;
+
+varying vec2 vUv;
+
+uniform sampler2D uMask;      // the word, white on transparent
+uniform vec2  uResolution;    // drawing buffer size, px
+uniform float uAspect;        // w/h
+
+// trail
+uniform float uEchoes;        // how many copies to accumulate
+uniform float uStep;          // spacing between copies, px @ 620h
+uniform float uAlpha;         // per-copy alpha
+uniform vec2  uFall;          // trail direction (unit-ish)
+uniform float uZStep;         // recession per copy
+
+// magnetism: the trail bends toward the cursor as it falls, hard near the word
+// and relaxing back to a straight fall further out.
+uniform vec2  uMagnet;        // cursor in uv; only meaningful when uMagnetOn > 0
+uniform float uMagnetOn;      // eased 0..1 presence
+uniform float uSwing;         // how much the cursor twists the near copies (depth coupling)
+
+// The five layers built on top of the raw accumulation. All of them are pure
+// arithmetic inside the sampling loop that was already running — none adds a
+// texture fetch, which is the only thing that costs real money in a fill-rate
+// bound shader like this one.
+uniform float uTurb;          // how much the tail wavers (px @ 620h)
+uniform float uSpread;        // how much each copy widens as it falls
+uniform float uEdge;          // brightness of the true leading edge
+uniform float uFringe;        // per-channel ramp offset -> dispersion at the tail
+
+// camera
+uniform vec2  uAnchor;        // word centre in uv
+uniform float uYaw;
+uniform float uPitch;
+uniform float uFocal;
+
+// colour
+uniform vec3  uTrailHead;     // hsl-ish resolved rgb at the word
+uniform vec3  uTrailTail;     // resolved rgb at the tail
+uniform vec3  uBleed;
+uniform vec3  uHalo;
+uniform vec3  uCore;
+uniform vec3  uBg;
+uniform vec3  uPoolA;
+uniform vec3  uPoolB;
+uniform float uPoolAlphaA;
+uniform float uPoolAlphaB;
+uniform vec3  uVignette;
+uniform float uSubtract;      // 1.0 = ink on paper, 0.0 = light on dark
+uniform float uSoft;          // strength of the two soft word layers
+uniform float uNoise;
+uniform float uTime;
+uniform vec2  uHaloShift;
+uniform vec2  uWordShift;     // the bleed/halo offset that sells directional light
+
+// Sample the word mask at a point on the plane, z units back, with the glyph
+// scaled up by grow (1.0 = its own size).
+// Forward projection is  p' = anchor + rot(p) * focal/(focal+z)
+// so to find which mask texel lands on THIS fragment we undo it.
+float maskAt(vec2 uv, float z, float grow) {
+  vec2 p = uv - uAnchor;
+  p.x *= uAspect;                       // work in square space so the turn is even
+
+  float s = (uFocal + z) / uFocal;      // inverse of the perspective divide
+  p *= s;
+
+  // Making the SAMPLED glyph bigger means shrinking the lookup toward the anchor.
+  p /= max(0.001, grow);
+
+  // undo the in-plane rotation (yaw about y, pitch about x). The forward pass
+  // scales x by cos(yaw) and y by cos(pitch), so invert that.
+  float cy = max(0.001, cos(uYaw));
+  float cp = max(0.001, cos(uPitch));
+  p.x /= cy;
+  p.y /= cp;
+
+  p.x /= uAspect;
+  vec2 t = p + uAnchor;
+  if (t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) return 0.0;
+  return texture2D(uMask, t).a;
+}
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+  vec2 uv = vUv;
+
+  // ── the trail ────────────────────────────────────────────────────────────
+  // March backward along the fall direction. Each step is one "copy": if the
+  // word covers us at that offset, it contributes one more overlapping stamp.
+  //
+  // Rather than loop uEchoes times (a dynamic bound, illegal in GLSL ES 1.0,
+  // and wasteful), we take a FIXED number of samples spread across the trail and
+  // weight each by how many copies it stands in for. The accumulation law is
+  // smooth in k, so sampling it coarsely and scaling the exponent is
+  // indistinguishable from stamping every copy — and it is a constant cost.
+  const int SAMPLES = 48;
+
+  // One authored pixel, in uv. The params are written against a 620px-tall card,
+  // so a step of 1.0 means one 620th of the height regardless of the real size —
+  // that is what keeps the copies overlapping (and the ramp smooth) at every
+  // card size instead of combing apart on a tall one.
+  float px = 1.0 / 620.0;
+  vec2 fall = uFall * uStep * px;
+  float perSample = uEchoes / float(SAMPLES); // copies each sample represents
+
+  // Recession per copy, in the SAME uv units the perspective divide works in.
+  // This is the one that has to be normalised: uZStep is authored per-copy in
+  // card pixels, and feeding raw pixel counts into focal/(focal+z) drove z to
+  // ~115 against a focal of 1.6, a ~70x divide that threw every sample far
+  // outside the mask — so nothing was found and the trail vanished entirely.
+  float zPer = uZStep * px;
+
+  float dens = 0.0;   // accumulated coverage 0..1
+  float ramp = 0.0;   // density-weighted position along the trail, for the hue
+  float wsum = 0.0;
+  // (A) The lowest copy index that covered this pixel. This is the real leading
+  // edge of the exposure — the front face of the whole stack — and it is exact
+  // rather than assumed, so it follows the trail wherever the bend and the
+  // turbulence put it. The Canvas 2D version could only fake this by brightening
+  // the first three copies, which pinned a rim to the word instead of to the
+  // actual front of the trail.
+  float firstHit = 1e9;
+
+  for (int i = 1; i <= SAMPLES; i++) {
+    float fi = float(i) * perSample;           // which copy index this is
+    float t  = fi / max(1.0, uEchoes);         // 0 at the word, 1 at the tail
+
+    vec2 off = fall * fi;
+
+    // ── magnetism ─────────────────────────────────────────────────────────
+    // The trail bends toward the cursor instead of falling dead straight. The
+    // pull grows along the trail (t*t), so the copies nearest the word stay put
+    // and the far end swings — which is what makes it read as the trail being
+    // ATTRACTED rather than the whole word being dragged. Squared so the bend is
+    // a curve, not a kink.
+    //
+    // Free: the sample offset is already a vector, so this is one multiply-add
+    // inside a loop that was going to run anyway. No extra texture fetches, which
+    // is the only thing that actually costs anything in here.
+    vec2 toCur = uMagnet - uAnchor;
+    toCur.x *= uAspect;
+    // Attraction falls off with distance, so a cursor parked in the far corner
+    // relaxes the trail back to vertical instead of hauling it sideways forever.
+    float grip = uMagnetOn / (1.0 + dot(toCur, toCur) * 5.0);
+    off += toCur * (t * t * grip * 0.55);
+
+    // ── cursor-coupled depth ──────────────────────────────────────────────
+    // The recession already exists per copy; coupling it to the cursor makes the
+    // near copies swing further than the far ones, so the stack shears in depth
+    // and you get a genuine parallax read out of geometry that was already here.
+    // (1-t) weights it toward the word end — the near copies are the ones a real
+    // parallax would move most.
+    float z = zPer * fi * (1.0 + uSwing * (1.0 - t));
+
+    // ── (C) turbulence ────────────────────────────────────────────────────
+    // The tail wavers, the head stays crisp. Two sines at incommensurate rates
+    // beating against each other, so it never reads as a clean oscillation.
+    //
+    // The important part is that the phase advances with fi: the displacement
+    // differs from copy to copy, so the trail SNAKES along its length instead of
+    // sliding sideways as a rigid shape. Weighted t*t so it is nothing at the
+    // word and strongest at the far end, which is how smoke and hot air actually
+    // behave — the disturbance has had further to travel.
+    float wob = sin(fi * 0.105 + uTime * 1.25)
+              * sin(fi * 0.037 - uTime * 0.71 + 2.1);
+    off += vec2(wob, wob * 0.35) * (t * t * uTurb * px);
+
+    // ── (E) dissipation ───────────────────────────────────────────────────
+    // Each copy is sampled slightly larger than the last, so the trail opens up
+    // as it falls rather than staying a constant-width ribbon. A long exposure of
+    // something emitting light does spread, and it also softens the hard edges of
+    // the tail without any blur — the widening copies overlap less exactly, which
+    // is its own kind of falloff.
+    float grow = 1.0 + t * uSpread;
+
+    float m = maskAt(uv - off, z, grow);
+    if (m > 0.0) {
+      // coverage contributed by perSample overlapping copies at uAlpha
+      float k = 1.0 - pow(1.0 - uAlpha * m, perSample);
+      // composite this band OVER what we already have (same as stacking stamps)
+      dens += k * (1.0 - dens);
+      ramp += t * k;   // t is this copy's position along the trail
+      wsum += k;
+      firstHit = min(firstHit, fi);   // (A)
+    }
+  }
+  float q = wsum > 0.0 ? ramp / wsum : 0.0;    // mean position along the ramp
+
+  // (A) The leading edge, from the real first-hit index. Decays fast, so it is a
+  // thin bright rim on the front of the exposure rather than a general lift of
+  // the head — which is what gives the trail a defined front instead of just
+  // fading in from nothing.
+  float edge = firstHit < 1.0e8 ? exp(-firstHit * 0.085) * uEdge : 0.0;
+
+  // ── the word itself, three layers ────────────────────────────────────────
+  // Sampled at z = 0, on the plane. The two soft layers are nudged AWAY from the
+  // pointer so the light reads as directional; the core never moves. Now that
+  // maskAt takes a scale, the wide layers ask for a genuinely larger glyph rather
+  // than faking size with a second offset sample.
+  float bleed = maskAt(uv - uWordShift, 0.0, 1.055);
+  float halo  = maskAt(uv - uWordShift * 0.45, 0.0, 1.018);
+  float core  = maskAt(uv, 0.0, 1.0);
+
+  // ── the atmosphere pool ──────────────────────────────────────────────────
+  vec2 pc = uv - uAnchor - uHaloShift;
+  pc.x *= uAspect;
+  float pd = length(pc) / 0.52;
+  float pool = 1.0 - clamp(pd, 0.0, 1.0);
+  pool *= pool;
+
+  // ── compose ──────────────────────────────────────────────────────────────
+  // (B) Chromatic fringe. Each channel reads the ramp at a slightly different
+  // position, as if the three wavelengths had been exposed for slightly different
+  // lengths of trail. Red trails a touch behind and blue runs a touch ahead, so
+  // the tail separates into colour exactly where the density is thinnest and the
+  // separation is visible — and the dense head stays neutral, because there the
+  // ramp is flat and all three land in the same place.
+  //
+  // Three mixes on values already in registers. The Canvas 2D version bought the
+  // same idea with a second ~190-blit pass over the whole trail.
+  float qr = clamp(q + uFringe, 0.0, 1.0);
+  float qb = clamp(q - uFringe, 0.0, 1.0);
+  vec3 trailCol = vec3(
+    mix(uTrailHead.r, uTrailTail.r, qr),
+    mix(uTrailHead.g, uTrailTail.g, q),
+    mix(uTrailHead.b, uTrailTail.b, qb)
+  );
+  // ── both composites, then blended ────────────────────────────────────────
+  // uSubtract is CONTINUOUS, not a boolean, and that is the whole point.
+  //
+  // The presets alternate dark and light, so nearly every crossfade crosses from
+  // additive to subtractive. Branching on uSubtract > 0.5 meant the compositing
+  // mode SNAPPED at the midpoint of every transition — and the midpoint is the
+  // worst possible moment for it, because the background is then a mid-grey where
+  // neither mode looks right. That snap, plus the washed-out middle it sat in, is
+  // what made the colour change read as broken rather than as a wash.
+  //
+  // Evaluating both and mixing costs a handful of ALU ops on values already in
+  // registers (no extra texture fetches), and in exchange every frame of the
+  // transition is a valid image. uSoft and the trail alpha can now ride the same
+  // continuous mix instead of jumping with the mode.
+  vec3 add = uBg;
+  add += uPoolA * pool * uPoolAlphaA;
+  add += uPoolB * pool * uPoolAlphaB;
+  add += trailCol * dens;
+  // (A) the leading edge, lifted toward the core colour so the front of the
+  // exposure reads as the hottest part of the light.
+  add += mix(trailCol, uCore, 0.5) * edge * dens;
+  add += uBleed * bleed * 0.16 * uSoft;
+  add += uHalo  * halo  * 0.32 * uSoft;
+  add += uCore  * core  * 0.95;
+
+  // INK ON PAPER. Adding light to near-white blows straight out and the trail
+  // vanishes, so the same accumulation has to subtract instead — density of
+  // pigment, not emission. Multiply is what keeps the ramp readable.
+  vec3 sub = uBg;
+  sub = mix(sub, sub * uPoolA, pool * uPoolAlphaA);
+  sub = mix(sub, sub * uPoolB, pool * uPoolAlphaB);
+  sub *= mix(vec3(1.0), trailCol, dens);
+  // (A) on paper the leading edge is the DENSEST ink, not the brightest light —
+  // the front of the stroke where the pigment pooled.
+  sub *= mix(vec3(1.0), trailCol, edge * dens * 0.5);
+  sub *= mix(vec3(1.0), uBleed, bleed * 0.16 * uSoft);
+  sub *= mix(vec3(1.0), uHalo,  halo  * 0.32 * uSoft);
+  sub *= mix(vec3(1.0), uCore,  core  * 0.95);
+
+  vec3 col = mix(add, sub, uSubtract);
+
+  // ── vignette ─────────────────────────────────────────────────────────────
+  vec2 vc = uv - vec2(0.5, 0.45);
+  vc.x *= uAspect;
+  float vd = clamp((length(vc) - 0.16) / 0.56, 0.0, 1.0);
+  col *= mix(vec3(1.0), uVignette, vd);
+
+  // ── (D) grain ────────────────────────────────────────────────────────────
+  // Wide soft gradients band badly in 8-bit, so some dither is non-negotiable.
+  // But a FLAT layer of it reads as a dirty screen sitting in front of the image.
+  // Real film grain lives in the emulsion: it is strongest where the exposure
+  // actually happened and nearly absent in untouched shadow. Weighting it by the
+  // trail's own density is what turns the dither into part of the photograph —
+  // the trail comes out looking exposed rather than drawn.
+  //
+  // A floor keeps just enough everywhere to kill banding in the pool + vignette.
+  // The sign rides uSubtract continuously (grain LIFTS out of shadow on a dark
+  // ground, DARKENS on paper) so it passes through zero mid-transition instead of
+  // inverting in one frame.
+  float n = hash(gl_FragCoord.xy + vec2(uTime * 60.0)) - 0.5;
+  float grainAmt = uNoise * (0.35 + 1.5 * max(dens, core));
+  col += n * grainAmt * mix(1.0, -1.0, uSubtract);
+
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+`;
+
+```
+
+### smear/text-mask.ts
+
+```ts
+// Rasterizes the word into a white-on-transparent coverage mask. The shader
+// treats the silhouette as the thing being stamped, so this is the only CPU work
+// in the whole effect and it happens once per word/size/font, never per frame.
+//
+// The mask is FULL-CANVAS here, unlike the Canvas 2D version's tight crop. The
+// crop existed purely to keep 210 CPU blits affordable; the GPU samples a texture
+// by uv, so the shader needs the word positioned in the same space it reads.
+//
+// The bitmap face has a small cap-height for its point size, so it needs a larger
+// request than a normal grotesk to sit at the same optical weight.
+
+/** Where the word's centre sits, as a fraction of height. Leaves the trail room
+ *  to fall away below it. Must match the anchor the engine hands the shader. */
+export const ANCHOR_Y = 0.42;
+
+export function makeWordMask(
+  word: string,
+  w: number,
+  h: number,
+  fontFamily: string,
+): HTMLCanvasElement {
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+
+  const out = document.createElement("canvas");
+  out.width = W;
+  out.height = H;
+  const ctx = out.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+
+  const text = (word || "").trim();
+  if (!text) return out;
+
+  let size = H * 0.34;
+  ctx.font = `400 ${size}px ${fontFamily}`;
+  const maxW = W * 0.72;
+  const measured = ctx.measureText(text).width;
+  if (measured > maxW) {
+    size *= maxW / measured;
+    ctx.font = `400 ${size}px ${fontFamily}`;
+  }
+
+  // Real ink bounds, not the em box — the bitmap face leaves a lot of slack above
+  // the ascender, and centring on the em box would put the trail's origin
+  // somewhere above the letters instead of through them.
+  const m = ctx.measureText(text);
+  const asc = m.actualBoundingBoxAscent || size * 0.75;
+  const desc = m.actualBoundingBoxDescent || size * 0.25;
+  const inkMid = (asc - desc) / 2;
+
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(text, W / 2, H * ANCHOR_Y + inkMid);
+
+  return out;
+}
+
+/** Measured width of the word at a reference size, used to detect a real font
+ *  swap. A CSS var resolves to the same family name whether or not the webfont
+ *  file has arrived, so comparing NAMES would look identical before and after
+ *  load and skip the one rebuild that matters. */
+export function measureWord(word: string, fontFamily: string): number {
+  const probe = document.createElement("canvas").getContext("2d");
+  if (!probe) return 0;
+  probe.font = `400 100px ${fontFamily}`;
+  return Math.round(probe.measureText(word).width);
+}
+
+```
+
+### smear/engine.ts
+
+```ts
+// Fade motion — WebGL1.
+//
+// A word that trails downward into light. Nothing is blurred and no gradient is
+// painted: the trail is pure ACCUMULATION. Coverage after k overlapping copies of
+// the word at alpha a is
+//
+//     1 - (1-a)^k
+//
+// which is why the falloff is fast at first and then a long tail. That law is the
+// effect, and it is unchanged from the Canvas 2D original.
+//
+// What changed is WHERE it is evaluated. The original stamped the word ~210 times
+// per frame with drawImage, and the chromatic pass added ~190 more the instant the
+// cursor moved — so moving the cursor, the one moment the card had to be
+// responsive, was also the moment it got twice as expensive. Long frames then fed
+// straight into the dt-scaled followers, so the word lurched instead of tracking.
+// Now the accumulation runs per-pixel in a fragment shader: the fragment marches
+// UP the trail and asks how many copies would have covered it. One draw call, cost
+// independent of the copy count.
+//
+// On a dark preset it is LIGHT on a dark ground — the trail is the word's own glow
+// smeared, so the stack ADDS. On a light preset the same accumulation runs
+// SUBTRACTIVELY, as ink density on paper, because adding light to white blows out
+// and leaves nothing to see. Either way it reads as one long exposure rather than
+// a stack of shadows.
+//
+// The pointer FOLLOWS. The word turns to face the cursor and the trail reels in as
+// you approach; it does not get shoved around, and a small move produces a small
+// turn rather than a smear in the opposite direction.
+
+import { FULL_VERT, TRAIL_FRAG } from "./shaders";
+import { makeWordMask, measureWord, ANCHOR_Y } from "./text-mask";
+
+export interface FadeParams {
+  /** how many copies build the trail */
+  echoes: number;
+  /** distance between copies, px at a 620px-tall card */
+  step: number;
+  /** per-copy alpha; the trail builds from overlap, so this stays low */
+  alpha: number;
+  /** trail direction in radians. 90deg = straight down. */
+  angle: number;
+  /** how far the hue travels from the word to the end of the trail, degrees */
+  hueShift: number;
+  /** how much the tail wavers, px at a 620px-tall card. 0 = a rigid trail. */
+  turbulence: number;
+  /** how much each copy widens as it falls. 0 = a constant-width ribbon. */
+  spread: number;
+  /** brightness of the trail's true leading edge */
+  edge: number;
+  /** per-channel offset into the trail ramp — the dispersion at the tail */
+  fringe: number;
+}
+
+export const DEFAULTS: FadeParams = {
+  // Many copies at a near-1px step. Spacing them further apart makes each copy
+  // land clear of the last, which reads as stacked ghosts rather than one
+  // continuous ramp — the accumulation only works when they overlap heavily.
+  echoes: 210,
+  step: 1.0,
+  alpha: 0.019,
+  angle: Math.PI / 2, // straight down
+  hueShift: 26,
+  // Enough waver to make the tail feel like it is moving through air, well short
+  // of the point where the trail stops reading as one continuous stroke.
+  //
+  // 16 puts about 50px of swing on the tail of a 1344px card, against a trail a
+  // few hundred px wide — so the edge of the stroke visibly breathes while the
+  // body of it stays coherent. The phase advances per copy (see the shader), so
+  // this is the amplitude of a SNAKE along the trail, not a sideways slide of the
+  // whole thing; at 9 the undulation was there but too fine to read at all.
+  turbulence: 16,
+  // A gentle opening. Past ~0.5 the copies overlap so loosely that the ramp
+  // starts to look soft rather than dense.
+  spread: 0.22,
+  edge: 0.5,
+  // Small on purpose: this is a fringe at the thin end of the ramp, not a
+  // 3D-glasses split. Above ~0.1 it stops reading as dispersion and starts
+  // reading as a mistake.
+  fringe: 0.045,
+};
+
+/** Lowercase, in the site face. The source used shouty uppercase; lowercase sits
+ *  far better with the rest of the page and the descenders give the trail
+ *  something more interesting to start from. */
+const WORD = "motion";
+
+/**
+ * A colour preset.
+ *
+ * `mode` is the load-bearing field, not a style detail. On a dark ground the
+ * copies ADD and the trail is light the word emits. On a light ground adding
+ * light to near-white paper blows straight out and the trail disappears entirely
+ * — so a light preset has to treat the trail as PIGMENT and subtract instead.
+ * Same accumulation maths, inverted output. Without that flag a "light mode" is
+ * just a washed-out dark mode with an invisible trail.
+ */
+export interface Palette {
+  name: string;
+  mode: "add" | "subtract";
+  /** page behind everything */
+  bg: string;
+  /** trail ramp: hue/sat/light at the word, and how each travels to the tail */
+  trail: {
+    hue: number;
+    sat: number;
+    light: number;
+    dHue: number;
+    dSat: number;
+    dLight: number;
+  };
+  /** the three word layers: wide bleed, tight halo, hot core */
+  bleed: string;
+  halo: string;
+  core: string;
+  /** the atmosphere pool behind the word */
+  pool: [string, string];
+  /** vignette edge colour (centre is untouched — it multiplies) */
+  vignette: string;
+  /**
+   * Scales the per-copy alpha for this preset.
+   *
+   * Subtractive presets need this well below 1. Additive accumulation saturates
+   * toward white gracefully, but multiplicative accumulation COMPOUNDS: at the
+   * shared 0.019 the paper is driven to 2% by the last copy, so the dense end
+   * becomes a flat black slab and the whole accumulation curve — the actual
+   * effect — is clipped away. About a third of that keeps the ramp intact.
+   */
+  alphaScale: number;
+}
+
+export const PALETTES: Palette[] = [
+  {
+    // Dark first — this is the card's resting identity.
+    name: "Afterglow",
+    mode: "add",
+    bg: "#0b0e0c",
+    trail: { hue: 132, sat: 46, light: 52, dHue: 26, dSat: -14, dLight: -26 },
+    bleed: "hsl(150 45% 40%)",
+    halo: "hsl(146 60% 62%)",
+    core: "hsl(140 34% 93%)",
+    pool: ["rgba(94,214,138,0.16)", "rgba(58,150,110,0.06)"],
+    vignette: "#6b7a70",
+    alphaScale: 1,
+  },
+  {
+    name: "Graphite",
+    mode: "subtract",
+    bg: "#ffffff",
+    // Denser and longer-travelling than the dark presets: on paper the ink has to
+    // do all the work the glow does on black, so it starts darker and lifts further.
+    trail: { hue: 250, sat: 14, light: 26, dHue: 8, dSat: -8, dLight: 54 },
+    bleed: "hsl(250 16% 58%)",
+    halo: "hsl(252 24% 34%)",
+    // Not black — a deep indigo reads as chosen where pure black reads default.
+    core: "hsl(254 46% 13%)",
+    pool: ["rgba(120,120,170,0.07)", "rgba(120,120,170,0.02)"],
+    // Barely tinted. A grey vignette multiplies white paper into a dirty wash and
+    // the trail's tail vanishes into it — on light presets this has to stay within
+    // a couple of percent of the page.
+    vignette: "#f6f5fa",
+    alphaScale: 0.42,
+  },
+  {
+    name: "Amber",
+    mode: "add",
+    bg: "#0d0906",
+    trail: { hue: 32, sat: 78, light: 52, dHue: -14, dSat: -18, dLight: -28 },
+    bleed: "hsl(28 70% 42%)",
+    halo: "hsl(36 88% 62%)",
+    core: "hsl(44 60% 94%)",
+    pool: ["rgba(255,168,66,0.16)", "rgba(168,96,28,0.06)"],
+    vignette: "#7a6a56",
+    alphaScale: 1,
+  },
+  {
+    name: "Cyanotype",
+    mode: "subtract",
+    bg: "#fdfeff",
+    trail: { hue: 205, sat: 58, light: 30, dHue: -12, dSat: -18, dLight: 52 },
+    bleed: "hsl(205 46% 56%)",
+    halo: "hsl(206 64% 32%)",
+    core: "hsl(210 82% 15%)",
+    pool: ["rgba(64,132,196,0.08)", "rgba(64,132,196,0.025)"],
+    vignette: "#f2f7fb",
+    alphaScale: 0.42,
+  },
+  {
+    name: "Ultramarine",
+    mode: "add",
+    bg: "#07090f",
+    trail: { hue: 224, sat: 64, light: 54, dHue: 26, dSat: -16, dLight: -30 },
+    bleed: "hsl(228 58% 44%)",
+    halo: "hsl(220 78% 66%)",
+    core: "hsl(210 46% 94%)",
+    pool: ["rgba(96,150,255,0.16)", "rgba(48,80,180,0.06)"],
+    vignette: "#606a86",
+    alphaScale: 1,
+  },
+  {
+    name: "Rust",
+    mode: "subtract",
+    bg: "#fffdfa",
+    trail: { hue: 16, sat: 52, light: 32, dHue: 16, dSat: -20, dLight: 52 },
+    bleed: "hsl(20 42% 58%)",
+    halo: "hsl(16 56% 34%)",
+    core: "hsl(10 66% 17%)",
+    pool: ["rgba(198,110,70,0.08)", "rgba(198,110,70,0.025)"],
+    vignette: "#fbf3ec",
+    alphaScale: 0.42,
+  },
+  {
+    name: "Split",
+    mode: "add",
+    bg: "#0a070c",
+    // hue travels a long way, so the head and tail land on opposite sides of the
+    // wheel and the trail reads as two colours bleeding through each other
+    trail: { hue: 318, sat: 62, light: 54, dHue: -132, dSat: -8, dLight: -26 },
+    bleed: "hsl(320 56% 44%)",
+    halo: "hsl(318 76% 66%)",
+    core: "hsl(300 34% 94%)",
+    pool: ["rgba(232,96,208,0.15)", "rgba(72,120,190,0.07)"],
+    vignette: "#786080",
+    alphaScale: 1,
+  },
+];
+
+/** How long a palette crossfade takes.
+ *
+ *  0.34s against the 2s hero cycle: the change is over quickly and the card then
+ *  sits on a clean preset for ~83% of each period. Earlier passes at 1.1s and
+ *  0.75s were mid-wash for half the time or more, which is what made the cycling
+ *  feel sluggish and indecisive — you never saw a colour world, you only ever saw
+ *  it turning into the next one. Fast and complete beats slow and permanent. */
+const FADE_SECONDS = 0.34;
+
+/** Focal length for the perspective divide, in units of canvas height. Lower is a
+ *  wider lens and a stronger taper. Around 1.6 reads like a real lens: enough
+ *  convergence to feel dimensional, not so much that it fisheyes. */
+const FOCAL = 1.6;
+
+/** Caps on the eased lean, set by setPointer. */
+const LEAN_X_MAX = 0.21;
+const LEAN_Y_MAX = 0.12;
+
+/** How far the atmosphere pool tracks the pointer, as a fraction of the canvas.
+ *  Kept close to the word's own travel: much further and the light source and the
+ *  lit object visibly parallax apart. */
+const HALO_TRACK_X = 0.07;
+const HALO_TRACK_Y = 0.08;
+
+/** The bitmap face. Its hard pixel edges are the reason it suits this: every copy
+ *  in the trail keeps a crisp stair-stepped silhouette, so the accumulation stays
+ *  legible instead of blurring into a smudge. */
+const PIXEL_FONT = "var(--font-mondwest)";
+
+/** Canvas 2D `ctx.font` cannot parse a CSS var() — resolve it to a real family
+ *  name once. */
+function resolveFamily(cssFamily: string): string {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden";
+  probe.style.fontFamily = cssFamily;
+  document.body.appendChild(probe);
+  const fam = getComputedStyle(probe).fontFamily || "sans-serif";
+  probe.remove();
+  return fam;
+}
+
+/** A `document.fonts.load` spec for the face this card draws in, so callers can
+ *  warm it before the first mask build. */
+export function pixelFontSpec(): string {
+  return `400 100px ${resolveFamily(PIXEL_FONT)}`;
+}
+
+// ── colour helpers ──────────────────────────────────────────────────────────
+type RGB = [number, number, number];
+
+function hslToRgb(h: number, s: number, l: number): RGB {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) =>
+    l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [f(0), f(8), f(4)];
+}
+
+/** Parse the hex / hsl() / rgba() forms the palettes are authored in. Returns
+ *  linear-ish 0..1 rgb plus the alpha the source carried (1 when it had none). */
+function parseColor(c: string): { rgb: RGB; a: number } {
+  const s = c.trim();
+  if (s.startsWith("#")) {
+    let h = s.slice(1);
+    if (h.length === 3) h = h.split("").map((x) => x + x).join("");
+    return {
+      rgb: [
+        parseInt(h.slice(0, 2), 16) / 255,
+        parseInt(h.slice(2, 4), 16) / 255,
+        parseInt(h.slice(4, 6), 16) / 255,
+      ],
+      a: 1,
+    };
+  }
+  const hsl = s.match(/^hsl\(\s*([-\d.]+)\s+([\d.]+)%\s+([\d.]+)%\s*\)$/);
+  if (hsl) {
+    return { rgb: hslToRgb(+hsl[1], +hsl[2], +hsl[3]), a: 1 };
+  }
+  const rgba = s.match(
+    /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/,
+  );
+  if (rgba) {
+    return {
+      rgb: [+rgba[1] / 255, +rgba[2] / 255, +rgba[3] / 255],
+      a: rgba[4] !== undefined ? +rgba[4] : 1,
+    };
+  }
+  return { rgb: [1, 1, 1], a: 1 };
+}
+
+/**
+ * A palette with every colour already parsed to numbers.
+ *
+ * The palettes are authored as CSS strings because that is how a person reads
+ * them, but re-parsing ten strings on every frame to crossfade between two of
+ * them would be pure waste. Each preset is resolved once, cached, and then the
+ * blend is plain arithmetic on floats.
+ */
+interface ResolvedPalette {
+  /** 0 = fully additive (light on dark), 1 = fully subtractive (ink on paper).
+   *  A NUMBER, not an enum, so a crossfade between a dark and a light preset can
+   *  pass continuously through the middle — the shader evaluates both composites
+   *  and mixes by this. */
+  subtract: number;
+  bg: RGB;
+  head: RGB;
+  tail: RGB;
+  bleed: RGB;
+  halo: RGB;
+  core: RGB;
+  poolA: RGB;
+  poolB: RGB;
+  poolAlphaA: number;
+  poolAlphaB: number;
+  vignette: RGB;
+  alphaScale: number;
+}
+
+const resolvedCache = new Map<string, ResolvedPalette>();
+
+/** Resolve one palette, including its trail ramp endpoints at a given hue travel. */
+function resolve(pal: Palette, hueTravel: number): ResolvedPalette {
+  const key = `${pal.name}|${hueTravel.toFixed(2)}`;
+  const hit = resolvedCache.get(key);
+  if (hit) return hit;
+  const T = pal.trail;
+  const pa = parseColor(pal.pool[0]);
+  const pb = parseColor(pal.pool[1]);
+  const out: ResolvedPalette = {
+    subtract: pal.mode === "subtract" ? 1 : 0,
+    bg: parseColor(pal.bg).rgb,
+    head: hslToRgb(T.hue, T.sat, T.light),
+    tail: hslToRgb(T.hue + hueTravel, T.sat + T.dSat, T.light + T.dLight),
+    bleed: parseColor(pal.bleed).rgb,
+    halo: parseColor(pal.halo).rgb,
+    core: parseColor(pal.core).rgb,
+    poolA: pa.rgb,
+    poolB: pb.rgb,
+    poolAlphaA: pa.a,
+    poolAlphaB: pb.a,
+    vignette: parseColor(pal.vignette).rgb,
+    alphaScale: pal.alphaScale,
+  };
+  resolvedCache.set(key, out);
+  return out;
+}
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const lerp3 = (a: RGB, b: RGB, t: number): RGB => [
+  lerp(a[0], b[0], t),
+  lerp(a[1], b[1], t),
+  lerp(a[2], b[2], t),
+];
+
+/**
+ * Blend two resolved palettes. EVERY field interpolates — nothing snaps.
+ *
+ * This used to switch `mode` and `alphaScale` at the midpoint, on the theory that
+ * a hard flip would hide there. It does not. The presets alternate dark and light,
+ * so nearly every transition crossed a mode boundary, and the midpoint is the
+ * worst place to flip: the background is a mid-grey where neither compositing mode
+ * looks right, so the change read as a pop inside a washed-out middle. The shader
+ * now evaluates both composites and mixes by `subtract`, which lets this be a
+ * plain lerp like everything else.
+ */
+function blend(a: ResolvedPalette, b: ResolvedPalette, t: number): ResolvedPalette {
+  return {
+    subtract: lerp(a.subtract, b.subtract, t),
+    alphaScale: lerp(a.alphaScale, b.alphaScale, t),
+    bg: lerp3(a.bg, b.bg, t),
+    head: lerp3(a.head, b.head, t),
+    tail: lerp3(a.tail, b.tail, t),
+    bleed: lerp3(a.bleed, b.bleed, t),
+    halo: lerp3(a.halo, b.halo, t),
+    core: lerp3(a.core, b.core, t),
+    poolA: lerp3(a.poolA, b.poolA, t),
+    poolB: lerp3(a.poolB, b.poolB, t),
+    poolAlphaA: lerp(a.poolAlphaA, b.poolAlphaA, t),
+    poolAlphaB: lerp(a.poolAlphaB, b.poolAlphaB, t),
+    vignette: lerp3(a.vignette, b.vignette, t),
+  };
+}
+
+const UNIFORMS = [
+  "uMask", "uResolution", "uAspect",
+  "uEchoes", "uStep", "uAlpha", "uFall", "uZStep",
+  "uMagnet", "uMagnetOn", "uSwing",
+  "uTurb", "uSpread", "uEdge", "uFringe",
+  "uAnchor", "uYaw", "uPitch", "uFocal",
+  "uTrailHead", "uTrailTail", "uBleed", "uHalo", "uCore", "uBg",
+  "uPoolA", "uPoolB", "uPoolAlphaA", "uPoolAlphaB",
+  "uVignette", "uSubtract", "uSoft", "uNoise", "uTime",
+  "uHaloShift", "uWordShift",
+] as const;
+
+export class FadeMotion {
+  private host: HTMLElement;
+  private canvas: HTMLCanvasElement;
+  private gl: WebGLRenderingContext | null = null;
+  private prog: WebGLProgram | null = null;
+  private quad: WebGLBuffer | null = null;
+  private loc: Record<string, WebGLUniformLocation | null> = {};
+
+  private mask: WebGLTexture | null = null;
+
+  readonly params: FadeParams = { ...DEFAULTS };
+
+  /** which preset is showing; remix advances it */
+  private paletteIdx = 0;
+  /** The preset being crossfaded FROM, and how far through (1 = settled). */
+  private fadeFrom = 0;
+  private fadeMix = 1;
+
+  // ── hero mode ───────────────────────────────────────────────────────────
+  // Off by default. The playground stays a single static preset driven by a real
+  // cursor; only the hero card runs itself.
+  private hero = false;
+  /** seconds until the next palette change */
+  private cycleT = 0;
+  /** The fake cursor. Hero mode drives `ptr` from this, so every reaction the
+   *  real pointer triggers — the turn, the reach, the magnetism, the depth swing
+   *  — comes along for free rather than being re-implemented. */
+  private ghostX = 0.5;
+  private ghostY = ANCHOR_Y;
+  /** True only for a REAL pointer. The ghost writes `ptr` so it reuses the whole
+   *  reaction chain, which means `ptr` alone can no longer answer "is someone
+   *  actually hovering" — and without this distinction the ghost would latch
+   *  `ptr` on forever and the release-to-drift behaviour would never fire again. */
+  private realPtr = false;
+
+  /** eased pointer lean */
+  private leanX = 0;
+  private leanY = 0;
+  private leanTargetX = 0;
+  private leanTargetY = 0;
+
+  /** `near` is 1 at the word and 0 at the far corner. Drives trail LENGTH. */
+  private near = 0;
+  private nearTarget = 0;
+
+  /** Live pointer position in 0..1, or null. Held so the per-frame step can
+   *  recompute targets without needing a fresh event — a hand held still fires no
+   *  pointermove at all, and the old code only ever updated on an event. */
+  private ptr: { x: number; y: number } | null = null;
+
+  /** Eased cursor position the magnetism pulls toward, and its eased presence.
+   *  Followed rather than used raw: the bend arriving a beat after your hand is
+   *  what makes the trail feel like it has mass being pulled, instead of a shape
+   *  welded to the cursor. Presence fades so leaving relaxes the curve out rather
+   *  than dropping it. */
+  private magX = 0.5;
+  private magY = ANCHOR_Y;
+  private magOn = 0;
+
+  /** 0 = fully pointer-driven, 1 = fully autonomous. Eased, never switched. */
+  private idleMix = 1;
+  /** measured width of WORD at 100px, to detect a real font swap */
+  private lastFontWidth = 0;
+  /** Drift clock, in seconds. Only advances while the drift is being mixed in, so
+   *  the word cannot crawl away from a held-still cursor. */
+  private t = 0;
+  /** Wall clock, in seconds. ALWAYS advances. Anything that should keep living
+   *  while you hover — the grain, the trail's turbulence — has to run off this,
+   *  not off the drift clock: `t` is frozen under a hover by design, and driving
+   *  the grain from it meant the film stopped moving the instant you touched the
+   *  card. Two clocks because they answer two different questions. */
+  private tReal = 0;
+
+  private raf = 0;
+  private last = 0;
+  private running = false;
+  private dpr = 1;
+  private ro: ResizeObserver | null = null;
+  private disposed = false;
+  private fontFamily = "sans-serif";
+
+  // mask rebuild guards
+  private builtW = 0;
+  private builtH = 0;
+  private builtFont = "";
+
+  constructor(host: HTMLElement, fontFamily?: string) {
+    this.host = host;
+    this.fontFamily = fontFamily ?? resolveFamily(PIXEL_FONT);
+    this.canvas = document.createElement("canvas");
+    this.canvas.style.cssText = "display:block;width:100%;height:100%";
+    host.appendChild(this.canvas);
+
+    const gl = this.canvas.getContext("webgl", {
+      alpha: false,
+      antialias: false,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+    this.gl = gl;
+
+    try {
+      this.prog = this.build(FULL_VERT, TRAIL_FRAG);
+    } catch {
+      this.gl = null;
+      return;
+    }
+    for (const u of UNIFORMS) {
+      this.loc[u] = gl.getUniformLocation(this.prog, u);
+    }
+
+    // full-screen triangle
+    this.quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 3, -1, -1, 3]),
+      gl.STATIC_DRAW,
+    );
+
+    const bg = parseColor(this.palette.bg).rgb;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+
+    this.resize();
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(host);
+  }
+
+  get ok() {
+    return !!this.gl && !!this.prog;
+  }
+
+  private build(vs: string, fs: string): WebGLProgram {
+    const gl = this.gl!;
+    const c = (type: number, src: string) => {
+      const sh = gl.createShader(type)!;
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(sh) || "compile failed");
+      }
+      return sh;
+    };
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, c(gl.VERTEX_SHADER, vs));
+    gl.attachShader(prog, c(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog) || "link failed");
+    }
+    return prog;
+  }
+
+  /** Rasterize the word and upload it. The only CPU work in the effect, and it
+   *  runs once per size/font rather than per frame. */
+  private buildMask() {
+    const gl = this.gl;
+    if (!gl || this.disposed) return;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    if (!W || !H) return;
+    if (W === this.builtW && H === this.builtH && this.fontFamily === this.builtFont) {
+      return;
+    }
+    this.builtW = W;
+    this.builtH = H;
+    this.builtFont = this.fontFamily;
+
+    const art = makeWordMask(WORD, W, H, this.fontFamily);
+    if (!this.mask) this.mask = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.mask);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // The shader's uv origin is bottom-left; the 2D canvas draws top-down.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+
+  private resize() {
+    const gl = this.gl;
+    if (!gl || this.disposed) return;
+    const w = this.host.clientWidth;
+    const h = this.host.clientHeight;
+    if (!w || !h) return;
+    // Capped at 1.5: the shader is fill-rate bound (48 texture fetches a
+    // fragment), so pixel count is the one thing that actually costs here.
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const cw = Math.round(w * this.dpr);
+    const ch = Math.round(h * this.dpr);
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+      gl.viewport(0, 0, cw, ch);
+      this.buildMask();
+    }
+    if (!this.running) this.draw(0);
+  }
+
+  setParams(p: Partial<FadeParams>) {
+    Object.assign(this.params, p);
+    if (!this.running) this.draw(0);
+  }
+
+  /** Re-rasterize once the real face has loaded.
+   *
+   *  The mask is laid out from whatever `measureText` reports at build time, so
+   *  if the bitmap face has not arrived yet the word is sized to the fallback's
+   *  metrics and stays wrong forever. That only bites on a cold reload, when the
+   *  font is not yet in cache, which is exactly when it showed up.
+   *
+   *  Callers fire this from both `fonts.load()` and `fonts.ready`, so it lands
+   *  twice on a cold load. The guard compares MEASURED WIDTH, not the family
+   *  name: a CSS var resolves to the same name whether or not the webfont file
+   *  has arrived, so a name check would look identical before and after load and
+   *  skip the one rebuild that matters. */
+  refreshFonts() {
+    if (this.disposed || !this.gl) return;
+    this.fontFamily = resolveFamily(PIXEL_FONT);
+    const w = measureWord(WORD, this.fontFamily);
+    if (this.mask && w === this.lastFontWidth) return;
+    this.lastFontWidth = w;
+    // force a rebuild even though the canvas size has not changed
+    this.builtFont = "";
+    this.buildMask();
+    if (!this.running) this.draw(0);
+  }
+
+  /** Pointer in 0..1 relative to the host; null releases it to the idle drift. */
+  setPointer(p: { x: number; y: number } | null) {
+    if (!p) {
+      // Only drop the pointer. The lean targets are deliberately LEFT where the
+      // cursor put them: step() cross-fades from them to the drift, so they are
+      // the "from" side of the blend. Zeroing them here would reintroduce the
+      // jump the fade exists to remove.
+      this.ptr = null;
+      this.realPtr = false;
+      return;
+    }
+    this.ptr = { x: p.x, y: p.y };
+    this.realPtr = true;
+    // Targets are recomputed here AND every frame from `ptr` (see step), because
+    // a hand held perfectly still fires no pointermove — event-only updates were
+    // why the word drifted off a stationary cursor.
+    this.applyPointerTargets();
+  }
+
+  /** Derive the lean + reach targets from the live pointer position. */
+  private applyPointerTargets() {
+    const p = this.ptr;
+    if (!p) return;
+    // A small turn only. With a real perspective divide a little rotation buys a
+    // lot of read — the taper does the work, so the angle does not have to.
+    this.leanTargetX = (p.x - 0.5) * 0.42;
+    this.leanTargetY = (p.y - 0.5) * 0.24;
+    // Distance from the word's anchor, normalised so the far corner is ~1. Drives
+    // trail LENGTH: close in the trail pulls tight, out at the edge it streams.
+    const dx = p.x - 0.5;
+    const dy = p.y - ANCHOR_Y;
+    this.nearTarget = 1 - Math.min(1, Math.hypot(dx, dy) / 0.62);
+  }
+
+  /** Remix: crossfade to the next colour preset. */
+  next() {
+    // Start the new fade from whatever is CURRENTLY on screen. If a fade is still
+    // running, its midpoint blend is the honest starting point — snapping back to
+    // the previous preset's endpoint would pop, which is exactly what a spammed
+    // remix used to do.
+    this.fadeFrom = this.paletteIdx;
+    this.fadeMix = this.fadeMix >= 1 ? 0 : this.fadeMix;
+    this.paletteIdx = (this.paletteIdx + 1) % PALETTES.length;
+    if (!this.running) this.draw(0);
+  }
+
+  /**
+   * Hero mode: the card runs itself.
+   *
+   * A ghost cursor moves over it and the palette changes on a timer. Used for the
+   * Vault card and the detail hero, where there may be no pointer at all — a
+   * static card would show none of what makes this thing worth looking at.
+   *
+   * A real pointer still wins: `setPointer` overrides the ghost while it is
+   * present, so hovering the hero takes control rather than fighting it.
+   */
+  enableHero(cyclePeriod = 2) {
+    this.hero = true;
+    this.cyclePeriod = cyclePeriod;
+    this.cycleT = cyclePeriod;
+  }
+  private cyclePeriod = 2;
+
+  get palette(): Palette {
+    return PALETTES[this.paletteIdx % PALETTES.length];
+  }
+
+  /** The background currently on screen, as a CSS rgb() string, blend included.
+   *  Lets the host element track the canvas so the card's frame and its art change
+   *  together — otherwise the box stays one fixed grey while the picture inside it
+   *  recolours, and the two visibly disagree during every transition. */
+  get bgCss(): string {
+    const c = this.lastBg;
+    return `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
+  }
+  private lastBg: RGB = [0, 0, 0];
+  /** Called with the live background each frame; the card subscribes to restyle. */
+  onBg: ((css: string) => void) | null = null;
+
+  private step(dt: number) {
+    // ── hero mode: the ghost cursor ───────────────────────────────────────
+    // Imitating someone flicking the card around quickly but lightly. The brief
+    // is FAST and WEAK, which are opposite ends of the same knob, so it is built
+    // from high frequencies at small amplitudes rather than from one slow sweep
+    // scaled down.
+    //
+    // Three incommensurate sines per axis. Their periods share no common factor,
+    // so the path never closes into a loop the eye can learn — the giveaway that
+    // something is automated is repetition, not speed. The amplitudes fall as the
+    // frequencies rise, which is how real hand jitter is distributed: big
+    // movements are slow, small ones are quick.
+    //
+    // It stays inside a tight box around the word (about a fifth of the card)
+    // because a ghost that roams the full frame reads as a demo playing itself,
+    // while one that fidgets near the word reads as someone actually toying with
+    // it. Only advances while unattended, so a real pointer taking over does not
+    // fight a ghost that kept moving underneath.
+    if (this.hero && !this.realPtr) {
+      const g = this.tReal;
+      const gx =
+        0.55 * Math.sin(g * 2.30) +
+        0.30 * Math.sin(g * 3.70 + 1.1) +
+        0.15 * Math.sin(g * 6.10 + 0.4);
+      const gy =
+        0.55 * Math.cos(g * 1.90 + 2.1) +
+        0.30 * Math.sin(g * 4.30 + 0.5) +
+        0.15 * Math.cos(g * 7.30 + 1.7);
+      // 0.20 / 0.13 of the card, centred on the word's own anchor.
+      this.ghostX = 0.5 + gx * 0.20;
+      this.ghostY = ANCHOR_Y + gy * 0.13;
+      this.ptr = { x: this.ghostX, y: this.ghostY };
+      this.applyPointerTargets();
+    }
+
+    const hasPointer = !!this.ptr;
+
+    // The cross-fade between pointer control and the autonomous drift.
+    //
+    // ASYMMETRIC, and this is the important part. Taking over is fast (~0.07s);
+    // handing back is slow (~1.4s). A slow takeover meant that for the first
+    // half-second of a hover the blend was still mostly DRIFT, so the card kept
+    // wandering while the cursor was already on it and clearly not being
+    // followed. The pointer has to win essentially at once; only letting go
+    // should be gradual, because that is the direction where a fast change would
+    // look like a snap.
+    const mixTarget = hasPointer ? 0 : 1;
+    const mixRate = hasPointer ? 26 : 0.7;
+    this.idleMix += (mixTarget - this.idleMix) * Math.min(1, dt * mixRate);
+    // Land it exactly, so a residual 0.001 of drift can't keep nudging a word
+    // that is supposed to be locked to a stationary cursor.
+    if (hasPointer && this.idleMix < 0.002) this.idleMix = 0;
+
+    // The drift clock only advances while the drift is actually being mixed in.
+    // Freezing it under a hover is what stops the word crawling away from a
+    // held-still cursor, and because it resumes from where it stopped the
+    // handover stays continuous — the drift never jumps, it just pauses.
+    this.t += dt * this.idleMix;
+    this.tReal += dt;
+
+    // Re-derive from the live pointer every frame. pointermove does not fire for
+    // a stationary hand, so anything that only updated on events went stale.
+    this.applyPointerTargets();
+
+    const m = this.idleMix;
+    const driftX = Math.sin(this.t * 0.23) * 0.13;
+    const driftY = Math.sin(this.t * 0.31 + 1.7) * 0.07;
+    const driftN = 0.22 + Math.sin(this.t * 0.17) * 0.1;
+    const tx = this.leanTargetX * (1 - m) + driftX * m;
+    const ty = this.leanTargetY * (1 - m) + driftY * m;
+    const tn = this.nearTarget * (1 - m) + driftN * m;
+
+    // Frame-rate independent easing. The old form, `v += (target-v) * dt * rate`,
+    // is only an approximation of exponential decay and its effective time
+    // constant changes with frame length — so a long frame overshot and a short
+    // one crawled, which is what made the motion feel like it was lurching
+    // rather than tracking. 1-exp(-rate*dt) is the exact solution and behaves
+    // identically at any frame rate.
+    const ease = (rate: number) => 1 - Math.exp(-rate * dt);
+
+    // Tight while the pointer is on the card, slack once it leaves so the return
+    // to drift is a settle rather than a retreat.
+    const k = ease(hasPointer ? 16 : 2.2);
+    this.leanX += (tx - this.leanX) * k;
+    this.leanY += (ty - this.leanY) * k;
+    this.near += (tn - this.near) * ease(hasPointer ? 12 : 1.8);
+
+    // Clamp to the documented caps so the halo padding derived from them holds.
+    this.leanX = Math.max(-LEAN_X_MAX, Math.min(LEAN_X_MAX, this.leanX));
+    this.leanY = Math.max(-LEAN_Y_MAX, Math.min(LEAN_Y_MAX, this.leanY));
+
+    // The magnet target. Slower than the lean (7 vs 16) on purpose: the word
+    // turning to face you should feel immediate, but the trail bending after it
+    // should feel like something with weight catching up. Same movement, two
+    // speeds, which is most of why it reads as physical.
+    const mk = ease(7);
+    if (this.ptr) {
+      this.magX += (this.ptr.x - this.magX) * mk;
+      this.magY += (this.ptr.y - this.magY) * mk;
+    }
+    // Presence eases both ways so the curve relaxes out on leave. Slower to fade
+    // than to arrive, matching the lean's asymmetry.
+    this.magOn += ((this.ptr ? 1 : 0) - this.magOn) * ease(this.ptr ? 9 : 2.4);
+
+    // ── palette crossfade ─────────────────────────────────────────────────
+    // Advanced linearly here (the cycle timer below reads it as raw progress), and
+    // SMOOTHSTEPPED where it is consumed. A linear colour mix begins and ends with
+    // a visible corner — the change starts and stops abruptly at both ends. Easing
+    // it means the wash accelerates in and settles out, which is what makes a fast
+    // transition still read as smooth rather than as a cut.
+    if (this.fadeMix < 1) {
+      this.fadeMix = Math.min(1, this.fadeMix + dt / FADE_SECONDS);
+    }
+
+    // Hero mode advances the preset on a timer. Counted down from real elapsed
+    // time rather than a frame count, so it changes every two seconds whatever
+    // the frame rate — and the countdown only runs once the previous fade has
+    // settled, so a slow fade can never be cut off by the next one starting.
+    if (this.hero && this.fadeMix >= 1) {
+      this.cycleT -= dt;
+      if (this.cycleT <= 0) {
+        this.cycleT = this.cyclePeriod;
+        this.next();
+      }
+    }
+  }
+
+  private draw(dt: number) {
+    const gl = this.gl;
+    const prog = this.prog;
+    if (!gl || !prog) return;
+    this.step(dt);
+    if (!this.mask) this.buildMask();
+    if (!this.mask) return;
+
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const P = this.params;
+    const aspect = W / Math.max(1, H);
+
+    // The palette actually on screen. `hueShift` scales each preset's own hue
+    // travel rather than replacing it, so the slider still does something on every
+    // preset — which means the ramp endpoints depend on it and it has to be
+    // resolved here rather than baked into the preset table.
+    const hueOf = (p: Palette) => p.trail.dHue * (P.hueShift / 26);
+    const to = PALETTES[this.paletteIdx % PALETTES.length];
+    const pal =
+      this.fadeMix >= 1
+        ? resolve(to, hueOf(to))
+        : (() => {
+            const from = PALETTES[this.fadeFrom % PALETTES.length];
+            const m = this.fadeMix;
+            // smoothstep: eases in and out, so the wash has no corner at either end
+            const eased = m * m * (3 - 2 * m);
+            return blend(
+              resolve(from, hueOf(from)),
+              resolve(to, hueOf(to)),
+              eased,
+            );
+          })();
+
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    const aPos = gl.getAttribLocation(prog, "aPosition");
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.mask);
+    gl.uniform1i(this.loc.uMask, 0);
+
+    // ── the camera ────────────────────────────────────────────────────────
+    // The word is a flat plane standing in space and the trail is its light
+    // extruded BACKWARD along the depth axis. The cursor turns that plane.
+    //
+    // Rotate a real plane away from you and the far edge gets NARROWER than the
+    // near one, and that foreshortening is the entire cue that tells an eye it is
+    // looking at depth. A shear cannot produce it at any strength, which is why
+    // an earlier shear-based version only ever looked more wrong the harder it
+    // was pushed.
+    //
+    // NEGATIVE, so the plane turns to FACE the cursor: a real card pivoting
+    // toward you brings its near edge closer and lets the far edge recede.
+    gl.uniform1f(this.loc.uYaw, -this.leanX * 0.2);
+    gl.uniform1f(this.loc.uPitch, -this.leanY * 0.12);
+    gl.uniform1f(this.loc.uFocal, FOCAL);
+
+    // The anchor travels a little too. The plane rotating alone reads as a card
+    // on a pin; letting the whole thing shift makes it feel like an object
+    // floating in front of the page. Small on purpose, and it moves WITH the
+    // pointer while the plane turns to face it, so the two cues reinforce.
+    gl.uniform2f(
+      this.loc.uAnchor,
+      0.5 + this.leanX * 0.05,
+      // uv is bottom-up in the shader; the mask was uploaded flipped to match.
+      1 - (ANCHOR_Y + this.leanY * 0.05),
+    );
+
+    // ── the trail ─────────────────────────────────────────────────────────
+    // Falls DOWN the card by default (angle is 90deg) — that downward fall IS
+    // the effect, and the cursor only tips it. Pushing the copies purely backward
+    // in Z instead is geometrically fine but reads as the word shrinking into the
+    // distance rather than trailing, so there is nothing to see.
+    //
+    // Nothing drags the trail against the pointer's travel any more. A long
+    // exposure genuinely does smear backward along the path, but driving that off
+    // measured cursor velocity meant a SMALL move produced a real backward shove
+    // — the trail moved opposite to the hand, which reads as the card fighting
+    // you rather than following. The turn plus the reach carry the response.
+    //
+    // uv is bottom-up, so a "downward" fall is -y here.
+    gl.uniform2f(
+      this.loc.uFall,
+      Math.cos(P.angle),
+      -Math.sin(P.angle),
+    );
+    gl.uniform1f(this.loc.uStep, P.step);
+    gl.uniform1f(this.loc.uZStep, 0.55 * P.step);
+    gl.uniform1f(this.loc.uAlpha, P.alpha * pal.alphaScale);
+
+    // Magnetism. uv is bottom-up, so the y target is flipped to match the anchor.
+    gl.uniform2f(this.loc.uMagnet, this.magX, 1 - this.magY);
+    gl.uniform1f(this.loc.uMagnetOn, this.magOn);
+    // Depth swing. Driven off the horizontal lean, so turning the plane and
+    // shearing the stack in depth are the same gesture rather than two unrelated
+    // reactions — that coherence is what makes it read as one object in space.
+    gl.uniform1f(this.loc.uSwing, this.leanX * 2.2);
+
+    // The five layers. Turbulence gets a little push from the pointer's presence
+    // so the trail stirs when you are on the card and settles when you leave —
+    // the air around it reacting to you, not just the word.
+    gl.uniform1f(this.loc.uTurb, P.turbulence * (1 + this.magOn * 0.35));
+    gl.uniform1f(this.loc.uSpread, P.spread);
+    gl.uniform1f(this.loc.uEdge, P.edge);
+    gl.uniform1f(this.loc.uFringe, P.fringe);
+
+    // `near` modulates the length live: the closer the cursor is to the word, the
+    // shorter the trail, so approaching it reels the exposure in. Kept to a
+    // 0.55–1.15 band — collapse it further and the effect stops being itself,
+    // push it higher and the far copies leave the frame.
+    const reach = 1.15 - this.near * 0.6;
+    gl.uniform1f(this.loc.uEchoes, Math.max(1, P.echoes * reach));
+
+    // ── colour ────────────────────────────────────────────────────────────
+    // All already resolved to floats (and blended, mid-crossfade), so this is a
+    // straight upload with no per-frame string parsing.
+    gl.uniform3fv(this.loc.uTrailHead, pal.head);
+    gl.uniform3fv(this.loc.uTrailTail, pal.tail);
+
+    gl.uniform3fv(this.loc.uBleed, pal.bleed);
+    gl.uniform3fv(this.loc.uHalo, pal.halo);
+    gl.uniform3fv(this.loc.uCore, pal.core);
+    gl.uniform3fv(this.loc.uBg, pal.bg);
+
+    gl.uniform3fv(this.loc.uPoolA, pal.poolA);
+    gl.uniform3fv(this.loc.uPoolB, pal.poolB);
+    gl.uniform1f(this.loc.uPoolAlphaA, pal.poolAlphaA);
+    gl.uniform1f(this.loc.uPoolAlphaB, pal.poolAlphaB);
+    gl.uniform3fv(this.loc.uVignette, pal.vignette);
+
+    // Publish the live background so the host box can match it. Only fires when it
+    // actually changes — during a fade that is every frame, but at rest it is
+    // nothing, so this is not a per-frame style write.
+    if (
+      pal.bg[0] !== this.lastBg[0] ||
+      pal.bg[1] !== this.lastBg[1] ||
+      pal.bg[2] !== this.lastBg[2]
+    ) {
+      this.lastBg = [pal.bg[0], pal.bg[1], pal.bg[2]];
+      this.onBg?.(this.bgCss);
+    }
+
+    // Continuous 0..1, so a dark→light crossfade passes through the middle instead
+    // of flipping compositing mode in one frame.
+    gl.uniform1f(this.loc.uSubtract, pal.subtract);
+    // The soft layers are ADDITIVE ideas: on black they spill light past the
+    // glyph. Subtractively they instead darken the paper around it, so at the
+    // additive strengths they smear the letterforms into a soft grey blob. Pulled
+    // right back on subtract presets — just enough to seat the word on the page.
+    // Interpolated by the same factor, so it can no longer jump mid-transition.
+    gl.uniform1f(this.loc.uSoft, lerp(1, 0.35, pal.subtract));
+    gl.uniform1f(this.loc.uNoise, lerp(0.02, 0.012, pal.subtract));
+    // The WALL clock, not the drift clock. The drift clock freezes under a hover
+    // by design, and driving the grain and the turbulence from it meant both
+    // stopped dead the instant the cursor arrived — the film stopped moving at
+    // exactly the moment the card was supposed to feel most alive.
+    gl.uniform1f(this.loc.uTime, this.tReal);
+    gl.uniform1f(this.loc.uAspect, aspect);
+    gl.uniform2f(this.loc.uResolution, W, H);
+
+    // The pool tracks the pointer so it reads as the light SOURCE moving, which
+    // is what makes the word look lit from where the cursor is.
+    gl.uniform2f(
+      this.loc.uHaloShift,
+      this.leanX * HALO_TRACK_X,
+      -this.leanY * HALO_TRACK_Y,
+    );
+    // The two soft word layers shift slightly AWAY from the pointer while the
+    // core stays put; with the pool tracking the cursor, that offset is what
+    // sells directional light — the bleed spills off the far side of the glyph.
+    gl.uniform2f(
+      this.loc.uWordShift,
+      -this.leanX * 0.006,
+      this.leanY * 0.006,
+    );
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  renderStill() {
+    this.draw(0);
+  }
+
+  start() {
+    if (this.running || !this.ok || this.disposed) return;
+    this.running = true;
+    this.last = performance.now();
+    const tick = (now: number) => {
+      if (!this.running) return;
+      // Clamped so a stalled tab cannot fling the eased values across in one
+      // step. The easing is exponential (see step), so it is correct at any
+      // frame length — this only guards against a multi-second hitch.
+      const dt = Math.min((now - this.last) / 1000, 1 / 30);
+      this.last = now;
+      this.draw(dt);
+      this.raf = requestAnimationFrame(tick);
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+  }
+
+  destroy() {
+    this.disposed = true;
+    this.stop();
+    this.ro?.disconnect();
+    this.ro = null;
+    const gl = this.gl;
+    if (gl) {
+      if (this.mask) gl.deleteTexture(this.mask);
+      if (this.quad) gl.deleteBuffer(this.quad);
+      if (this.prog) gl.deleteProgram(this.prog);
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    this.gl = null;
+    this.canvas.remove();
+  }
+}
+
+```
+
+### smear/SmearCard.tsx
+
+```tsx
+"use client";
+
+// The Vault card + detail hero: a word trailing downward into light.
+//
+// Nothing is blurred. The word is stamped a couple of hundred times, each copy a
+// step further down and each one barely visible, so where many copies overlap it
+// reads solid and where few overlap it fades out. Drawn as light on a dark ground
+// so the copies ADD — it reads as a long exposure, not a stack of shadows.
+//
+// Standard live-card lifecycle: built one frame after it nears view, paused
+// offscreen / tab-hidden / during a cross-route morph, one still frame under
+// reduced motion.
+
+import { useEffect, useRef } from "react";
+import { FadeMotion, pixelFontSpec } from "./engine";
+import { onTransitionChange } from "../../lib/view-transition";
+
+export function SmearCard({
+  bare = false,
+  viewTransitionName,
+}: { bare?: boolean; viewTransitionName?: string } = {}) {
+  void bare;
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let engine: FadeMotion | null = null;
+    let raf = 0;
+    let created = false;
+    let onScreen = false;
+    let hidden = false;
+    let inTransition = false;
+
+    const running = () => onScreen && !hidden && !inTransition;
+    const sync = () => {
+      if (!engine || reduced) return;
+      if (running()) engine.start();
+      else engine.stop();
+    };
+
+    const create = () => {
+      if (created) return;
+      created = true;
+      raf = requestAnimationFrame(() => {
+        if (!hostRef.current) return;
+        engine = new FadeMotion(host);
+        if (!engine.ok) return;
+        // The card and the detail hero run themselves: a ghost cursor works the
+        // effect and the palette washes to the next preset every couple of
+        // seconds. Without it a visitor who never hovers (or is on a phone, where
+        // there is no hover at all) sees a still frame and none of the reason this
+        // exists. The playground deliberately does NOT do this — there the point
+        // is that YOU drive it. A real pointer overrides the ghost either way.
+        //
+        // Not under reduced motion: there the card is one still frame, and a
+        // self-running ghost plus a colour cycle is exactly the kind of unrequested
+        // movement that setting exists to refuse.
+        if (!reduced) engine.enableHero(2);
+        // Keep the card's own background in step with the canvas, so the frame and
+        // the art change together instead of a fixed grey box disagreeing with the
+        // picture inside it through every transition.
+        engine.onBg = (css) => {
+          host.style.backgroundColor = css;
+        };
+        // Warm the bitmap face, then re-bake. The mask is laid out from the
+        // measured glyph, so baking against a not-yet-loaded font locks in the
+        // fallback's metrics and the word stays wrong for the life of the page.
+        if (document.fonts?.load) {
+          document.fonts
+            .load(pixelFontSpec())
+            .catch(() => {})
+            .then(() => engine?.refreshFonts());
+          document.fonts.ready.then(() => engine?.refreshFonts()).catch(() => {});
+        }
+        if (reduced) engine.renderStill();
+        else sync();
+      });
+    };
+
+    const io = new IntersectionObserver(
+      (es) => {
+        onScreen = es.some((e) => e.isIntersecting);
+        if (onScreen && !created) create();
+        if (created) sync();
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(host);
+
+    const onVis = () => {
+      hidden = document.hidden;
+      sync();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    const offTransition = onTransitionChange((active) => {
+      inTransition = active;
+      sync();
+    });
+
+    const fine = window.matchMedia("(pointer: fine)").matches;
+    const onMove = (e: PointerEvent) => {
+      if (!engine || reduced) return;
+      const r = host.getBoundingClientRect();
+      engine.setPointer({
+        x: (e.clientX - r.left) / r.width,
+        y: (e.clientY - r.top) / r.height,
+      });
+    };
+    const onLeave = () => engine?.setPointer(null);
+    if (fine) {
+      host.addEventListener("pointermove", onMove);
+      host.addEventListener("pointerleave", onLeave);
+      // pointerleave is not guaranteed: a cancelled gesture or a capture taken
+      // by another element skips it. Without this the engine would keep
+      // believing the pointer is still there. This is the correct place to
+      // handle that — an inactivity timer in the engine instead fired during
+      // ordinary hovering, because a hand held still sends no events at all.
+      host.addEventListener("pointercancel", onLeave);
+    }
+
+    return () => {
+      cancelAnimationFrame(raf);
+      io.disconnect();
+      document.removeEventListener("visibilitychange", onVis);
+      offTransition();
+      if (fine) {
+        host.removeEventListener("pointermove", onMove);
+        host.removeEventListener("pointerleave", onLeave);
+        host.removeEventListener("pointercancel", onLeave);
+      }
+      engine?.destroy();
+    };
+  }, []);
+
+  return (
+    <div
+      ref={hostRef}
+      data-canvas-card
+      style={{ viewTransitionName }}
+      aria-label="A word trailing downward into light, its fade built from hundreds of overlapping copies"
+      className="relative aspect-[1344/620] w-full select-none overflow-hidden rounded-[12px] border border-[var(--border-line)] bg-[var(--bg-hover)]"
+    />
+  );
+}
+
+```
