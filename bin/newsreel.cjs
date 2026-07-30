@@ -24,6 +24,15 @@ const COMMANDS = {
         blurb: 'List the background presets for style.background.preset',
         usage: ['--json            print the raw preset data'],
     },
+    voices: {
+        // The bundled voices are useful before a config exists (they are what you point
+        // voice.profile AT), so this must not require one.
+        config: false,
+        mod: '../lib/commands/voices.cjs',
+        blurb: 'List the bundled narration voices, and install them into Voicebox',
+        usage: ['--install         create the ones the server does not have',
+                '--base-url <url>  Voicebox address (default http://127.0.0.1:17493)'],
+    },
     login: {
         config: true,
         // Logging in is how you get far enough into an app to write the shot list, so this one
@@ -81,7 +90,8 @@ function usage() {
         '',
         'QUICKSTART',
         '  newsreel init                 # scaffold a config, then fill it in',
-        '  newsreel presets              # pick a background',
+        '  newsreel presets              # pick a background and a music bed',
+        '  newsreel voices --install     # put the bundled narration voices in Voicebox',
         '  newsreel login                # log in once by hand; the session is saved',
         '  newsreel run                  # capture -> cards -> assemble',
         '',

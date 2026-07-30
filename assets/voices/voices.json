@@ -1,0 +1,29 @@
+{
+    "_about": "The narration voices newsreel ships with, so a fresh machine does not have to recreate them. Preset voices are metadata (Voicebox already has the Kokoro engine); a cloned voice ships as its exported archive. Install them with: newsreel voices",
+    "voices": [
+        {
+            "name": "Narrator George",
+            "kind": "preset",
+            "engine": "kokoro",
+            "voiceId": "bm_george",
+            "language": "en",
+            "about": "Warm British male narration. The default for reports and walkthroughs."
+        },
+        {
+            "name": "Narrator Nova",
+            "kind": "preset",
+            "engine": "kokoro",
+            "voiceId": "af_nova",
+            "language": "en",
+            "about": "Clear female narration. Pairs with George for two-hander scripts."
+        },
+        {
+            "name": "Karo",
+            "kind": "cloned",
+            "archive": "karo.voicebox.zip",
+            "language": "en",
+            "about": "A cloned voice, shipped as an example of the clone workflow.",
+            "note": "A cloned voice is a real person's voice. Replace this with your own before publishing anything, and do not synthesize someone's voice without their consent."
+        }
+    ]
+}
