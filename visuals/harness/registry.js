@@ -19,5 +19,12 @@ export const REGISTRY = {
   liquid: () => import("../primitives/liquid.js"),
   squircle: () => import("../primitives/squircle.js"),
   "text-reveal": () => import("../primitives/text-reveal.js"),
+  emboss: () => import("../primitives/emboss.js"),
+  "word-stickers": () => import("../primitives/word-stickers.js"),
+  "design-tiles": () => import("../primitives/design-tiles.js"),
+  aurora: () => import("../primitives/aurora.js"),
+  fire: () => import("../primitives/fire.js"),
+  "badge-trail": () => import("../primitives/badge-trail.js"),
+  galaxy: () => import("../primitives/galaxy.js"),
   cta: () => import("../primitives/cta.js"),
 };
