@@ -15,5 +15,9 @@ export const REGISTRY = {
   chrome: () => import("../primitives/chrome.js"),
   cursors: () => import("../primitives/cursors.js"),
   embroidery: () => import("../primitives/embroidery.js"),
+  materials: () => import("../primitives/materials.js"),
+  liquid: () => import("../primitives/liquid.js"),
+  squircle: () => import("../primitives/squircle.js"),
+  "text-reveal": () => import("../primitives/text-reveal.js"),
   cta: () => import("../primitives/cta.js"),
 };

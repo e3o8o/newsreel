@@ -706,9 +706,13 @@ function ghostPointer(host, opts = {}) {
     const gy = 0.55 * Math.cos(t * 0.95 + 2.1) + 0.3 * Math.sin(t * 2.2 + 0.5) + 0.15 * Math.cos(t * 3.7 + 1.7);
     const clientX = r.left + r.width * (0.5 + gx * bx);
     const clientY = r.top + r.height * (0.5 + gy * by);
-    target.dispatchEvent(
-      new PointerEvent("pointermove", { clientX, clientY, bubbles: true, pointerType: "mouse" })
-    );
+    const ev = () => new PointerEvent("pointermove", { clientX, clientY, bubbles: true, pointerType: "mouse" });
+    if (target === "hit") {
+      const el = document.elementFromPoint(clientX, clientY);
+      (el || host).dispatchEvent(ev());
+    } else {
+      target.dispatchEvent(ev());
+    }
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);

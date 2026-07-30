@@ -1,7 +1,13 @@
-// A synthetic wandering pointer for capture: several drops light up under a
-// cursor, and the harness has no human. Dispatches real pointermove events over
-// the host (window- or element-level listeners both see what they expect), on
-// the layered-sines wander the drops themselves use for their idle cursors.
+// A synthetic wandering pointer for capture: several drops light up under a cursor, and the
+// harness has no human. Dispatches real pointermove events on the layered-sines wander the
+// drops themselves use for their idle cursors.
+//
+// `target` decides WHO hears the event, and it matters:
+//   - an element  -> dispatched there (engines that listen on their own canvas)
+//   - window      -> engines that listen globally and hit-test themselves
+//   - "hit"       -> dispatched on whatever sits under the point (elementFromPoint), which is
+//                    the only mode that reaches per-element listeners: events bubble UP, so a
+//                    listener on a button never sees one fired at its container.
 
 export interface GhostHandle {
   stop(): void;
@@ -10,9 +16,9 @@ export interface GhostHandle {
 export function ghostPointer(
   host: HTMLElement,
   opts: {
-    target?: EventTarget;   // where to dispatch (default: the host)
-    speed?: number;         // wander speed multiplier
-    boxX?: number;          // wander half-width as a fraction of host width
+    target?: EventTarget | "hit";
+    speed?: number;   // wander speed multiplier
+    boxX?: number;    // wander half-width as a fraction of host width
     boxY?: number;
   } = {},
 ): GhostHandle {
@@ -32,9 +38,14 @@ export function ghostPointer(
       0.55 * Math.cos(t * 0.95 + 2.1) + 0.3 * Math.sin(t * 2.2 + 0.5) + 0.15 * Math.cos(t * 3.7 + 1.7);
     const clientX = r.left + r.width * (0.5 + gx * bx);
     const clientY = r.top + r.height * (0.5 + gy * by);
-    target.dispatchEvent(
-      new PointerEvent("pointermove", { clientX, clientY, bubbles: true, pointerType: "mouse" }),
-    );
+    const ev = () =>
+      new PointerEvent("pointermove", { clientX, clientY, bubbles: true, pointerType: "mouse" });
+    if (target === "hit") {
+      const el = document.elementFromPoint(clientX, clientY);
+      (el || host).dispatchEvent(ev());
+    } else {
+      (target as EventTarget).dispatchEvent(ev());
+    }
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
