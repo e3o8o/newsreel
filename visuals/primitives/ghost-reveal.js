@@ -1,8 +1,8 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 var SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 var MONO = "'SF Mono', ui-monospace, Menlo, Consolas, monospace";
 
-// src/ghost-reveal/adapter.ts
+// visuals/src/ghost-reveal/adapter.ts
 var ramp = (deg, feather) => `linear-gradient(${deg}deg, #000 0%, #000 ${33.3 - feather}%, rgba(0,0,0,0) ${33.3 + feather}%, rgba(0,0,0,0) 100%)`;
 var SETUP = (feather) => ({
   right: { img: ramp(90, feather), size: "300% 100%", hidden: "100% 0", shown: "0% 0" },

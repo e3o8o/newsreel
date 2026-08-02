@@ -1,4 +1,4 @@
-// src/text-reveal/reveal-gl.ts
+// visuals/src/text-reveal/reveal-gl.ts
 var VERT = `
   attribute vec2 aPosition;
   attribute vec2 aUV;
@@ -311,7 +311,7 @@ function renderCornerText(o) {
   return canvas;
 }
 
-// src/text-reveal/adapter.ts
+// visuals/src/text-reveal/adapter.ts
 var HOLD_MS = 1500;
 var OUT_HOLD_MS = 120;
 var MAX_BLUR = 16;

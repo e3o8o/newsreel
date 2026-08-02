@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -82,7 +82,7 @@ function setFont(ctx, px, family, weight = 400) {
   }
 }
 
-// src/style-melt/adapter.ts
+// visuals/src/style-melt/adapter.ts
 var posterise = (levels) => (src) => {
   const [c, ctx] = canvas(src.width, src.height);
   ctx.drawImage(src, 0, 0);

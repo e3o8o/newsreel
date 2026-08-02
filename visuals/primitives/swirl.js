@@ -1,4 +1,4 @@
-// src/swirl/glyph-atlas.ts
+// visuals/src/swirl/glyph-atlas.ts
 var WEIGHT_REGULAR = 0;
 var WEIGHT_BOLD = 1;
 var WEIGHT_COUNT = 2;
@@ -56,7 +56,7 @@ function buildAtlas(gl, tex, scratch, glyphs, inkSize) {
   return { inkSize, advance, cellW, cellH, baseline, pad, uvs, canvas: scratch };
 }
 
-// src/swirl/crt-pass.ts
+// visuals/src/swirl/crt-pass.ts
 var BARREL_GAIN = 0.1;
 var BARREL_PINCH = 0.085;
 var BARREL_EDGE = 0.05;
@@ -130,7 +130,7 @@ function CRT_NUM(n) {
   return s.includes(".") ? s : s + ".0";
 }
 
-// src/swirl/renderer.ts
+// visuals/src/swirl/renderer.ts
 function createRenderer(canvas) {
   const gl = canvas.getContext("webgl2", { alpha: true, antialias: false, depth: false });
   if (!gl) return null;
@@ -289,7 +289,7 @@ function createRenderer(canvas) {
   };
 }
 
-// src/swirl/color.ts
+// visuals/src/swirl/color.ts
 function hexToRgb01(hex) {
   let h = hex.replace("#", "").trim();
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
@@ -297,7 +297,7 @@ function hexToRgb01(hex) {
   return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
 }
 
-// src/swirl/trail-field.ts
+// visuals/src/swirl/trail-field.ts
 var TRAIL_W = 72;
 var TRAIL_H = 40;
 var DEPOSIT_RADIUS = 0.15;
@@ -383,7 +383,7 @@ function sampleTrail(t, nx, ny, out) {
   out.fy = bi(t.flowY);
 }
 
-// src/swirl/vortex-field.ts
+// visuals/src/swirl/vortex-field.ts
 var TWIST_RATE = 0.1;
 var CORE_FLOOR = 0.1;
 var FORMATION_SEC = 1.8;
@@ -644,7 +644,7 @@ function composeField(args) {
   return state.count;
 }
 
-// src/swirl/figlet-fonts.ts
+// visuals/src/swirl/figlet-fonts.ts
 var FIGLET_FONTS = {
   slant: {
     "0": ["   ____ ", "  / __ \\", " / / / /", "/ /_/ / ", "\\____/  "],
@@ -992,7 +992,7 @@ var FIGLET_FONTS = {
   }
 };
 
-// src/swirl/block-font.ts
+// visuals/src/swirl/block-font.ts
 var BANNER_BITS = {
   A: ["01110", "10001", "11111", "10001", "10001"],
   B: ["11110", "10001", "11110", "10001", "11110"],
@@ -1130,7 +1130,7 @@ function renderWord(word, style) {
   return canvas.map((r) => r.padEnd(w, " "));
 }
 
-// src/swirl/stage.ts
+// visuals/src/swirl/stage.ts
 var BASE_ROWS = 22;
 var VEL_SMOOTH = 5;
 var SHOCK_LIFE = 2.4;
@@ -1346,7 +1346,7 @@ var SwirlStage = class {
   }
 };
 
-// src/swirl/default-text.ts
+// visuals/src/swirl/default-text.ts
 var DEFAULT_TEXT = `design is deciding what to leave out, then defending that emptiness against every well meaning request to fill it back in
 clarity beats cleverness
 the best interfaces feel inevitable, as if no other arrangement of the same pixels could have been correct
@@ -1368,7 +1368,7 @@ opinions are cheap, working software is not
 the boring solution is usually the correct one, and the urge to make it interesting is your ego asking for a stage
 finish something today`;
 
-// src/swirl/adapter.ts
+// visuals/src/swirl/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     const canvas = document.createElement("canvas");

@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -29,7 +29,7 @@ function setFont(ctx, px, family, weight = 400) {
   }
 }
 
-// src/pixel-scan/adapter.ts
+// visuals/src/pixel-scan/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     const word = (typeof props.word === "string" ? props.word : "SCAN").slice(0, 16);

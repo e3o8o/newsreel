@@ -1,4 +1,4 @@
-// src/chroma/shaders.ts
+// visuals/src/chroma/shaders.ts
 var FULL_VERT = `
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -273,7 +273,7 @@ void main() {
 }
 `;
 
-// src/chroma/text-mask.ts
+// visuals/src/chroma/text-mask.ts
 async function makeWordMask(word, w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
   const H = Math.max(1, Math.round(h));
@@ -310,7 +310,7 @@ async function makeWordMask(word, w, h, fontFamily) {
   return out;
 }
 
-// src/chroma/engine.ts
+// visuals/src/chroma/engine.ts
 var CHROMA_DEFAULTS = {
   word: "chrome",
   bloom: 1.62,
@@ -878,7 +878,7 @@ var ChromaGlow = class {
   }
 };
 
-// src/chroma/params.ts
+// visuals/src/chroma/params.ts
 var CHROMA_PRESETS = [
   {
     id: "peachsteel",
@@ -941,7 +941,7 @@ var HERO_CYCLE = [
   // sand / cobalt (light)
 ];
 
-// src/chroma/adapter.ts
+// visuals/src/chroma/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     const params = {

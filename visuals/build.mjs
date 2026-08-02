@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(here, "src");
 
 const entries = readdirSync(srcDir, { withFileTypes: true })
-  .filter((d) => d.isDirectory() && d.name !== "shared")
+  .filter((d) => d.isDirectory() && d.name !== "shared" && d.name !== "cinema")
   .map((d) => path.join(srcDir, d.name, "adapter.ts"))
   .filter((p) => existsSync(p));
 
@@ -37,3 +37,14 @@ for (const entry of entries) {
   );
   console.log(`built ${name}`);
 }
+
+// The cinema compositor is not a scene: it builds to visuals/cinema/ next to its html page,
+// same authoring rule as the primitives (esbuild here, committed output, zero runtime deps).
+execFileSync(
+  "npx",
+  ["--yes", "esbuild", path.join(srcDir, "cinema", "compositor.ts"),
+    "--bundle", "--format=esm", "--target=chrome110",
+    `--outfile=${path.join(here, "cinema", "compositor.js")}`, "--log-level=warning"],
+  { stdio: "inherit" },
+);
+console.log("built cinema compositor");

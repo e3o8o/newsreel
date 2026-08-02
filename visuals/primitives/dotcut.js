@@ -1,4 +1,4 @@
-// src/dotcut/scenes.ts
+// visuals/src/dotcut/scenes.ts
 function cellMotion(kind, t, dir, rand) {
   const u = Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
   switch (kind) {
@@ -207,7 +207,7 @@ function cellDelay(kind, x, y, cols, rows, rand) {
   }
 }
 
-// src/dotcut/engine.ts
+// visuals/src/dotcut/engine.ts
 var COLS = 42;
 var HOLD_MS = 600;
 var MORPH_MS = 520;
@@ -487,7 +487,7 @@ function mixHex(a, b, t) {
   return `rgb(${r},${g},${bl})`;
 }
 
-// src/dotcut/adapter.ts
+// visuals/src/dotcut/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (typeof props.letter === "string" && props.letter) {

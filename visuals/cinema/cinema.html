@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- The cinema compositor page. Served by the capture-time static server; driven by
+     lib/camera/render.cjs over CDP. All rendering happens in compositor.js (built from
+     visuals/src/cinema/compositor.ts by visuals/build.mjs). -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="module" src="./compositor.js"></script>
+</body>
+</html>

@@ -56,6 +56,12 @@ const COMMANDS = {
         blurb: 'Record one clip per shot, reusing the saved session',
         usage: ['--only <shotId>   re-record a single shot', '--headless        no visible browser', '--slow-mo <ms>    pacing between actions (default 500)'],
     },
+    cinema: {
+        config: true,
+        mod: '../lib/commands/cinema.cjs',
+        blurb: 'Debug one shot\'s camera pass: render it standalone and print the plan',
+        usage: ['--only <shotId>   which shot (default: the first with a camera)'],
+    },
     cards: {
         config: true,
         mod: '../lib/commands/cards.cjs',

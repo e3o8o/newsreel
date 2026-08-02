@@ -454,6 +454,77 @@ function testCamera() {
     }
 }
 
+// 🎥 The compositor, end to end: a synthetic clip with four colored quadrants, a pinned
+//    camera plan, and luma assertions on the rendered pixels. If zoom 2 at (0.25, 0.25)
+//    does not fill the frame with the top-left quadrant, everything upstream is theory.
+async function testCinemaPass(ff, dir) {
+    const { chromium } = require('../lib/deps.cjs');
+    if (!chromium(path.join(__dirname, '..'), { soft: true })) {
+        results.push('  SKIP  cinema pass (playwright not found)');
+        return;
+    }
+    const { renderPasses } = require('../lib/camera/render.cjs');
+
+    // four quadrants: TL white, the rest dark -- luma tells us which one we look at
+    const W = 320, H = 240;
+    const src = path.join(dir, 'quad.webm');
+    ff.run(['-y', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', `color=c=white:s=${W / 2}x${H / 2}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x300000:s=${W / 2}x${H / 2}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x000030:s=${W / 2}x${H / 2}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x203020:s=${W / 2}x${H / 2}:d=2:r=30`,
+        '-filter_complex', '[0][1]hstack[t];[2][3]hstack[b];[t][b]vstack[v]',
+        '-map', '[v]', '-c:v', 'libvpx', '-b:v', '1M', '-pix_fmt', 'yuv420p', src]);
+
+    const yavgAt = (file, t) => {
+        const out = ff.probeText(['-ss', String(t), '-i', file, '-frames:v', '1',
+            '-vf', 'signalstats,metadata=print', '-f', 'null', '-']);
+        const m = out.match(/lavfi\.signalstats\.YAVG=([\d.]+)/);
+        return m ? parseFloat(m[1]) : NaN;
+    };
+
+    const workDir = path.join(dir, 'cinema-work');
+    fs.mkdirSync(path.join(workDir, 'clips'), { recursive: true });
+    const fakeC = {
+        file: 'test.json',
+        root: path.join(__dirname, '..'),
+        get: (key, dflt) => (key === 'video.camera' ? undefined : dflt),
+    };
+    const seg = (zoom, cx, cy) => [{ t0: 0, t1: 1, from: { zoom, cx, cy }, to: { zoom, cx, cy } }];
+    const mkSection = (name, camera) => ({
+        name, type: 'clip', src, camera,
+        clipStart: 0, speed: 1, dur: 1.0, clipDur: 2.0,
+    });
+
+    // zoom 2 pinned on the top-left quadrant: the render must be (nearly) all white
+    const sZoom = mkSection('q-zoom', { segments: seg(2, 0.25, 0.25) });
+    const n1 = await renderPasses({ c: fakeC, ff, sections: [sZoom], W, H, fps: 30, workDir, log: () => {} });
+    eq('cinema: the pass ran for the zoomed section', n1, 1);
+    eq('cinema: the section now points at the processed clip', sZoom.src !== src && sZoom.speed === 1 && sZoom.clipStart === 0, true);
+    const zoomY = yavgAt(sZoom.src, 0.5);
+    ok('cinema: zoom 2 @ (0.25,0.25) fills the frame with the white quadrant', zoomY > 200, `YAVG ${zoomY}`);
+
+    // zoom 1: the render matches the source's own mixed luma
+    const sFlat = mkSection('q-flat', { segments: seg(1, 0.5, 0.5) });
+    await renderPasses({ c: fakeC, ff, sections: [sFlat], W, H, fps: 30, workDir, log: () => {} });
+    const flatY = yavgAt(sFlat.src, 0.5);
+    const srcY = yavgAt(src, 0.5);
+    near('cinema: zoom 1 preserves the source frame', flatY, srcY, 8);
+
+    // cache: an identical invocation must not re-encode
+    const before = fs.statSync(sZoom.src).mtimeMs;
+    const sAgain = mkSection('q-zoom', { segments: seg(2, 0.25, 0.25) });
+    await renderPasses({ c: fakeC, ff, sections: [sAgain], W, H, fps: 30, workDir, log: () => {} });
+    eq('cinema: identical inputs hit the cache (same output file)', sAgain.src, sZoom.src);
+    eq('cinema: cache hit performs no re-encode', fs.statSync(sAgain.src).mtimeMs, before);
+
+    // the plan lands on disk, inspectable
+    const planFile = path.join(workDir, 'cinema', 'q-zoom.camera.json');
+    ok('cinema: the camera plan is written next to the render', fs.existsSync(planFile));
+    const p = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    eq('cinema: plan pinned to the section length', p.segments[p.segments.length - 1].t1, 1);
+}
+
 // 🎥 Integration: drive the instrumented actions against a real page and read the sidecar
 //    back. This is the test that proves the sidecar is ground truth, not bookkeeping.
 async function testTelemetryIntegration(dir) {
@@ -542,6 +613,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         else results.push('  SKIP  the white-flash trim tests (ffmpeg not found)');
 
         await testTelemetryIntegration(dir);
+        if (ff) await testCinemaPass(ff, dir);
+        else results.push('  SKIP  cinema pass (ffmpeg not found)');
 
         console.log(`\n${results.join('\n')}\n`);
         console.log(`${passed} passed, ${failed} failed`);

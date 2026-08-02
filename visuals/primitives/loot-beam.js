@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -30,7 +30,7 @@ function setFont(ctx, px, family, weight = 400) {
   }
 }
 
-// src/loot-beam/adapter.ts
+// visuals/src/loot-beam/adapter.ts
 var RARITY = {
   common: { hue: 210, name: "Common" },
   rare: { hue: 205, name: "Rare" },

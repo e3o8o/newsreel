@@ -1,8 +1,8 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 var SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 var MONO = "'SF Mono', ui-monospace, Menlo, Consolas, monospace";
 
-// src/figma-frame/adapter.ts
+// visuals/src/figma-frame/adapter.ts
 var px = (n) => `${Math.round(n)}px`;
 var adapter_default = {
   async mount(host, props) {

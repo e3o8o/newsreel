@@ -1,4 +1,4 @@
-// src/typer/typer.ts
+// visuals/src/typer/typer.ts
 var clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
 var roundToStep = (v, step) => Math.round(v / step) * step;
 var remap = (v, inLo, inHi, outLo, outHi) => (v - inLo) * (outHi - outLo) / (inHi - inLo) + outLo;
@@ -236,7 +236,7 @@ var TyperGroup = class {
   }
 };
 
-// src/typer/typer.css
+// visuals/src/typer/typer.css
 var typer_default = `/* Typer \u2014 the styling for the character reveal. The engine (typer.ts) swaps each
    char's class between these states; the CSS is what makes a state look like a
    solid pill, an outlined pill, an accent block, and so on. The nicest trick is
@@ -383,7 +383,7 @@ var typer_default = `/* Typer \u2014 the styling for the character reveal. The e
 
 `;
 
-// src/typer/adapter.ts
+// visuals/src/typer/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     const dark = props.theme !== "light";

@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -17,7 +17,7 @@ function rng(seed) {
 }
 var SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 
-// src/hover-video/adapter.ts
+// visuals/src/hover-video/adapter.ts
 var DEFAULT = [
   { label: "Motion", hue: 268 },
   { label: "Type", hue: 22 },
