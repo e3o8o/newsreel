@@ -76,3 +76,34 @@ ffmpeg -hide_banner -i launch-video.mp4 -vf "signalstats,metadata=print" -f null
 
 Then check frame 0 is the title card and the length is on target.
 
+
+## The cinema pass
+
+When a camera or overlay key exists in the config, camera-enabled shots take an extra render
+pass inside `assemble`/`compose`, after narration is measured. The pass works in output time
+-- post trim, post speed-fit -- so springs, ripples and badges animate on the final clock and
+the processed clip flows through the styled frame as an ordinary clip at speed 1.
+
+The mechanics, and why they are this way:
+
+- **Frames, not video seeking.** The source is extracted to an output-time JPEG sequence.
+  Playwright's Chromium has no H.264 and VP9 `currentTime` seeks are asynchronous
+  approximations; frame N of a numbered sequence is exactly frame N, so the render is
+  deterministic and fast (a one-second section renders in well under a second).
+- **One compositor, both renderers.** A Chromium canvas page draws each frame through the
+  camera transform, adds velocity-scaled motion blur as multi-draw accumulation, then the
+  click effects, the cursor, and the key badges -- always after the transform, so overlays
+  stay crisp while content moves. assemble pipes the frames into an x264 encode; compose
+  consumes the same processed clips, so the look is identical between renderers.
+- **Content-hash cache.** The output is keyed on the events sidecar, the resolved cinema
+  config, the clip timing and the pass version. A narration edit elsewhere re-renders
+  nothing.
+- **Degraded path.** No Playwright: one warning, and the video renders exactly as it would
+  have without cinema. No events sidecar (clip captured before telemetry existed): that shot
+  is skipped with a re-capture hint; explicit `camera.segments` still work, since they need
+  no sidecar.
+
+Not yet built, deliberately: the continuous cursor-follow camera mode (`mode: "follow"`) and
+supersampled capture. Both are open questions in `design/cinema.md`; the segment planner is
+the default and the better fit for scripted content, and follow mode only earns its keep if
+real captures show otherwise.

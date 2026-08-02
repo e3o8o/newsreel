@@ -72,6 +72,8 @@ jobs:
           [ "$COUNT" -ge 30 ] || { echo "visuals missing from the package"; exit 1; }
           tar tzf newsreel-*.tgz | grep -q '^package/visuals/harness/index.html$' || {
             echo "harness missing from the package"; exit 1; }
+          tar tzf newsreel-*.tgz | grep -q '^package/visuals/cinema/compositor.js$' || {
+            echo "cinema compositor missing from the package"; exit 1; }
           rm -f newsreel-*.tgz
 
       - run: npm publish

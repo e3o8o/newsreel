@@ -130,6 +130,38 @@ Two rules worth obeying: **at most two title styles in one video**, or it reads 
 reel rather than a designed piece; and **alternate dark and light scenes** so the cuts have
 contrast.
 
+## The camera, the cursor, and the badges
+
+One block turns on a Screen-Studio-style auto-camera:
+
+```json
+"video": { "kind": "demo", "camera": { "mode": "auto" } }
+```
+
+Capture then records what it does (every click's element box, every key's timestamp), a
+planner turns that into zooms that lead each action, and the clip re-renders with the camera
+baked in. Add a drawn cursor and effects with:
+
+```json
+"style": {
+  "cursor": { "style": "auto" },
+  "clicks": { "effect": "ripple" },
+  "keys":   { "symbols": "mac" }
+}
+```
+
+- The kind tunes the feel (an `ad` zooms deeper and snaps faster than a `report`); your keys
+  always win over the kind's.
+- `"camera": "off"` on a shot opts it out -- do that for long scroll tours.
+- To hand-tune one shot: `npx newsreel cinema --only <shotId>` renders it standalone and
+  prints its camera plan; paste the plan's `segments` into the shot as
+  `"camera": { "segments": [...] }` and edit the numbers. Overrides ride the same springs.
+- Everything is cached by content: narration edits re-render nothing, camera tweaks
+  re-render only the shots they touch.
+- Clips captured BEFORE the camera was enabled have no events sidecar: re-capture those
+  shots once (`newsreel capture --only <id>`), or set `"capture": { "telemetry": true }`
+  early so the sidecar exists before you decide.
+
 ## Things that will bite you
 
 - **Do not point `baseUrl` at production.** Capture clicks real buttons.

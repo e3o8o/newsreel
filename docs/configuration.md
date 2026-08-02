@@ -136,3 +136,69 @@ frames match its look. `angle` overrides a gradient preset's own angle. For some
 "style": { "background": { "type": "solid", "color": "#0f172a" } }
 ```
 
+
+## The camera and the overlays (cinema)
+
+Enable a Screen-Studio-style auto-camera, a drawn cursor, click effects and keystroke badges.
+None of this is on by default: a config without these keys captures and renders exactly as it
+always did.
+
+```jsonc
+{
+  "video": {
+    "camera": {                  // ABSENT => no camera pass at all
+      "mode": "auto",            // the planner reads the capture's events sidecar
+      "intensity": 1.0,          // 0..2, scales zoom depth; 0 = flat camera
+      "maxZoom": 2.2,            // 1..4
+      "response": 0.35,          // seconds; pan spring period (advanced)
+      "zoomResponse": 0.55,      // seconds (advanced)
+      "motionBlur": 0.35,        // 0..2; 0 = off
+      "holdLastFrame": true      // release to 1.0 during narration holds
+    }
+  },
+  "style": {
+    "cursor": {                  // presence draws the cursor (works without a camera)
+      "style": "auto",           // "auto" | "arrow" | "pointer" | "text" | "dot" | "none"
+      "scale": 2.0,              // 0.5..6
+      "smoothing": 0.67,         // 0..2; 0 = raw recorded path
+      "clickBounce": 2.5,        // 0..5; the press-down on each click
+      "color": null              // dot tint; null = the accent
+    },
+    "clicks": {
+      "effect": "ripple",        // "ripple" | "spotlight" | "none"
+      "color": null,             // null = the accent
+      "scale": 1.0, "opacity": 1.0, "durationMs": 600
+    },
+    "keys": {
+      "chords": true,            // ⇧⌘Z badges from press actions
+      "typing": "pill",          // one pill per type action, filling at the real cadence
+      "symbols": "mac",          // "mac" glyphs or "text" (Ctrl+Shift+Z)
+      "durationMs": 1500,
+      "position": [0.5, 0.90]    // normalized, in clip space
+    }
+  },
+  "shots": [
+    { "id": "a" },                                   // rides video.camera
+    { "id": "b", "camera": "off" },                  // opt out (long scroll tours)
+    { "id": "c", "camera": { "maxZoom": 1.6 } },     // per-shot tuning
+    { "id": "d", "camera": { "segments": [          // explicit override: your camera plan
+        { "t0": 0, "t1": 2, "from": { "zoom": 1, "cx": 0.5, "cy": 0.5 },
+          "to": { "zoom": 1.8, "cx": 0.6, "cy": 0.4 } } ] } }
+  ],
+  "capture": { "telemetry": true }   // force the events sidecar on with no cinema keys yet
+}
+```
+
+How it fits together: **capture** records a ground-truth events sidecar next to each clip
+(the pointer is driven along eased, seeded paths so hover states fire for real). A
+**planner** turns the sidecar into an inspectable `<shot>.camera.json` in the workDir --
+zooms sized to each click's element, the camera leading the action, transitions clamped to
+real travel time. A **spring** bakes it into per-frame motion, and a compositor re-renders
+the clip with the camera, cursor, effects and badges. `newsreel cinema --only <shot>` renders
+one shot standalone and prints the plan path; paste its segments into the shot's
+`camera.segments` to pin or hand-tune them.
+
+Precedence: `shots[].camera` > `video.camera` > the kind's tuning (an `ad` zooms deeper and
+snaps faster than a `report`); the kind never activates the camera on its own. Everything is
+cached by content: re-cutting narration re-renders nothing, a camera tweak re-renders only
+the shots it touches.

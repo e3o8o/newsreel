@@ -541,6 +541,38 @@ function testBadges() {
     eq('badges: typing none drops pills', o.buildBadges([{ type: 'typeBurst', t0: 1000, t1: 1100, text: 'x', keys: [{ t: 1000, key: 'x' }] }], clip, { ...cfg, typing: 'none' }).length, 0);
 }
 
+// 🎬 Kind camera defaults: the kind tunes, the user wins, and nothing activates on its own.
+function testKindCamera() {
+    const { cameraFor, overlaysFor } = require('../lib/camera/render.cjs');
+    const fakeCfg = (obj) => ({
+        get(key, dflt) {
+            const v = key.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj);
+            return v === undefined ? dflt : v;
+        },
+    });
+
+    // demo's numbers ARE the shipped constants the pass was tuned on
+    const demo = cameraFor(fakeCfg({ video: { kind: 'demo', camera: {} } }), undefined);
+    eq('kinds: demo camera equals the shipped constants',
+        JSON.stringify([demo.intensity, demo.maxZoom, demo.response, demo.zoomResponse, demo.motionBlur]),
+        JSON.stringify([1.0, 2.2, 0.35, 0.55, 0.35]));
+
+    // ad is punchier; a user key still wins over the kind
+    const ad = cameraFor(fakeCfg({ video: { kind: 'ad', camera: { maxZoom: 3 } } }), undefined);
+    eq('kinds: ad tunes deeper and snappier', JSON.stringify([ad.intensity, ad.response]), JSON.stringify([1.2, 0.25]));
+    eq('kinds: the user key beats the kind', ad.maxZoom, 3);
+
+    // a kind alone never activates the camera -- that is the backward-compatibility line
+    eq('kinds: a kind never activates the camera', cameraFor(fakeCfg({ video: { kind: 'ad' } }), undefined), null);
+
+    // overlays inherit the kind's cursor scale and click effect
+    const ov = overlaysFor(fakeCfg({ video: { kind: 'ad' }, style: { cursor: {}, clicks: {} } }));
+    eq('kinds: ad cursor scale', ov.cursor.scale, 2.2);
+    eq('kinds: ad click effect rides the kind', JSON.stringify([ov.clicks.effect, ov.clicks.scale]), JSON.stringify(['ripple', 1.2]));
+    const ovR = overlaysFor(fakeCfg({ video: { kind: 'report' }, style: { clicks: {} } }));
+    eq('kinds: report clicks are a soft spotlight', JSON.stringify([ovR.clicks.effect, ovR.clicks.opacity]), JSON.stringify(['spotlight', 0.8]));
+}
+
 // 🎥 Backward-compat pinning: a config with zero cinema keys must leave everything exactly
 //    as it was -- no telemetry, no pass, untouched sections. This is the contract that lets
 //    cinema ship inside a patch release.
@@ -832,6 +864,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testCamera();
         testOverlayFormulas();
         testBadges();
+        testKindCamera();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }

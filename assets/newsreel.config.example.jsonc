@@ -34,6 +34,13 @@
     "note": "Re-run before every clean re-capture: interactive shots consume seeded state."
   },
 
+  // 🎥 CINEMA (uncomment to enable): an auto-camera that zooms to what the shots click and
+  // type, a drawn cursor with click effects, and keystroke badges. The kind tunes the feel;
+  // per-shot: "camera": "off" opts out, "camera": { "segments": [...] } pins a hand plan
+  // (newsreel cinema --only <shot> prints one to start from).
+  // "video": { "camera": { "mode": "auto" } },
+  // "style": { "cursor": { "style": "auto" }, "clicks": { "effect": "ripple" }, "keys": {} },
+
   "capture": {
     // The canvas for the whole video. Both must be EVEN (h264 cannot encode an odd side).
     "viewport": { "width": 1440, "height": 900 },

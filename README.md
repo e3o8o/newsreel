@@ -77,6 +77,7 @@ of copies.
 | `voices` | List the bundled narration voices. `--install` puts them in Voicebox. |
 | `login` | Headed browser, manual login, saves the session. |
 | `capture` | Record one clip per shot. `--only <shotId>` re-records one. |
+| `cinema` | Debug one shot's camera pass; prints the editable plan. |
 | `cards` | Render the title/closing cards and lower thirds. |
 | `assemble` | The ffmpeg cut: frames, narration, music, poster. |
 | `compose` | The Remotion cut: animated cards, eased motion. |
