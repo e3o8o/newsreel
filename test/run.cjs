@@ -589,6 +589,85 @@ function testKindCamera() {
     eq('kinds: report clicks are a soft spotlight', JSON.stringify([ovR.clicks.effect, ovR.clicks.opacity]), JSON.stringify(['spotlight', 0.8]));
 }
 
+// 🎯 Follow mode: the dead zone, the hysteresis, the adaptive look-ahead, and the bake.
+function testFollow() {
+    const { deadZoneStep, responseFor, followBake,
+        RESPONSE_URGENT, RESPONSE_RELAXED } = require('../lib/camera/follow.cjs');
+
+    // inside the safe zone the target NEVER moves -- that is the whole point of the zone
+    {
+        const st = { tx: 0.5, ty: 0.5, active: false };
+        deadZoneStep(st, { x: 0.55, y: 0.52 }, 2, false);   // half=0.25, safe=0.1875
+        eq('follow: cursor inside the safe zone leaves the target alone',
+            JSON.stringify([st.tx, st.ty, st.active]), JSON.stringify([0.5, 0.5, false]));
+    }
+    // outside: partial correction toward the cursor, never a full recenter
+    {
+        const st = { tx: 0.5, ty: 0.5, active: false };
+        deadZoneStep(st, { x: 0.75, y: 0.5 }, 2, false);    // dx 0.25 > safe 0.1875
+        ok('follow: breakout corrects toward the cursor', st.tx > 0.5 && st.active, `tx=${st.tx.toFixed(4)}`);
+        ok('follow: correction is partial, not a recenter', st.tx < 0.75, `tx=${st.tx.toFixed(4)}`);
+    }
+    // hysteresis: dithering on the edge cannot chatter the zone on and off
+    {
+        const st = { tx: 0.5, ty: 0.5, active: false };
+        deadZoneStep(st, { x: 0.5 + 0.19, y: 0.5 }, 2, false);   // just past safe 0.1875 -> active
+        ok('follow: zone activates past the edge', st.active);
+        const txAfter = st.tx;
+        deadZoneStep(st, { x: txAfter + 0.17, y: 0.5 }, 2, false);  // back inside safe but above exit
+        ok('follow: still active inside the hysteresis band', st.active);
+        deadZoneStep(st, { x: txAfter, y: 0.5 }, 2, false);         // well inside -> releases
+        ok('follow: releases once well inside', !st.active);
+    }
+    // typing tightens the leash: the same offset that is safe normally breaks out while typing
+    {
+        const a = { tx: 0.5, ty: 0.5, active: false };
+        const b = { tx: 0.5, ty: 0.5, active: false };
+        const cursor = { x: 0.5 + 0.17, y: 0.5 };   // safe normal 0.1875, safe typing 0.15
+        deadZoneStep(a, cursor, 2, false);
+        deadZoneStep(b, cursor, 2, true);
+        ok('follow: typing tightens the safe zone', !a.active && b.active);
+    }
+
+    // adaptive response: urgent before an action, relaxed in the quiet, lerped between
+    eq('follow: urgent response at <= 0.5s lookahead', responseFor(1.0, [1.3]), RESPONSE_URGENT);
+    eq('follow: relaxed response with nothing coming', responseFor(1.0, [5.0]), RESPONSE_RELAXED);
+    const mid = responseFor(1.0, [2.25]);   // 1.25s away: middle of the lerp
+    ok('follow: response lerps between', mid > RESPONSE_URGENT && mid < RESPONSE_RELAXED, `${mid.toFixed(3)}`);
+
+    // the bake: a stationary cursor with one click settles zoomed near the click, clamped
+    {
+        // a click near center (inside the safe zone: no pan), then a run to the far corner
+        // (breakout: the camera must follow, smoothly)
+        const events = [
+            { type: 'move', t0: 500, t1: 900, from: [0.5, 0.55], to: [0.62, 0.41], reason: 'click',
+              path: [[500, 0.5, 0.55], [700, 0.56, 0.48], [900, 0.62, 0.41]] },
+            { type: 'click', t: 1000, at: [0.62, 0.41], selector: '#a',
+              box: { x: 0.58, y: 0.38, w: 0.08, h: 0.06 }, cursorStyle: 'pointer' },
+            { type: 'move', t0: 1800, t1: 2400, from: [0.62, 0.41], to: [0.92, 0.85], reason: 'click',
+              path: [[1800, 0.62, 0.41], [2000, 0.72, 0.55], [2200, 0.84, 0.72], [2400, 0.92, 0.85]] },
+        ];
+        const frames = followBake(events, { trimStart: 0, speed: 1, durOut: 3, fps: 30 }, { maxZoom: 2.2 });
+        eq('follow bake: one transform per frame', frames.length, 90);
+        const atClick = frames[Math.round(1.2 * 30)];
+        ok('follow bake: zoomed in around the click', atClick.zoom > 1.5, `zoom ${atClick.zoom.toFixed(2)}`);
+        ok('follow bake: click stays inside the crop without panning',
+            Math.abs(atClick.cx - 0.5) < 0.03 && 0.62 < atClick.cx + 0.5 / atClick.zoom, `cx ${atClick.cx.toFixed(3)}`);
+        const last = frames[frames.length - 1];
+        ok('follow bake: the corner run drags the camera along', last.cx > 0.56 && last.cy > 0.56,
+            `(${last.cx.toFixed(3)}, ${last.cy.toFixed(3)})`);
+        const worst = Math.max(...frames.map((f) => {
+            const half = 0.5 / Math.max(1, f.zoom);
+            return Math.max(half - f.cx, f.cx - (1 - half), half - f.cy, f.cy - (1 - half), 0);
+        }));
+        ok('follow bake: crop never leaves the frame (within pushback cap)', worst <= 0.031, `worst ${worst.toFixed(4)}`);
+        const steps = frames.slice(1).map((f, i) => Math.hypot(f.cx - frames[i].cx, f.cy - frames[i].cy));
+        const maxStep = Math.max(...steps);
+        ok('follow bake: it MOVED (the continuity assert is not vacuous)', maxStep > 0.001, `max step ${maxStep.toFixed(4)}`);
+        ok('follow bake: continuous, no teleports', maxStep < 0.12, `max step ${maxStep.toFixed(4)}`);
+    }
+}
+
 // 🎥 Backward-compat pinning: a config with zero cinema keys must leave everything exactly
 //    as it was -- no telemetry, no pass, untouched sections. This is the contract that lets
 //    cinema ship inside a patch release.
@@ -788,6 +867,24 @@ async function testCinemaPass(ff, dir) {
     eq('cinema: identical inputs hit the cache (same output file)', sAgain.src, sZoom.src);
     eq('cinema: cache hit performs no re-encode', fs.statSync(sAgain.src).mtimeMs, before);
 
+    // supersample analog: the same quadrant layout at 2x resolution (as capture.supersample
+    // would record), rendered to the SAME canvas size through the source-space crop
+    const srcHi = path.join(dir, 'quad2x.webm');
+    ff.run(['-y', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', `color=c=white:s=${W}x${H}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x300000:s=${W}x${H}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x000030:s=${W}x${H}:d=2:r=30`,
+        '-f', 'lavfi', '-i', `color=c=0x203020:s=${W}x${H}:d=2:r=30`,
+        '-filter_complex', '[0][1]hstack[t];[2][3]hstack[b];[t][b]vstack[v]',
+        '-map', '[v]', '-c:v', 'libvpx', '-b:v', '2M', '-pix_fmt', 'yuv420p', srcHi]);
+    const sHi = { name: 'q-hi', type: 'clip', src: srcHi, clipStart: 0, speed: 1, dur: 1.0, clipDur: 2.0,
+        camera: { segments: seg(2, 0.25, 0.25) } };
+    await renderPasses({ c: fakeC, ff, sections: [sHi], W, H, fps: 30, workDir, log: () => {} });
+    const hiY = yavgAt(sHi.src, 0.5);
+    ok('cinema: a supersampled source crops in source space (white quadrant, canvas-sized)', hiY > 200, `YAVG ${hiY}`);
+    const hiDims = ff.probeText(['-i', sHi.src]).match(/(\d{3,4})x(\d{3,4})/);
+    eq('cinema: supersampled render still lands at canvas size', `${hiDims[1]}x${hiDims[2]}`, `${W}x${H}`);
+
     // the plan lands on disk, inspectable
     const planFile = path.join(workDir, 'cinema', 'q-zoom.camera.json');
     ok('cinema: the camera plan is written next to the render', fs.existsSync(planFile));
@@ -877,6 +974,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testOverlayFormulas();
         testBadges();
         testKindCamera();
+        testFollow();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }

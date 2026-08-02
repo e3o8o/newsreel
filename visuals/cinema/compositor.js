@@ -628,10 +628,12 @@ var require_compositor = __commonJS({
       return img;
     }
     function drawWithTransform(ctx, img, t, W, H, alpha = 1) {
+      const SW = img.naturalWidth || W;
+      const SH = img.naturalHeight || H;
       const zoom = Math.max(1, t.zoom);
-      const sw = W / zoom, sh = H / zoom;
-      const sx = Math.min(W - sw, Math.max(0, t.cx * W - sw / 2));
-      const sy = Math.min(H - sh, Math.max(0, t.cy * H - sh / 2));
+      const sw = SW / zoom, sh = SH / zoom;
+      const sx = Math.min(SW - sw, Math.max(0, t.cx * SW - sw / 2));
+      const sy = Math.min(SH - sh, Math.max(0, t.cy * SH - sh / 2));
       ctx.globalAlpha = alpha;
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
     }

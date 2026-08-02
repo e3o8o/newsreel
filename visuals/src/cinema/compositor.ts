@@ -69,10 +69,14 @@ function drawWithTransform(
     ctx: CanvasRenderingContext2D, img: HTMLImageElement,
     t: { zoom: number; cx: number; cy: number }, W: number, H: number, alpha = 1,
 ) {
+    // crop in SOURCE space (the frame may be supersampled beyond the canvas), then draw down
+    // to the canvas: a 2x capture zoomed 2x lands on real pixels, not an upscale
+    const SW = img.naturalWidth || W;
+    const SH = img.naturalHeight || H;
     const zoom = Math.max(1, t.zoom);
-    const sw = W / zoom, sh = H / zoom;
-    const sx = Math.min(W - sw, Math.max(0, t.cx * W - sw / 2));
-    const sy = Math.min(H - sh, Math.max(0, t.cy * H - sh / 2));
+    const sw = SW / zoom, sh = SH / zoom;
+    const sx = Math.min(SW - sw, Math.max(0, t.cx * SW - sw / 2));
+    const sy = Math.min(SH - sh, Math.max(0, t.cy * SH - sh / 2));
     ctx.globalAlpha = alpha;
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
 }

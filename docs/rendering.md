@@ -103,7 +103,14 @@ The mechanics, and why they are this way:
   is skipped with a re-capture hint; explicit `camera.segments` still work, since they need
   no sidecar.
 
-Not yet built, deliberately: the continuous cursor-follow camera mode (`mode: "follow"`) and
-supersampled capture. Both are open questions in `design/cinema.md`; the segment planner is
-the default and the better fit for scripted content, and follow mode only earns its keep if
-real captures show otherwise.
+Two more dials, both off by default:
+
+- **`video.camera.mode: "follow"`** -- the continuous cursor-follow camera. Instead of
+  planning discrete zoom poses, the camera keeps the cursor comfortably framed at all times:
+  it moves only when the cursor leaves a generous safe zone (tighter while typing), corrects
+  partially rather than recentering, and firms up its response when the script is about to do
+  something (which newsreel knows, because the script is its own). The segment planner stays
+  the default -- it reads better on scripted content -- but follow suits meandering tours.
+- **`capture.supersample: 2`** -- record at twice the viewport (device scale factor 2), so
+  camera zooms magnify real pixels instead of upscaling. Costs roughly 4x in capture encode
+  and frame extraction; worth it for `launch`-kind pieces where a 2.4x zoom must stay crisp.

@@ -147,7 +147,7 @@ always did.
 {
   "video": {
     "camera": {                  // ABSENT => no camera pass at all
-      "mode": "auto",            // the planner reads the capture's events sidecar
+      "mode": "auto",            // "auto" (segment planner) | "follow" (continuous cursor-follow)
       "intensity": 1.0,          // 0..2, scales zoom depth; 0 = flat camera
       "maxZoom": 2.2,            // 1..4
       "response": 0.35,          // seconds; pan spring period (advanced)
@@ -185,7 +185,10 @@ always did.
         { "t0": 0, "t1": 2, "from": { "zoom": 1, "cx": 0.5, "cy": 0.5 },
           "to": { "zoom": 1.8, "cx": 0.6, "cy": 0.4 } } ] } }
   ],
-  "capture": { "telemetry": true }   // force the events sidecar on with no cinema keys yet
+  "capture": {
+    "telemetry": true,           // force the events sidecar on with no cinema keys yet
+    "supersample": 2             // record at 2x the viewport: zooms magnify real pixels
+  }
 }
 ```
 
