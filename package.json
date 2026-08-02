@@ -10,7 +10,7 @@
     "bugs": {
         "url": "https://github.com/e3o8o/newsreel/issues"
     },
-    "homepage": "https://github.com/e3o8o/newsreel#readme",
+    "homepage": "https://newsreel.elemoghenekaro.com",
     "type": "commonjs",
     "bin": {
         "newsreel": "bin/newsreel.cjs"

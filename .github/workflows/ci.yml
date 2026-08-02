@@ -1,0 +1,60 @@
+# Tests on every push and pull request.
+#
+# Deliberately small. The suite is dependency-free apart from ffmpeg, so this stays fast and
+# does not need a browser: nothing in test/ drives Playwright. The scene bundles are checked
+# too, because they are committed build output and the one thing that can silently drift out
+# of sync with visuals/src.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 22]      # 18 is the floor in engines; 22 is what CI publishes from
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: npm ci
+      - run: npm test
+
+      # Every catalog entry names a scene; every scene needs a registry line and a built
+      # bundle. A missing one only shows up as a blank card in the gallery, which is easy
+      # to miss and impossible to debug from the symptom.
+      - name: Catalog, registry and bundles agree
+        run: |
+          node -e "
+            const fs = require('fs');
+            const cat = JSON.parse(fs.readFileSync('visuals/catalog.json', 'utf8'));
+            const reg = fs.readFileSync('visuals/harness/registry.js', 'utf8');
+            const bad = [];
+            for (const v of cat.visuals) {
+              if (v.status !== 'live') continue;
+              if (!v.scene) { bad.push(v.id + ': live with no scene'); continue; }
+              const named = reg.includes('\"' + v.scene + '\"')
+                || new RegExp('\\\\b' + v.scene.replace(/-/g, '\\\\-') + '\\\\s*:').test(reg);
+              if (!named) bad.push(v.id + ': ' + v.scene + ' not in registry.js');
+              if (!fs.existsSync('visuals/primitives/' + v.scene + '.js')) {
+                bad.push(v.id + ': visuals/primitives/' + v.scene + '.js missing');
+              }
+            }
+            if (bad.length) { console.error(bad.join('\n')); process.exit(1); }
+            const live = cat.visuals.filter(v => v.status === 'live').length;
+            console.log(live + '/' + cat.visuals.length + ' live scenes, all registered and built');
+          "

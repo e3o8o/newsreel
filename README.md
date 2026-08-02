@@ -1,5 +1,9 @@
 # newsreel
 
+[![npm](https://img.shields.io/npm/v/newsreel)](https://www.npmjs.com/package/newsreel)
+[![CI](https://github.com/e3o8o/newsreel/actions/workflows/ci.yml/badge.svg)](https://github.com/e3o8o/newsreel/actions/workflows/ci.yml)
+[![licence](https://img.shields.io/npm/l/newsreel)](LICENSE)
+
 Build a narrated video from a config file.
 
 A newsreel was a narrated reel of film, released weekly, showing what happened. This produces
@@ -591,6 +595,26 @@ your home directory):
 mkdir -p ~/.claude/skills/newsreel
 ln -s "$PWD/SKILL.md" ~/.claude/skills/newsreel/SKILL.md
 ```
+
+## Releasing
+
+Publishing runs from CI through **trusted publishing (OIDC)**. There is no npm token in a
+secret anywhere: GitHub mints a short-lived OIDC token, npm exchanges it for publish rights
+scoped to this repository and this workflow file, and the release carries a provenance
+attestation naming the commit and the run that built it.
+
+```bash
+npm version patch      # or minor / major: bumps package.json and tags
+git push --follow-tags # the tag triggers .github/workflows/release.yml
+```
+
+The workflow refuses to publish if the tag disagrees with `package.json`, if the tests fail,
+or if the packed tarball has lost the scene bundles or the harness. That last check exists
+because a package missing `visuals/` still looks fine on disk and 404s every generated scene
+on an installed copy.
+
+One-time setup, on npmjs.com under the package's **Settings -> Trusted publisher**: GitHub
+Actions, owner `e3o8o`, repository `newsreel`, workflow filename `release.yml`.
 
 ## Licence
 
