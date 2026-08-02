@@ -75,7 +75,12 @@ button, a, .tab, .filter, .act, .dep { cursor: pointer; }
   max-width: 1180px; margin: 0 auto; padding: 0 28px;
   height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
-.brand { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
+.brand {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 600; letter-spacing: -0.02em;
+  color: var(--ink); text-decoration: none;
+}
+.mark { width: 18px; height: 18px; flex: none; fill: currentColor; }
 .nav-links { display: flex; align-items: center; gap: 20px; }
 .nav-links a {
   font: 500 13px/1 var(--font-sans); color: var(--ink-2); text-decoration: none;
