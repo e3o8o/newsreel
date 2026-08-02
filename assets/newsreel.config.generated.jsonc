@@ -1,0 +1,77 @@
+// newsreel.config.json — the zero-setup version. `newsreel init --generated` writes this.
+//
+// Every shot here is a GENERATED scene, drawn by newsreel's own bundled visuals. That means
+// no app to run, no baseUrl, no login, no API keys: `newsreel run` produces a finished video
+// on a machine that has just installed the package. Use it to prove the toolchain works, as
+// a title sequence, or as a whole video on its own.
+//
+// To film your own app instead, run `newsreel init` (no flag) for the full reference config,
+// or just add shots with a "route" to this one and fill in "baseUrl" and "auth".
+//
+// Comments are fine in the real file: the loader strips // and /* */ and trailing commas
+// before parsing, so this documentation stays next to the values it explains.
+{
+  "project": "Your Project",         // the kicker printed on every card
+
+  // Relative paths resolve against THIS FILE's directory, never the shell's cwd.
+  "output": {
+    "videoDir": "videos",            // per-run folders: <videoDir>/YYYY-MM-DD/
+    "workDir": ".newsreel"           // clips, cards, cached narration. Add it to .gitignore.
+  },
+
+  // What the video is FOR. This one line sets the palette family, the accent, the music bed,
+  // the pacing and the title-card layout. Try "report", "demo", "ad" or "launch".
+  "video": {
+    "kind": "launch",
+    "title": "Made with newsreel",
+    "subtitle": "every scene below is generated, nothing was filmed"
+  },
+
+  // "none" estimates each section's length from its text and ships no audio, so this config
+  // runs anywhere. For real narration install Voicebox and use:
+  //   "voice": { "provider": "voicebox", "narrator": "narrator-george" }
+  // then `newsreel voices --install` to put the bundled voices in it.
+  "voice": { "provider": "none" },
+
+  // Omit the block entirely for the kind's own bed, or name one: calm, upbeat, driving.
+  "music": { "provider": "default" },
+
+  // Each shot: a scene from the collection, its props, and how long to RECORD it. Sections are
+  // cut to the length of their own narration, so record generously: too short and the section
+  // holds a frozen last frame to cover the rest of the line, which reads as a stall.
+  // The full scene list with props: node_modules/newsreel/visuals/LOOKBOOK.md
+  "shots": [
+    {
+      "id": "open",
+      "type": "generated",
+      "scene": "swirl",
+      "props": { "word": "newsreel" },
+      "duration": 9,
+      "caption": "A title that assembles itself",
+      "narration": "This entire video was produced by a command line tool from one configuration file."
+    },
+    {
+      "id": "type",
+      "type": "generated",
+      "scene": "design-tiles",
+      "props": { "text": "no app to run, no login, no keys" },
+      "duration": 13,
+      "caption": "Thirty five scenes",
+      "narration": "Nothing here was filmed. Every frame is drawn by a bundled visual, so this runs on a machine that has only just installed the package."
+    },
+    {
+      "id": "close",
+      "type": "generated",
+      "scene": "cta",
+      "props": { "title": "npx newsreel init", "sub": "then edit one file" },
+      "duration": 8,
+      "caption": "Your turn",
+      "narration": "Point it at your own app and the same shot list films that instead."
+    }
+  ],
+
+  "closingCard": {
+    "title": "Made with newsreel",
+    "subtitle": "github.com/e3o8o/newsreel"
+  }
+}

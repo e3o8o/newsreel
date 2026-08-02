@@ -1,7 +1,7 @@
 {
     "name": "newsreel",
     "version": "0.1.0",
-    "description": "Turn a week of shipped work into a short, styled demo video: Playwright captures your app, ffmpeg assembles it with cards, voiceover and a music bed",
+    "description": "Build narrated videos from a config file: reports, demos, ads, launch films. Playwright drives your real app, narration runs locally, ffmpeg assembles it with cards, a music bed and 35 generated scenes",
     "license": "MIT",
     "repository": {
         "type": "git",
@@ -21,6 +21,12 @@
         "lib",
         "templates",
         "assets",
+        "visuals/harness",
+        "visuals/primitives",
+        "visuals/assets",
+        "visuals/catalog.json",
+        "visuals/LOOKBOOK.md",
+        "AGENT.md",
         "README.md",
         "LICENSE"
     ],
