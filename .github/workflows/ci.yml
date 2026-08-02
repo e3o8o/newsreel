@@ -32,6 +32,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - run: npm ci
+
+      # the cinema pixel tests drive a real Chromium; without this they skip
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+
       - run: npm test
 
       # Every catalog entry names a scene; every scene needs a registry line and a built

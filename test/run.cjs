@@ -454,6 +454,22 @@ function testCamera() {
     }
 }
 
+// Can a browser actually launch here? The playwright PACKAGE resolving is not enough: CI
+// and fresh checkouts have the dependency without the downloaded browser. Probed once.
+let _browserOk = null;
+async function browserAvailable() {
+    if (_browserOk !== null) return _browserOk;
+    try {
+        const { chromium } = require('../lib/deps.cjs');
+        const launcher = chromium(path.join(__dirname, '..'), { soft: true });
+        if (!launcher) { _browserOk = false; return false; }
+        const b = await launcher.launch({ headless: true });
+        await b.close();
+        _browserOk = true;
+    } catch { _browserOk = false; }
+    return _browserOk;
+}
+
 // 🎥 Overlay formulas: squash, ripple, spotlight, track sampling. These exact functions are
 //    inlined into the compositor bundle, so testing them here tests what the pixels do.
 function testOverlayFormulas() {
@@ -602,9 +618,8 @@ async function testCinemaCompat(dir) {
 //    must light exactly that neighbourhood -- at zoom 1 and, transformed, at zoom 2 -- and a
 //    ripple must exist mid-life and be gone after.
 async function testCinemaOverlays(ff, dir) {
-    const { chromium } = require('../lib/deps.cjs');
-    if (!chromium(path.join(__dirname, '..'), { soft: true })) {
-        results.push('  SKIP  cinema overlays (playwright not found)');
+    if (!(await browserAvailable())) {
+        results.push('  SKIP  cinema overlays (no launchable chromium)');
         return;
     }
     const { renderPasses } = require('../lib/camera/render.cjs');
@@ -714,9 +729,8 @@ async function testCinemaOverlays(ff, dir) {
 //    camera plan, and luma assertions on the rendered pixels. If zoom 2 at (0.25, 0.25)
 //    does not fill the frame with the top-left quadrant, everything upstream is theory.
 async function testCinemaPass(ff, dir) {
-    const { chromium } = require('../lib/deps.cjs');
-    if (!chromium(path.join(__dirname, '..'), { soft: true })) {
-        results.push('  SKIP  cinema pass (playwright not found)');
+    if (!(await browserAvailable())) {
+        results.push('  SKIP  cinema pass (no launchable chromium)');
         return;
     }
     const { renderPasses } = require('../lib/camera/render.cjs');
@@ -784,14 +798,12 @@ async function testCinemaPass(ff, dir) {
 // 🎥 Integration: drive the instrumented actions against a real page and read the sidecar
 //    back. This is the test that proves the sidecar is ground truth, not bookkeeping.
 async function testTelemetryIntegration(dir) {
-    let browser = null;
-    try {
-        const { chromium } = require('../lib/deps.cjs');
-        browser = await chromium(path.join(__dirname, '..')).launch({ headless: true });
-    } catch {
-        results.push('  SKIP  telemetry integration (playwright not found)');
+    if (!(await browserAvailable())) {
+        results.push('  SKIP  telemetry integration (no launchable chromium)');
         return;
     }
+    const { chromium } = require('../lib/deps.cjs');
+    const browser = await chromium(path.join(__dirname, '..')).launch({ headless: true });
     try {
         const { runAction } = require('../lib/commands/capture.cjs');
         const { createRecorder } = require('../lib/telemetry.cjs');
