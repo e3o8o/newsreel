@@ -233,6 +233,140 @@ function testValidator() {
     rejects('validator rejects a bad motion focus', (c) => { c.shots[0].motion = { focus: [2, 0] }; });
     rejects('validator rejects a type action without value', (c) => { c.shots[0].actions = [{ type: 'type', selector: 'input' }]; });
     rejects('validator rejects auth with neither storageState nor profile', (c) => { c.auth = { loginPath: '/a', readyPath: '/b' }; });
+
+    // 🎥 cinema round: the new action + the telemetry switch
+    let cinemaOk = true;
+    try {
+        validateConfig({
+            ...base,
+            capture: { telemetry: true },
+            shots: [{
+                id: 'a', route: '/a', caption: 'A',
+                actions: [{ type: 'dblclick', selector: 'text=Report.pdf' }],
+            }],
+        }, 'test.json');
+    } catch { cinemaOk = false; }
+    ok('validator accepts dblclick + capture.telemetry', cinemaOk);
+    rejects('validator rejects dblclick without selector', (c) => { c.shots[0].actions = [{ type: 'dblclick' }]; });
+    rejects('validator rejects a non-boolean capture.telemetry', (c) => { c.capture = { telemetry: 'yes' }; });
+}
+
+// 🎥 The transit generator and the events recorder: pure, deterministic, and the foundation
+//    the whole cinema pass stands on -- if the sidecar lies, everything downstream lies.
+function testTelemetry() {
+    const { synthesizeTransit, seededRng, createRecorder, telemetryEnabled, mapCursorStyle,
+        TRANSIT_MIN_MS, TRANSIT_MAX_MS } = require('../lib/telemetry.cjs');
+
+    // -- transit synthesis ---------------------------------------------------------
+    const from = { x: 0.50, y: 0.55 }, to = { x: 0.62, y: 0.41 };
+    const t1 = synthesizeTransit(from, to, seededRng('shot-a'));
+    const t2 = synthesizeTransit(from, to, seededRng('shot-a'));
+    const t3 = synthesizeTransit(from, to, seededRng('shot-b'));
+
+    eq('transit: first sample is exactly `from`', JSON.stringify(t1.samples[0].slice(1)), JSON.stringify([0.5, 0.55]));
+    eq('transit: last sample is exactly `to`', JSON.stringify(t1.samples[t1.samples.length - 1].slice(1)), JSON.stringify([0.62, 0.41]));
+    ok('transit: duration clamps to [min,max]', t1.durMs >= TRANSIT_MIN_MS && t1.durMs <= TRANSIT_MAX_MS, `${t1.durMs}ms`);
+    ok('transit: timestamps strictly monotone', t1.samples.every((s, i) => i === 0 || s[0] > t1.samples[i - 1][0]));
+    near('transit: ~60Hz cadence between samples', t1.samples[2][0] - t1.samples[1][0], 1000 / 60, 1.5);
+    eq('transit: deterministic under the same seed', JSON.stringify(t1.samples), JSON.stringify(t2.samples));
+    ok('transit: a different seed bends a different path', JSON.stringify(t1.samples) !== JSON.stringify(t3.samples));
+
+    const far = synthesizeTransit({ x: 0, y: 0 }, { x: 1, y: 1 }, seededRng('x'));
+    eq('transit: cross-screen move hits the duration ceiling', far.durMs, TRANSIT_MAX_MS);
+    const nearMove = synthesizeTransit({ x: 0.5, y: 0.5 }, { x: 0.51, y: 0.5 }, seededRng('x'));
+    eq('transit: tiny move hits the duration floor', nearMove.durMs, TRANSIT_MIN_MS);
+
+    // -- recorder normalization (the capture.zoom case: layout viewport 1800x1125) --
+    const rec = createRecorder({
+        shot: 'zoomed', viewport: { width: 1440, height: 900 },
+        layoutViewport: { width: 1800, height: 1125 }, captureZoom: 0.8,
+    });
+    rec.start();
+    rec.click({ selector: '#b', box: { x: 900, y: 562.5, width: 180, height: 56.25 }, cursorStyle: 'pointer', t: 100 });
+    rec.keyChord({ combo: 'Shift+Meta+z', t: 200 });
+    rec.typeBurst({ selector: '#q', box: null, text: 'ok', keys: [{ t: 300, key: 'o' }, { t: 390, key: 'k' }], t0: 300, t1: 400 });
+    rec.settle();
+    const sc = rec.toJSON();
+    eq('sidecar: schema 1', sc.schema, 1);
+    const click = sc.events.find((e) => e.type === 'click');
+    eq('sidecar: box normalized against the LAYOUT viewport', JSON.stringify(click.box), JSON.stringify({ x: 0.5, y: 0.5, w: 0.1, h: 0.05 }));
+    ok('sidecar: events sorted by time', sc.events.every((e, i, a) => i === 0 || (e.t0 ?? e.t) >= (a[i - 1].t0 ?? a[i - 1].t)));
+    eq('sidecar: chord kept in Playwright syntax', sc.events.find((e) => e.type === 'keyChord').combo, 'Shift+Meta+z');
+    eq('sidecar: burst carries per-key cadence', sc.events.find((e) => e.type === 'typeBurst').keys.length, 2);
+
+    // -- activation ----------------------------------------------------------------
+    const fakeCfg = (obj) => ({
+        get(key, dflt) {
+            const v = key.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj);
+            return v === undefined ? dflt : v;
+        },
+    });
+    eq('telemetry: off for a plain config', telemetryEnabled(fakeCfg({ shots: [{ id: 'a' }] })), false);
+    eq('telemetry: on when video.camera exists', telemetryEnabled(fakeCfg({ video: { camera: {} } })), true);
+    eq('telemetry: on when style.cursor exists', telemetryEnabled(fakeCfg({ style: { cursor: { show: true } } })), true);
+    eq('telemetry: on when a shot sets camera', telemetryEnabled(fakeCfg({ shots: [{ id: 'a', camera: 'auto' }] })), true);
+    eq('telemetry: capture.telemetry false wins over cinema keys', telemetryEnabled(fakeCfg({ capture: { telemetry: false }, video: { camera: {} } })), false);
+
+    // -- cursor style mapping ------------------------------------------------------
+    eq('cursor style: pointer', mapCursorStyle('pointer'), 'pointer');
+    eq('cursor style: default -> arrow', mapCursorStyle('default'), 'arrow');
+    eq('cursor style: grabbing -> grab', mapCursorStyle('grabbing'), 'grab');
+}
+
+// 🎥 Integration: drive the instrumented actions against a real page and read the sidecar
+//    back. This is the test that proves the sidecar is ground truth, not bookkeeping.
+async function testTelemetryIntegration(dir) {
+    let browser = null;
+    try {
+        const { chromium } = require('../lib/deps.cjs');
+        browser = await chromium(path.join(__dirname, '..')).launch({ headless: true });
+    } catch {
+        results.push('  SKIP  telemetry integration (playwright not found)');
+        return;
+    }
+    try {
+        const { runAction } = require('../lib/commands/capture.cjs');
+        const { createRecorder } = require('../lib/telemetry.cjs');
+        const page = await browser.newPage({ viewport: { width: 640, height: 480 } });
+        await page.setContent(`
+            <button id="b" style="position:fixed;left:200px;top:120px;width:120px;height:40px;cursor:pointer">Go</button>
+            <input id="q" style="position:fixed;left:60px;top:300px;width:200px;height:24px">`);
+
+        const vp = { width: 640, height: 480 };
+        const tel = createRecorder({ shot: 'itest', viewport: vp, layoutViewport: vp, captureZoom: 1 });
+        tel.start();
+        tel.navSettled();
+        await page.mouse.move(320, 264);
+
+        await runAction(page, { type: 'click', selector: '#b' }, 0, tel);
+        await runAction(page, { type: 'type', selector: '#q', value: 'Acme', delay: 10 }, 1, tel);
+        tel.settle();
+        const file = tel.flush(dir);
+        // the instrumented type must have really typed (semantics preserved, not just logged)
+        eq('integration: the field holds the typed text', await page.inputValue('#q'), 'Acme');
+        await page.close();
+
+        const sc = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const types = sc.events.map((e) => e.type);
+        eq('integration: event order is move,click,move,typeBurst,settle', types.join(','), 'move,click,move,typeBurst,settle');
+
+        const click = sc.events.find((e) => e.type === 'click');
+        // #b at 200,120 sized 120x40 in a 640x480 viewport
+        near('integration: click box.x measured from the page', click.box.x, 200 / 640, 0.01);
+        near('integration: click box.w measured from the page', click.box.w, 120 / 640, 0.01);
+        eq('integration: cursorStyle read from the element css', click.cursorStyle, 'pointer');
+        const move = sc.events.find((e) => e.type === 'move');
+        ok('integration: the click transit lands inside the button box',
+            move.to[0] >= click.box.x && move.to[0] <= click.box.x + click.box.w
+            && move.to[1] >= click.box.y && move.to[1] <= click.box.y + click.box.h,
+            `to=${JSON.stringify(move.to)}`);
+
+        const burst = sc.events.find((e) => e.type === 'typeBurst');
+        eq('integration: burst text', burst.text, 'Acme');
+        eq('integration: one key per character', burst.keys.length, 4);
+    } finally {
+        await browser.close().catch(() => {});
+    }
 }
 
 function testFrameBox() {
@@ -251,21 +385,26 @@ function testFrameBox() {
 // --- main ----------------------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
-try {
-    testStripJsonc();
-    testBackground();
-    testFrameBox();
-    testPalettes();
-    testValidator();
+(async () => {
+    try {
+        testStripJsonc();
+        testBackground();
+        testFrameBox();
+        testPalettes();
+        testValidator();
+        testTelemetry();
 
-    let ff = null;
-    try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }
-    if (ff) testTrim(ff, dir);
-    else results.push('  SKIP  the white-flash trim tests (ffmpeg not found)');
+        let ff = null;
+        try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }
+        if (ff) testTrim(ff, dir);
+        else results.push('  SKIP  the white-flash trim tests (ffmpeg not found)');
 
-    console.log(`\n${results.join('\n')}\n`);
-    console.log(`${passed} passed, ${failed} failed`);
-    if (failed) process.exitCode = 1;
-} finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-}
+        await testTelemetryIntegration(dir);
+
+        console.log(`\n${results.join('\n')}\n`);
+        console.log(`${passed} passed, ${failed} failed`);
+        if (failed) process.exitCode = 1;
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+})();
