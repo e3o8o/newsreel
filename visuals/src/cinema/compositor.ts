@@ -15,6 +15,11 @@
 //   transforms[i] = { zoom, cx, cy, vx, vy, vz }   (normalized; velocities units/s)
 //   blur = { amount, panThreshold, zoomThreshold, panScale, zoomScale, maxRadius }
 
+import { initCursor, drawCursor } from "./cursor";
+import type { CursorCfg, StyleSpan, ClickMark } from "./cursor";
+import { initEffects, drawEffects } from "./effects";
+import type { ClicksCfg } from "./effects";
+
 interface Transform { zoom: number; cx: number; cy: number; vx: number; vy: number; vz: number; }
 interface BlurCfg {
     amount: number; panThreshold: number; zoomThreshold: number;
@@ -26,6 +31,8 @@ interface Spec {
     transforms: Transform[];
     blur: BlurCfg;
     jpegQuality?: number;
+    cursor?: { cfg: CursorCfg; track: number[][]; styles: StyleSpan[]; clicks: ClickMark[] } | null;
+    clicks?: { cfg: ClicksCfg; clicks: ClickMark[] } | null;
 }
 
 const state: {
@@ -125,6 +132,14 @@ async function renderFrame(i: number): Promise<string> {
     }
 
     ctx.globalAlpha = 1;
+
+    // overlays, always AFTER the camera transform: effects live in the content's screen
+    // space (they scale with zoom); the cursor rides on top, never blurred
+    const tOut = idx / spec.fps;
+    if (spec.clicks) drawEffects(ctx, tOut, t, W, H);
+    if (spec.cursor) drawCursor(ctx, tOut, 1 / spec.fps, t, W, H);
+
+    ctx.globalAlpha = 1;
     // prefetch the next frame while Node is busy encoding this one
     if (idx + 1 < spec.frameCount) void loadFrame(idx + 1).catch(() => undefined);
     return state.canvas!.toDataURL("image/jpeg", spec.jpegQuality ?? 0.9);
@@ -142,6 +157,8 @@ async function init(spec: Spec): Promise<void> {
     document.body.appendChild(c);
     state.canvas = c;
     state.ctx = c.getContext("2d", { willReadFrequently: false })!;
+    if (spec.cursor) initCursor(spec.cursor.cfg, spec.cursor.track, spec.cursor.styles, spec.cursor.clicks);
+    if (spec.clicks) initEffects(spec.clicks.cfg, spec.clicks.clicks);
     // decode the first frame up front so renderFrame(0) is not the slow one
     await loadFrame(0);
 }

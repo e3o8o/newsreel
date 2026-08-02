@@ -454,6 +454,141 @@ function testCamera() {
     }
 }
 
+// 🎥 Overlay formulas: squash, ripple, spotlight, track sampling. These exact functions are
+//    inlined into the compositor bundle, so testing them here tests what the pixels do.
+function testOverlayFormulas() {
+    const o = require('../lib/camera/overlay.cjs');
+
+    // squash: at bounce 3.5 the floor engages exactly at the bottom of the press
+    eq('squash: floor is exactly 0.72 at bounce 3.5', o.squashScale(0.5, 3.5, 1), 0.72);
+    ok('squash: softer bounce never reaches the floor', o.squashScale(0.5, 2.5, 1) > 0.72,
+        `${o.squashScale(0.5, 2.5, 1)}`);
+    eq('squash: identity outside the window', o.squashScale(1.5, 2.5, 1), 1);
+    ok('squash: zoom deepens the punch', o.squashScale(0.5, 2.5, 4) < o.squashScale(0.5, 2.5, 1));
+
+    // ripple: p runs 1 -> 0; the ring starts as a dot at full alpha and dies expanded
+    const h = o.cursorPx(2, 1920, 1);   // 56 at reference width
+    eq('cursorPx: 28 x scale at reference width', h, 56);
+    near('cursorPx: floor at 0.55 for narrow frames', o.cursorPx(2, 320, 1), 28 * 2 * 0.55, 1e-9);
+    const r1 = o.rippleShape(1, h, 1, 1);
+    near('ripple @p=1: radius starts at the dot floor', r1.radius, 0.5, 1e-9);
+    near('ripple @p=1: alpha starts at 0.6', r1.alpha, 0.6, 1e-9);
+    near('ripple @p=1: stroke starts at 2', r1.strokeWidth, 2, 1e-9);
+    const r0 = o.rippleShape(0.001, h, 1, 1);
+    near('ripple @p->0: radius approaches 1.95x cursor height', r0.radius, h * 1.95, h * 0.02);
+    ok('ripple @p->0: alpha dies', r0.alpha < 0.01, `${r0.alpha}`);
+    const rHalf = o.rippleShape(0.5, h, 1, 1);
+    near('ripple @p=0.5: radius honors the cube law', rHalf.radius, (1 - 0.125) * h * 1.95, 1e-6);
+
+    // spotlight: two rings, converging, alpha split 0.28 / 0.5
+    const sp = o.spotlightShape(0.5, h, 1, 1);
+    ok('spotlight: inner ring inside the glow', sp.innerR < sp.glowR, `${sp.innerR} < ${sp.glowR}`);
+    near('spotlight: outer alpha is 0.28 of p', sp.outerAlpha, 0.5 * 0.28, 1e-9);
+    near('spotlight: inner alpha is 0.5 of p', sp.innerAlpha, 0.5 * 0.5, 1e-9);
+
+    // track sampling: lerp between close samples, hold-then-snap across a gap
+    const track = [[0, 0.1, 0.1], [0.05, 0.2, 0.2], [1.0, 0.9, 0.9]];
+    const mid = o.sampleTrack(track, 0.025);
+    near('track: lerp between close samples', mid.x, 0.15, 1e-9);
+    const heldEarly = o.sampleTrack(track, 0.5);
+    near('track: a gap holds instead of gliding', heldEarly.x, 0.2, 1e-9);
+    const after = o.sampleTrack(track, 1.0);
+    near('track: the snap lands when the gap closes', after.x, 0.9, 1e-9);
+
+    // cursor spring parameterization
+    eq('cursor spring: smoothing 0 disables it', o.cursorSpring(0), null);
+    near('cursor spring: default smoothing gives the base response', o.cursorSpring(0.67).response, 0.09, 1e-9);
+    near('cursor spring: zeta is the measured underdamp', o.cursorSpring(0.67).zeta, 0.855, 1e-9);
+}
+
+// 🎥 Cursor + effects on real pixels: a dot cursor parked at a known point over a black clip
+//    must light exactly that neighbourhood -- at zoom 1 and, transformed, at zoom 2 -- and a
+//    ripple must exist mid-life and be gone after.
+async function testCinemaOverlays(ff, dir) {
+    const { chromium } = require('../lib/deps.cjs');
+    if (!chromium(path.join(__dirname, '..'), { soft: true })) {
+        results.push('  SKIP  cinema overlays (playwright not found)');
+        return;
+    }
+    const { renderPasses } = require('../lib/camera/render.cjs');
+
+    const W = 320, H = 240;
+    const src = path.join(dir, 'black.webm');
+    ff.run(['-y', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:d=2:r=30`,
+        '-c:v', 'libvpx', '-b:v', '1M', '-pix_fmt', 'yuv420p', src]);
+
+    const ymaxCrop = (file, t, x, y, w, h) => {
+        const out = ff.probeText(['-ss', String(t), '-i', file, '-frames:v', '1',
+            '-vf', `crop=${w}:${h}:${x}:${y},signalstats,metadata=print`, '-f', 'null', '-']);
+        const m = out.match(/lavfi\.signalstats\.YMAX=([\d.]+)/);
+        return m ? parseFloat(m[1]) : NaN;
+    };
+
+    const workDir = path.join(dir, 'overlay-work');
+    const clipsDir = path.join(workDir, 'clips');
+    fs.mkdirSync(clipsDir, { recursive: true });
+
+    // a sidecar with a parked cursor at (0.25, 0.25) and one click there
+    const sidecar = {
+        schema: 1, shot: 'ov', viewport: { width: W, height: H },
+        layoutViewport: { width: W, height: H }, captureZoom: 1,
+        clock: { basis: 'recordStart', recordStartAt: 0, uncertaintyMs: 0, navSettledT: 0 },
+        start: { x: 0.25, y: 0.25 },
+        events: [
+            { type: 'click', t: 50, at: [0.25, 0.25], button: 'left', count: 1,
+              selector: '#x', box: { x: 0.2, y: 0.2, w: 0.1, h: 0.1 }, cursorStyle: 'pointer' },
+        ],
+    };
+    const cfgFor = (cameraSeg) => ({
+        file: 't.json',
+        root: path.join(__dirname, '..'),
+        get: (key, dflt) => {
+            if (key === 'style.cursor') return { style: 'dot', smoothing: 0, scale: 2, color: '#ffffff' };
+            if (key === 'style.clicks') return { effect: 'ripple', color: '#ffffff', opacity: 1, durationMs: 600 };
+            return dflt;
+        },
+    });
+    const mkSection = (name, camera) => ({
+        name, type: 'clip', src, camera,
+        clipStart: 0, speed: 1, dur: 1.5, clipDur: 2.0,
+    });
+    for (const [name, sc] of [['ov', sidecar]]) {
+        fs.writeFileSync(path.join(clipsDir, `${name}.events.json`), JSON.stringify(sc));
+    }
+
+    // zoom 1 (overlays only, no camera): the dot lights (80, 60), the far corner stays dark
+    const s1 = mkSection('ov', undefined);
+    const n = await renderPasses({ c: cfgFor(), ff, sections: [s1], W, H, fps: 30, workDir, log: () => {} });
+    eq('overlays: the pass runs with no camera configured', n, 1);
+    const dotY = ymaxCrop(s1.src, 1.2, 80 - 12, 60 - 12, 24, 24);
+    ok('overlays: dot cursor lights its parked point', dotY > 120, `YMAX ${dotY}`);
+    const farY = ymaxCrop(s1.src, 1.2, W - 40, H - 40, 24, 24);
+    ok('overlays: the far corner stays black', farY < 40, `YMAX ${farY}`);
+
+    // ripple: probe AT the radius the shared formula predicts for that instant, so the test
+    // and the compositor cannot disagree about geometry (they are the same file)
+    const o = require('../lib/camera/overlay.cjs');
+    // early in the ring's life: alpha 0.4, which survives jpeg->x264 double compression
+    const tProbe = 0.30;
+    const pRip = 1 - (tProbe - (0.05 + o.EFFECT_DELAY_MS / 1000)) / 0.6;
+    const rip = o.rippleShape(pRip, o.cursorPx(2, W, 1), 1, 1);
+    const ringY = ymaxCrop(s1.src, tProbe, Math.round(80 + rip.radius) - 7, 60 - 7, 14, 14);
+    ok('overlays: ripple ring present mid-life at the predicted radius', ringY > 40,
+        `YMAX ${ringY} at r=${rip.radius.toFixed(1)} alpha=${rip.alpha.toFixed(2)}`);
+    const lateY = ymaxCrop(s1.src, 1.4, Math.round(80 + rip.radius) - 7, 60 - 7, 14, 14);
+    ok('overlays: ripple gone after its duration', lateY < 20, `YMAX ${lateY}`);
+
+    // zoom 2 pinned at (0.25, 0.25): content point (0.25,0.25) maps to screen center
+    fs.writeFileSync(path.join(clipsDir, 'ov2.events.json'), JSON.stringify({ ...sidecar, shot: 'ov2' }));
+    const s2 = mkSection('ov2', { segments: [{ t0: 0, t1: 1.5, from: { zoom: 2, cx: 0.25, cy: 0.25 }, to: { zoom: 2, cx: 0.25, cy: 0.25 } }] });
+    await renderPasses({ c: cfgFor(), ff, sections: [s2], W, H, fps: 30, workDir, log: () => {} });
+    const zoomedDotY = ymaxCrop(s2.src, 1.2, 160 - 16, 120 - 16, 32, 32);
+    ok('overlays: at zoom 2 the cursor rides the transform to screen center', zoomedDotY > 120, `YMAX ${zoomedDotY}`);
+    const oldSpotY = ymaxCrop(s2.src, 1.2, 40, 24, 20, 20);
+    ok('overlays: nothing remains at the un-transformed point', oldSpotY < 40, `YMAX ${oldSpotY}`);
+}
+
 // 🎥 The compositor, end to end: a synthetic clip with four colored quadrants, a pinned
 //    camera plan, and luma assertions on the rendered pixels. If zoom 2 at (0.25, 0.25)
 //    does not fill the frame with the top-left quadrant, everything upstream is theory.
@@ -606,6 +741,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testValidator();
         testTelemetry();
         testCamera();
+        testOverlayFormulas();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }
@@ -615,6 +751,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         await testTelemetryIntegration(dir);
         if (ff) await testCinemaPass(ff, dir);
         else results.push('  SKIP  cinema pass (ffmpeg not found)');
+        if (ff) await testCinemaOverlays(ff, dir);
+        else results.push('  SKIP  cinema overlays (ffmpeg not found)');
 
         console.log(`\n${results.join('\n')}\n`);
         console.log(`${passed} passed, ${failed} failed`);
