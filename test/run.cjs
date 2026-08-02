@@ -501,6 +501,71 @@ function testOverlayFormulas() {
     near('cursor spring: zeta is the measured underdamp', o.cursorSpring(0.67).zeta, 0.855, 1e-9);
 }
 
+// 🎹 Keystroke badges: the chord grammar and the badge timeline. Neither study app shipped
+//    this working, so these goldens define the behavior rather than port it.
+function testBadges() {
+    const o = require('../lib/camera/overlay.cjs');
+
+    // chord grammar: canonical modifier order, named keys, the bare-modifier collapse
+    eq('chord: written order never matters', o.chordLabel('Shift+Meta+z'), '⇧⌘Z');
+    eq('chord: canonical order is ⌃⌥⇧⌘', o.chordLabel('Meta+Alt+Control+Shift+k'), '⌃⌥⇧⌘K');
+    eq('chord: text mode for non-mac audiences', o.chordLabel('Control+Shift+T', 'text'), 'Ctrl+Shift+T');
+    eq('chord: a bare modifier makes no badge', o.chordLabel('Meta'), null);
+    eq('chord: named keys map to glyphs', o.chordLabel('Enter'), '↩');
+    eq('chord: single letters uppercase', o.chordLabel('a'), 'A');
+
+    const clip = { trimStart: 0, speed: 1, durOut: 10 };
+    const cfg = { chords: true, typing: 'pill', symbols: 'mac' };
+
+    // repeat suppression: identical chord within 300ms refreshes, not spawns
+    const rep = o.buildBadges([
+        { type: 'keyChord', t: 1000, combo: 'Meta+z' },
+        { type: 'keyChord', t: 1200, combo: 'Meta+z' },
+        { type: 'keyChord', t: 1400, combo: 'Meta+z' },
+        { type: 'keyChord', t: 3000, combo: 'Meta+z' },
+    ], clip, cfg);
+    eq('badges: repeats within 300ms collapse to one', rep.length, 2);
+    eq('badges: the collapsed badge counts its repeats', rep[0].count, 3);
+
+    // a burst is ONE pill with per-key reveal, never per-letter spam
+    const pill = o.buildBadges([
+        { type: 'typeBurst', t0: 1000, t1: 1400, text: 'Acme',
+          keys: [{ t: 1000, key: 'A' }, { t: 1100, key: 'c' }, { t: 1250, key: 'm' }, { t: 1400, key: 'e' }] },
+    ], clip, cfg);
+    eq('badges: one pill per burst', pill.length, 1);
+    eq('badges: the pill carries the key cadence', pill[0].keys.length, 4);
+    near('badges: pill keys mapped to output time', pill[0].keys[2].t, 1.25, 1e-9);
+
+    // config kill-switches
+    eq('badges: chords false drops chords', o.buildBadges([{ type: 'keyChord', t: 1000, combo: 'Meta+z' }], clip, { ...cfg, chords: false }).length, 0);
+    eq('badges: typing none drops pills', o.buildBadges([{ type: 'typeBurst', t0: 1000, t1: 1100, text: 'x', keys: [{ t: 1000, key: 'x' }] }], clip, { ...cfg, typing: 'none' }).length, 0);
+}
+
+// 🎥 Backward-compat pinning: a config with zero cinema keys must leave everything exactly
+//    as it was -- no telemetry, no pass, untouched sections. This is the contract that lets
+//    cinema ship inside a patch release.
+async function testCinemaCompat(dir) {
+    const { telemetryEnabled } = require('../lib/telemetry.cjs');
+    const { renderPasses, cameraFor, overlaysFor } = require('../lib/camera/render.cjs');
+
+    const plain = {
+        file: 't.json',
+        root: path.join(__dirname, '..'),
+        get: (key, dflt) => dflt,
+    };
+    eq('compat: telemetry off for a plain config', telemetryEnabled(plain), false);
+    eq('compat: no camera resolves for a plain config', cameraFor(plain, undefined), null);
+    eq('compat: no overlays resolve for a plain config', overlaysFor(plain), null);
+
+    const workDir = path.join(dir, 'compat-work');
+    fs.mkdirSync(path.join(workDir, 'clips'), { recursive: true });
+    const section = { name: 'x', type: 'clip', src: '/nonexistent.webm', clipStart: 1.2, speed: 1.6, dur: 5, camera: undefined };
+    const before = JSON.stringify(section);
+    const n = await renderPasses({ c: plain, ff: null, sections: [section], W: 320, H: 240, fps: 30, workDir, log: () => {} });
+    eq('compat: the pass does not run', n, 0);
+    eq('compat: sections pass through byte-identical', JSON.stringify(section), before);
+}
+
 // 🎥 Cursor + effects on real pixels: a dot cursor parked at a known point over a black clip
 //    must light exactly that neighbourhood -- at zoom 1 and, transformed, at zoom 2 -- and a
 //    ripple must exist mid-life and be gone after.
@@ -587,6 +652,30 @@ async function testCinemaOverlays(ff, dir) {
     ok('overlays: at zoom 2 the cursor rides the transform to screen center', zoomedDotY > 120, `YMAX ${zoomedDotY}`);
     const oldSpotY = ymaxCrop(s2.src, 1.2, 40, 24, 20, 20);
     ok('overlays: nothing remains at the un-transformed point', oldSpotY < 40, `YMAX ${oldSpotY}`);
+
+    // 🎹 badges are glass, not content: a chord badge at (0.5, 0.90) must sit at the same
+    //    screen pixels at zoom 1 and zoom 2 (the overlay-after-transform assertion)
+    const keyCfg = (camera) => ({
+        file: 't.json', root: path.join(__dirname, '..'),
+        get: (key, dflt) => (key === 'style.keys' ? { position: [0.5, 0.90], durationMs: 1500 } : dflt),
+    });
+    const chordSidecar = (shot) => ({
+        ...sidecar, shot,
+        events: [{ type: 'keyChord', t: 100, combo: 'Meta+k' }],
+    });
+    fs.writeFileSync(path.join(clipsDir, 'kb1.events.json'), JSON.stringify(chordSidecar('kb1')));
+    fs.writeFileSync(path.join(clipsDir, 'kb2.events.json'), JSON.stringify(chordSidecar('kb2')));
+    const kb1 = mkSection('kb1', undefined);
+    const kb2 = mkSection('kb2', { segments: [{ t0: 0, t1: 1.5, from: { zoom: 2, cx: 0.25, cy: 0.25 }, to: { zoom: 2, cx: 0.25, cy: 0.25 } }] });
+    await renderPasses({ c: keyCfg(), ff, sections: [kb1], W, H, fps: 30, workDir, log: () => {} });
+    await renderPasses({ c: keyCfg(), ff, sections: [kb2], W, H, fps: 30, workDir, log: () => {} });
+    // the badge anchor: (160, 216) in a 320x240 frame
+    const badge1 = ymaxCrop(kb1.src, 0.8, 160 - 30, 216 - 14, 60, 28);
+    const badge2 = ymaxCrop(kb2.src, 0.8, 160 - 30, 216 - 14, 60, 28);
+    ok('badges: pill visible at the anchor at zoom 1', badge1 > 120, `YMAX ${badge1}`);
+    ok('badges: pill UNMOVED at zoom 2 (glass, not content)', badge2 > 120, `YMAX ${badge2}`);
+    const off1 = ymaxCrop(kb1.src, 0.8, 20, 100, 24, 24);
+    ok('badges: nowhere else lights up', off1 < 40, `YMAX ${off1}`);
 }
 
 // 🎥 The compositor, end to end: a synthetic clip with four colored quadrants, a pinned
@@ -742,6 +831,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testTelemetry();
         testCamera();
         testOverlayFormulas();
+        testBadges();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }
@@ -749,6 +839,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         else results.push('  SKIP  the white-flash trim tests (ffmpeg not found)');
 
         await testTelemetryIntegration(dir);
+        await testCinemaCompat(dir);
         if (ff) await testCinemaPass(ff, dir);
         else results.push('  SKIP  cinema pass (ffmpeg not found)');
         if (ff) await testCinemaOverlays(ff, dir);

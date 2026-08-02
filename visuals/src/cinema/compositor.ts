@@ -19,6 +19,8 @@ import { initCursor, drawCursor } from "./cursor";
 import type { CursorCfg, StyleSpan, ClickMark } from "./cursor";
 import { initEffects, drawEffects } from "./effects";
 import type { ClicksCfg } from "./effects";
+import { initKeys, drawKeys } from "./keys";
+import type { KeysCfg, Badge } from "./keys";
 
 interface Transform { zoom: number; cx: number; cy: number; vx: number; vy: number; vz: number; }
 interface BlurCfg {
@@ -33,6 +35,7 @@ interface Spec {
     jpegQuality?: number;
     cursor?: { cfg: CursorCfg; track: number[][]; styles: StyleSpan[]; clicks: ClickMark[] } | null;
     clicks?: { cfg: ClicksCfg; clicks: ClickMark[] } | null;
+    keys?: { cfg: KeysCfg; badges: Badge[] } | null;
 }
 
 const state: {
@@ -138,6 +141,7 @@ async function renderFrame(i: number): Promise<string> {
     const tOut = idx / spec.fps;
     if (spec.clicks) drawEffects(ctx, tOut, t, W, H);
     if (spec.cursor) drawCursor(ctx, tOut, 1 / spec.fps, t, W, H);
+    if (spec.keys) drawKeys(ctx, tOut, 1 / spec.fps, W, H);
 
     ctx.globalAlpha = 1;
     // prefetch the next frame while Node is busy encoding this one
@@ -159,6 +163,7 @@ async function init(spec: Spec): Promise<void> {
     state.ctx = c.getContext("2d", { willReadFrequently: false })!;
     if (spec.cursor) initCursor(spec.cursor.cfg, spec.cursor.track, spec.cursor.styles, spec.cursor.clicks);
     if (spec.clicks) initEffects(spec.clicks.cfg, spec.clicks.clicks);
+    if (spec.keys) initKeys(spec.keys.cfg, spec.keys.badges);
     // decode the first frame up front so renderFrame(0) is not the slow one
     await loadFrame(0);
 }

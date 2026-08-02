@@ -99,6 +99,82 @@ var require_overlay = __commonJS({
       const f = gap > 0 ? (t - a[0]) / gap : 1;
       return { x: a[1] + (b[1] - a[1]) * f, y: a[2] + (b[2] - a[2]) * f };
     }
+    var MOD_ORDER = ["Control", "Alt", "Shift", "Meta"];
+    var MOD_GLYPH = { Control: "\u2303", Alt: "\u2325", Shift: "\u21E7", Meta: "\u2318" };
+    var MOD_TEXT = { Control: "Ctrl", Alt: "Alt", Shift: "Shift", Meta: "Cmd" };
+    var MOD_NORM = {
+      ctrl: "Control",
+      control: "Control",
+      controlorMeta: "Control",
+      alt: "Alt",
+      option: "Alt",
+      shift: "Shift",
+      meta: "Meta",
+      cmd: "Meta",
+      command: "Meta"
+    };
+    var KEY_GLYPH = {
+      Enter: "\u21A9",
+      Backspace: "\u232B",
+      Escape: "esc",
+      Tab: "\u21E5",
+      ArrowLeft: "\u2190",
+      ArrowRight: "\u2192",
+      ArrowUp: "\u2191",
+      ArrowDown: "\u2193",
+      Delete: "\u2326",
+      Space: "\u2423",
+      " ": "\u2423"
+    };
+    function chordLabel(combo, symbols = "mac") {
+      const parts = String(combo || "").split("+").map((x) => x.trim()).filter(Boolean);
+      const mods = [];
+      const keys = [];
+      for (const part of parts) {
+        const norm = MOD_NORM[part.toLowerCase()];
+        if (norm) {
+          if (!mods.includes(norm)) mods.push(norm);
+        } else keys.push(part);
+      }
+      if (!keys.length) return null;
+      const ordered = MOD_ORDER.filter((m) => mods.includes(m));
+      const key = keys[keys.length - 1];
+      const keyUp = key.length === 1 ? key.toUpperCase() : key;
+      if (symbols === "text") return [...ordered.map((m) => MOD_TEXT[m]), keyUp].join("+");
+      return ordered.map((m) => MOD_GLYPH[m]).join("") + (KEY_GLYPH[key] || keyUp);
+    }
+    var REPEAT_S = 0.3;
+    var PILL_HOLD_S = 0.9;
+    function buildBadges(events, clip, cfg) {
+      const map = (ms) => (ms / 1e3 - clip.trimStart) / clip.speed;
+      const out = [];
+      for (const e of events || []) {
+        if (e.type === "keyChord" && cfg.chords !== false) {
+          const label = chordLabel(e.combo, cfg.symbols);
+          if (!label) continue;
+          const t = map(e.t);
+          if (t < 0 || t > clip.durOut) continue;
+          const prev = out[out.length - 1];
+          if (prev && prev.kind === "chord" && prev.label === label && t - prev.t <= REPEAT_S) {
+            prev.count += 1;
+            prev.t = t;
+            continue;
+          }
+          out.push({ kind: "chord", t, label, count: 1 });
+        } else if (e.type === "typeBurst" && cfg.typing !== "none") {
+          const keys = (e.keys || []).map((k) => ({ t: map(k.t), ch: k.key })).filter((k) => k.t >= 0 && k.t <= clip.durOut);
+          if (!keys.length) continue;
+          out.push({
+            kind: "pill",
+            t0: keys[0].t,
+            tLast: keys[keys.length - 1].t,
+            text: e.text || keys.map((k) => k.ch).join(""),
+            keys
+          });
+        }
+      }
+      return out;
+    }
     module.exports = {
       SQUASH_MS,
       SQUASH_FLOOR,
@@ -109,7 +185,11 @@ var require_overlay = __commonJS({
       cursorSpring,
       rippleShape,
       spotlightShape,
-      sampleTrack
+      sampleTrack,
+      REPEAT_S,
+      PILL_HOLD_S,
+      chordLabel,
+      buildBadges
     };
   }
 });
@@ -432,23 +512,118 @@ var init_effects = __esm({
   }
 });
 
+// visuals/src/cinema/keys.ts
+function initKeys(cfg, badges) {
+  state3.cfg = cfg;
+  state3.badges = badges;
+  state3.slideX = /* @__PURE__ */ new Map();
+}
+function chordAlpha(b, t, durS) {
+  const age = t - b.t;
+  if (age < 0 || age > durS + FADE_OUT_S) return 0;
+  if (age < FADE_IN_S) return age / FADE_IN_S;
+  if (age > durS) return 1 - (age - durS) / FADE_OUT_S;
+  return 1;
+}
+function pillAlpha(b, t) {
+  const end = b.tLast + import_overlay3.default.PILL_HOLD_S;
+  if (t < b.t0 || t > end + FADE_OUT_S) return 0;
+  if (t < b.t0 + FADE_IN_S) return (t - b.t0) / FADE_IN_S;
+  if (t > end) return 1 - (t - end) / FADE_OUT_S;
+  return 1;
+}
+function pillText(b, t) {
+  let n = 0;
+  for (const k of b.keys) {
+    if (k.t <= t) n++;
+    else break;
+  }
+  let text = b.text.slice(0, n);
+  if (!text) text = "\u2009";
+  if (text.length > ELIDE_CHARS) text = `\u2026${text.slice(text.length - ELIDE_CHARS)}`;
+  return text;
+}
+function drawKeys(ctx, tOut, dt, W, H) {
+  const cfg = state3.cfg;
+  if (!cfg || !cfg.show) return;
+  const durS = cfg.durationMs / 1e3;
+  const live = [];
+  for (const b of state3.badges) {
+    if (b.kind === "chord") {
+      const a = chordAlpha(b, tOut, durS);
+      if (a > 0) live.push({ badge: b, alpha: a, label: b.count >= 3 ? `${b.label} \xD7${b.count}` : b.label, birth: b.t });
+    } else {
+      const a = pillAlpha(b, tOut);
+      if (a > 0) live.push({ badge: b, alpha: a, label: pillText(b, tOut), birth: b.t0 });
+    }
+  }
+  if (!live.length) return;
+  live.sort((a, b) => b.birth - a.birth);
+  const visible = live.slice(0, MAX_VISIBLE);
+  const font = Math.max(24, H * 0.03);
+  ctx.save();
+  ctx.font = `500 ${font}px -apple-system, 'Helvetica Neue', Arial, sans-serif`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const anchorX = cfg.position[0] * W;
+  const anchorY = cfg.position[1] * H;
+  const padH = font * 0.8;
+  const padV = font * 0.4;
+  const radius = font * 0.4;
+  let cursorLeft = 0;
+  for (let i = 0; i < visible.length; i++) {
+    const item = visible[i];
+    const w = ctx.measureText(item.label).width + padH * 2;
+    const targetCenter = i === 0 ? 0 : cursorLeft - w / 2;
+    cursorLeft = (i === 0 ? -w / 2 : targetCenter - w / 2) - GAP_PX;
+    let x = state3.slideX.get(item.badge);
+    if (x === void 0) x = targetCenter;
+    x += (targetCenter - x) * (1 - Math.exp(-dt / SLIDE_RESPONSE_S));
+    state3.slideX.set(item.badge, x);
+    const cx = anchorX + x;
+    const h = font + padV * 2;
+    ctx.globalAlpha = item.alpha;
+    ctx.fillStyle = "rgba(26,26,26,0.75)";
+    ctx.beginPath();
+    ctx.roundRect(cx - w / 2, anchorY - h / 2, w, h, radius);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(item.label, cx, anchorY + font * 0.04);
+  }
+  ctx.restore();
+}
+var import_overlay3, FADE_IN_S, FADE_OUT_S, GAP_PX, SLIDE_RESPONSE_S, MAX_VISIBLE, ELIDE_CHARS, state3;
+var init_keys = __esm({
+  "visuals/src/cinema/keys.ts"() {
+    import_overlay3 = __toESM(require_overlay());
+    FADE_IN_S = 0.15;
+    FADE_OUT_S = 0.3;
+    GAP_PX = 8;
+    SLIDE_RESPONSE_S = 0.05;
+    MAX_VISIBLE = 3;
+    ELIDE_CHARS = 24;
+    state3 = { cfg: null, badges: [], slideX: /* @__PURE__ */ new Map() };
+  }
+});
+
 // visuals/src/cinema/compositor.ts
 var require_compositor = __commonJS({
   "visuals/src/cinema/compositor.ts"() {
     init_cursor();
     init_effects();
-    var state3 = { spec: null, canvas: null, ctx: null, cache: /* @__PURE__ */ new Map() };
-    var frameUrl = (i) => `${state3.spec.framesBase}f${String(i + 1).padStart(5, "0")}.jpg`;
+    init_keys();
+    var state4 = { spec: null, canvas: null, ctx: null, cache: /* @__PURE__ */ new Map() };
+    var frameUrl = (i) => `${state4.spec.framesBase}f${String(i + 1).padStart(5, "0")}.jpg`;
     async function loadFrame(i) {
-      const hit = state3.cache.get(i);
+      const hit = state4.cache.get(i);
       if (hit) return hit;
       const img = new Image();
       img.src = frameUrl(i);
       await img.decode();
-      state3.cache.set(i, img);
-      for (const k of state3.cache.keys()) {
-        if (state3.cache.size <= 4) break;
-        if (k < i - 1) state3.cache.delete(k);
+      state4.cache.set(i, img);
+      for (const k of state4.cache.keys()) {
+        if (state4.cache.size <= 4) break;
+        if (k < i - 1) state4.cache.delete(k);
       }
       return img;
     }
@@ -466,9 +641,9 @@ var require_compositor = __commonJS({
       cy: a.cy + (b.cy - a.cy) * f
     });
     async function renderFrame(i) {
-      const spec = state3.spec;
+      const spec = state4.spec;
       const { width: W, height: H } = spec;
-      const ctx = state3.ctx;
+      const ctx = state4.ctx;
       const idx = Math.min(spec.frameCount - 1, Math.max(0, i));
       const t = spec.transforms[Math.min(idx, spec.transforms.length - 1)];
       const prev = spec.transforms[Math.max(0, Math.min(idx, spec.transforms.length - 1) - 1)];
@@ -507,13 +682,14 @@ var require_compositor = __commonJS({
       const tOut = idx / spec.fps;
       if (spec.clicks) drawEffects(ctx, tOut, t, W, H);
       if (spec.cursor) drawCursor(ctx, tOut, 1 / spec.fps, t, W, H);
+      if (spec.keys) drawKeys(ctx, tOut, 1 / spec.fps, W, H);
       ctx.globalAlpha = 1;
       if (idx + 1 < spec.frameCount) void loadFrame(idx + 1).catch(() => void 0);
-      return state3.canvas.toDataURL("image/jpeg", spec.jpegQuality ?? 0.9);
+      return state4.canvas.toDataURL("image/jpeg", spec.jpegQuality ?? 0.9);
     }
     async function init(spec) {
-      state3.spec = spec;
-      state3.cache.clear();
+      state4.spec = spec;
+      state4.cache.clear();
       const c = document.createElement("canvas");
       c.width = spec.width;
       c.height = spec.height;
@@ -521,10 +697,11 @@ var require_compositor = __commonJS({
       c.style.height = `${spec.height}px`;
       document.body.textContent = "";
       document.body.appendChild(c);
-      state3.canvas = c;
-      state3.ctx = c.getContext("2d", { willReadFrequently: false });
+      state4.canvas = c;
+      state4.ctx = c.getContext("2d", { willReadFrequently: false });
       if (spec.cursor) initCursor(spec.cursor.cfg, spec.cursor.track, spec.cursor.styles, spec.cursor.clicks);
       if (spec.clicks) initEffects(spec.clicks.cfg, spec.clicks.clicks);
+      if (spec.keys) initKeys(spec.keys.cfg, spec.keys.badges);
       await loadFrame(0);
     }
     window.__CINEMA__ = { init, renderFrame };
