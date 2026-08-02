@@ -1,6 +1,6 @@
 {
     "name": "newsreel",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Build narrated videos from a config file: reports, demos, ads, launch films. Playwright drives your real app, narration runs locally, ffmpeg assembles it with cards, a music bed and 35 generated scenes",
     "license": "MIT",
     "repository": {
