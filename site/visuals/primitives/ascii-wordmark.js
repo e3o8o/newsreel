@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -29,7 +29,7 @@ function setFont(ctx, px, family, weight = 400) {
   }
 }
 
-// src/ascii-wordmark/adapter.ts
+// visuals/src/ascii-wordmark/adapter.ts
 var DEFAULT_RAMP = " .:-=+*#%@";
 var adapter_default = {
   async mount(host, props) {

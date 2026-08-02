@@ -180,6 +180,19 @@ h1 em { font-style: normal; color: var(--ink-3); }
 .steps h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
 .steps p { font-size: 13.5px; color: var(--ink-2); text-wrap: pretty; }
 
+/* ── cinema ──────────────────────────────────────────────────────────────── */
+.cine-grid {
+  margin-top: 28px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px;
+}
+.cine {
+  padding: 22px; border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-card);
+}
+.cine h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.cine p { font-size: 13.5px; color: var(--ink-2); text-wrap: pretty; }
+.cine code { font-family: var(--font-mono); font-size: 12px; }
+
 /* ── kinds ───────────────────────────────────────────────────────────────── */
 .kinds {
   margin-top: 28px;

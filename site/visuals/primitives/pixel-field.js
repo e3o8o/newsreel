@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -61,7 +61,7 @@ async function sourceImages(urls, count, make) {
   return ok.length ? ok : Array.from({ length: count }, (_, i) => make(i));
 }
 
-// src/pixel-field/adapter.ts
+// visuals/src/pixel-field/adapter.ts
 var easeInOut = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 var adapter_default = {
   async mount(host, props) {

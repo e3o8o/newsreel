@@ -1,261 +1,356 @@
 {
-    "//": "The newsreel ad, made by newsreel. Every scene is a generated primitive from the collection, narrated by both bundled voices, cut to the narration. This is the sample video the landing page leads with.",
-    "project": "newsreel",
-    "baseUrl": "http://127.0.0.1:9",
-    "output": {
-        "workDir": ".work",
-        "videoDir": "."
+  "//": "The newsreel ad, made by newsreel. Every scene is a generated primitive from the collection, narrated by both bundled voices, cut to the narration. This is the sample video the landing page leads with.",
+  "project": "newsreel",
+  "baseUrl": "http://localhost:8899",
+  "output": {
+    "workDir": ".work",
+    "videoDir": "."
+  },
+  "auth": {
+    "storageState": ".work/auth-state.json",
+    "loginPath": "/",
+    "readyPath": "/"
+  },
+  "capture": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  "style": {
+    "captionBand": 150,
+    "cardBackground": {
+      "image": "backdrop.jpg",
+      "flat": "#2a2733"
     },
-    "auth": {
-        "storageState": ".work/unused-auth.json",
-        "loginPath": "/sign-in",
-        "readyPath": "/"
+    "cursor": {
+      "style": "auto"
     },
-    "capture": {
-        "viewport": {
-            "width": 1440,
-            "height": 900
+    "clicks": {
+      "effect": "ripple"
+    },
+    "keys": {}
+  },
+  "voice": {
+    "provider": "voicebox",
+    "profile": "Narrator George",
+    "baseUrl": "http://127.0.0.1:8000"
+  },
+  "music": {
+    "provider": "default",
+    "gainDb": -19,
+    "startAt": 8
+  },
+  "video": {
+    "targetSeconds": 135,
+    "maxSpeed": 3,
+    "title": "Videos your repo knows how to build",
+    "narration": "This is newsreel.",
+    "thumbnail": true,
+    "kind": "ad",
+    "camera": {
+      "mode": "auto",
+      "smoothness": 1.2
+    }
+  },
+  "shots": [
+    {
+      "id": "open",
+      "type": "generated",
+      "scene": "swirl",
+      "props": {
+        "word": "newsreel",
+        "zoom": 0.85,
+        "ink": [
+          "#34d399",
+          "#818cf8",
+          "#f472b6"
+        ],
+        "turbulence": 0.28
+      },
+      "duration": 14,
+      "narration": "Every week you ship something. And every week, telling people what you shipped costs you an afternoon you did not have."
+    },
+    {
+      "id": "promise",
+      "type": "generated",
+      "scene": "typer",
+      "props": {
+        "lines": [
+          "a week of work,",
+          "in two minutes"
+        ],
+        "accent": "#34d399"
+      },
+      "duration": 12,
+      "narration": "Newsreel turns a week of work into two minutes of video. A written report, and a narrated demo, from one config file."
+    },
+    {
+      "id": "pipeline",
+      "type": "generated",
+      "scene": "blur-reveal",
+      "props": {
+        "panels": [
+          {
+            "line": "capture",
+            "bg": "#0b3d3a",
+            "fg": "#f7c948"
+          },
+          {
+            "line": "narrate",
+            "bg": "#1b1440",
+            "fg": "#a78bfa"
+          },
+          {
+            "line": "assemble",
+            "bg": "#0891b2",
+            "fg": "#fef9c3"
+          }
+        ]
+      },
+      "duration": 16,
+      "narration": "Capture. It drives your real app in a real browser and records what happens. Narrate. Three voices ship with it, and they run on your own machine. Assemble. It cuts the whole thing together."
+    },
+    {
+      "id": "cinema-zoom",
+      "route": "/",
+      "caption": "A camera that knows where to look",
+      "narration": "And now it films like an editor. Newsreel knows every click before it happens, so the camera zooms to the target, leads the move, and draws its own cursor. Nothing here is keyframed by hand.",
+      "actions": [
+        {
+          "type": "waitFor",
+          "selector": "#grid .card",
+          "timeout": 30000
+        },
+        {
+          "type": "wait",
+          "ms": 600
+        },
+        {
+          "type": "scroll",
+          "selector": "#filters"
+        },
+        {
+          "type": "wait",
+          "ms": 700
+        },
+        {
+          "type": "click",
+          "selector": ".filter:nth-child(3)"
+        },
+        {
+          "type": "wait",
+          "ms": 1100
+        },
+        {
+          "type": "click",
+          "selector": ".filter:nth-child(1)"
+        },
+        {
+          "type": "wait",
+          "ms": 900
         }
+      ]
     },
-    "style": {
-        "captionBand": 150,
-        "cardBackground": { "image": "backdrop.jpg", "flat": "#2a2733" }
-    },
-    "voice": {
-        "provider": "voicebox",
-        "profile": "Narrator George",
-        "baseUrl": "http://127.0.0.1:8000"
-    },
-    "music": {
-        "provider": "default",
-        "gainDb": -19,
-        "startAt": 8
-    },
-    "video": {
-        "targetSeconds": 135,
-        "maxSpeed": 3,
-        "title": "Videos your repo knows how to build",
-        "narration": "This is newsreel.",
-        "thumbnail": true,
-        "kind": "ad"
-    },
-    "shots": [
+    {
+      "id": "cinema-type",
+      "route": "/",
+      "caption": "Keystrokes land as badges",
+      "narrator": "Narrator Nova",
+      "narration": "Type, and the keys land on screen as badges. The zoom, the spring, the ripple, the cursor. Each one is a line of config, with a smoothness dial when you want it calmer.",
+      "actions": [
         {
-            "id": "open",
-            "type": "generated",
-            "scene": "swirl",
-            "props": {
-                "word": "newsreel",
-                "zoom": 0.85,
-                "ink": [
-                    "#34d399",
-                    "#818cf8",
-                    "#f472b6"
-                ],
-                "turbulence": 0.28
-            },
-            "duration": 14,
-            "narration": "Every week you ship something. And every week, telling people what you shipped costs you an afternoon you did not have."
+          "type": "waitFor",
+          "selector": "#grid .card",
+          "timeout": 30000
         },
         {
-            "id": "promise",
-            "type": "generated",
-            "scene": "typer",
-            "props": {
-                "lines": [
-                    "a week of work,",
-                    "in two minutes"
-                ],
-                "accent": "#34d399"
-            },
-            "duration": 12,
-            "narration": "Newsreel turns a week of work into two minutes of video. A written report, and a narrated demo, from one config file."
+          "type": "wait",
+          "ms": 400
         },
         {
-            "id": "pipeline",
-            "type": "generated",
-            "scene": "blur-reveal",
-            "props": {
-                "panels": [
-                    {
-                        "line": "capture",
-                        "bg": "#0b3d3a",
-                        "fg": "#f7c948"
-                    },
-                    {
-                        "line": "narrate",
-                        "bg": "#1b1440",
-                        "fg": "#a78bfa"
-                    },
-                    {
-                        "line": "assemble",
-                        "bg": "#0891b2",
-                        "fg": "#fef9c3"
-                    }
-                ]
-            },
-            "duration": 16,
-            "narration": "Capture. It drives your real app in a real browser and records what happens. Narrate. Three voices ship with it, and they run on your own machine. Assemble. It cuts the whole thing together."
+          "type": "scroll",
+          "selector": ".remix input"
         },
         {
-            "id": "styles-intro",
-            "type": "generated",
-            "scene": "tile-field",
-            "props": {
-                "word": "styles",
-                "bg": "#f6f6f8"
-            },
-            "duration": 12,
-            "narration": "And a video is more than screen recordings. Newsreel ships a whole collection of styles you can drop into any scene.",
-            "narrator": "Karo"
+          "type": "wait",
+          "ms": 700
         },
         {
-            "id": "style-chroma",
-            "type": "generated",
-            "scene": "chroma",
-            "props": {
-                "words": [
-                    "bold",
-                    "neon",
-                    "loud"
-                ]
-            },
-            "duration": 12,
-            "narration": "Titles that bloom in neon and pull their colours apart.",
-            "narrator": "Karo"
+          "type": "click",
+          "selector": ".remix input"
         },
         {
-            "id": "style-chrome",
-            "type": "generated",
-            "scene": "chrome",
-            "props": {
-                "word": "chrome",
-                "cycleRampsSeconds": 3.2
-            },
-            "duration": 11,
-            "narration": "Liquid metal, with a reflection that moves as you do.",
-            "narrator": "Karo"
+          "type": "type",
+          "selector": ".remix input",
+          "value": "crafted",
+          "delay": 120
         },
         {
-            "id": "style-glow",
-            "type": "generated",
-            "scene": "blur-glow",
-            "props": {
-                "words": [
-                    "paper",
-                    "light",
-                    "bloom"
-                ]
-            },
-            "duration": 12,
-            "narration": "Or something quieter. Paper, light, and a real bloom mapped through a colour ramp.",
-            "narrator": "Karo"
-        },
-        {
-            "id": "style-kinetic",
-            "type": "generated",
-            "scene": "kinetic",
-            "props": {
-                "text": "reel",
-                "accent": "#16a86b"
-            },
-            "duration": 9,
-            "narration": "Letters cut into tiles that ripple like water.",
-            "narrator": "Narrator Nova"
-        },
-        {
-            "id": "style-dotcut",
-            "type": "generated",
-            "scene": "dotcut",
-            "props": {
-                "letter": "N",
-                "hold": 700
-            },
-            "duration": 11,
-            "narration": "Patterns cut out of a lattice, where the shape is the hole.",
-            "narrator": "Narrator Nova"
-        },
-        {
-            "id": "style-embroidery",
-            "type": "generated",
-            "scene": "embroidery",
-            "props": {
-                "words": [
-                    "made",
-                    "with",
-                    "code"
-                ]
-            },
-            "duration": 10,
-            "narration": "Patches stitched into fabric, lit like real thread.",
-            "narrator": "Narrator Nova"
-        },
-        {
-            "id": "web-too",
-            "type": "generated",
-            "scene": "materials",
-            "props": {
-                "label": "Get started"
-            },
-            "duration": 12,
-            "narration": "These are web components, not video files. So the same visuals go straight into your site. Ten button materials, built from layering alone."
-        },
-        {
-            "id": "web-liquid",
-            "type": "generated",
-            "scene": "liquid",
-            "props": {},
-            "duration": 10,
-            "narration": "Cards that fuse where they meet, with the corner bending inward."
-        },
-        {
-            "id": "web-squircle",
-            "type": "generated",
-            "scene": "squircle",
-            "props": {
-                "label": "Install"
-            },
-            "duration": 10,
-            "narration": "The corner Apple uses, that eases in instead of kinking."
-        },
-        {
-            "id": "web-cursors",
-            "type": "generated",
-            "scene": "cursors",
-            "props": {
-                "word": "together",
-                "names": [
-                    "you",
-                    "your team",
-                    "everyone"
-                ]
-            },
-            "duration": 10,
-            "narration": "Copy the embed code, or copy the prompt and build your own.",
-            "narrator": "Narrator Nova"
-        },
-        {
-            "id": "closer-fade",
-            "type": "generated",
-            "scene": "fade",
-            "props": {
-                "word": "shipped"
-            },
-            "duration": 12,
-            "narration": "Everything you have watched was made by the tool it is advertising. One config file, one command."
-        },
-        {
-            "id": "cta",
-            "type": "generated",
-            "scene": "cta",
-            "props": {
-                "brand": "newsreel",
-                "tagline": "A week of work, in two minutes.",
-                "button": "npx newsreel",
-                "url": "github.com/e3o8o/newsreel"
-            },
-            "duration": 11,
-            "narration": "Newsreel. Free, open source, and it runs on your own machine."
+          "type": "wait",
+          "ms": 1100
         }
-    ]
+      ]
+    },
+    {
+      "id": "styles-intro",
+      "type": "generated",
+      "scene": "tile-field",
+      "props": {
+        "word": "styles",
+        "bg": "#f6f6f8"
+      },
+      "duration": 12,
+      "narration": "And a video is more than screen recordings. Newsreel ships a whole collection of styles you can drop into any scene.",
+      "narrator": "Karo"
+    },
+    {
+      "id": "style-chroma",
+      "type": "generated",
+      "scene": "chroma",
+      "props": {
+        "words": [
+          "bold",
+          "neon",
+          "loud"
+        ]
+      },
+      "duration": 12,
+      "narration": "Titles that bloom in neon and pull their colours apart.",
+      "narrator": "Karo"
+    },
+    {
+      "id": "style-chrome",
+      "type": "generated",
+      "scene": "chrome",
+      "props": {
+        "word": "chrome",
+        "cycleRampsSeconds": 3.2
+      },
+      "duration": 11,
+      "narration": "Liquid metal, with a reflection that moves as you do.",
+      "narrator": "Karo"
+    },
+    {
+      "id": "style-glow",
+      "type": "generated",
+      "scene": "blur-glow",
+      "props": {
+        "words": [
+          "paper",
+          "light",
+          "bloom"
+        ]
+      },
+      "duration": 12,
+      "narration": "Or something quieter. Paper, light, and a real bloom mapped through a colour ramp.",
+      "narrator": "Karo"
+    },
+    {
+      "id": "style-kinetic",
+      "type": "generated",
+      "scene": "kinetic",
+      "props": {
+        "text": "reel",
+        "accent": "#16a86b"
+      },
+      "duration": 9,
+      "narration": "Letters cut into tiles that ripple like water.",
+      "narrator": "Narrator Nova"
+    },
+    {
+      "id": "style-dotcut",
+      "type": "generated",
+      "scene": "dotcut",
+      "props": {
+        "letter": "N",
+        "hold": 700
+      },
+      "duration": 11,
+      "narration": "Patterns cut out of a lattice, where the shape is the hole.",
+      "narrator": "Narrator Nova"
+    },
+    {
+      "id": "style-embroidery",
+      "type": "generated",
+      "scene": "embroidery",
+      "props": {
+        "words": [
+          "made",
+          "with",
+          "code"
+        ]
+      },
+      "duration": 10,
+      "narration": "Patches stitched into fabric, lit like real thread.",
+      "narrator": "Narrator Nova"
+    },
+    {
+      "id": "web-too",
+      "type": "generated",
+      "scene": "materials",
+      "props": {
+        "label": "Get started"
+      },
+      "duration": 12,
+      "narration": "These are web components, not video files. So the same visuals go straight into your site. Ten button materials, built from layering alone."
+    },
+    {
+      "id": "web-liquid",
+      "type": "generated",
+      "scene": "liquid",
+      "props": {},
+      "duration": 10,
+      "narration": "Cards that fuse where they meet, with the corner bending inward."
+    },
+    {
+      "id": "web-squircle",
+      "type": "generated",
+      "scene": "squircle",
+      "props": {
+        "label": "Install"
+      },
+      "duration": 10,
+      "narration": "The corner Apple uses, that eases in instead of kinking."
+    },
+    {
+      "id": "web-cursors",
+      "type": "generated",
+      "scene": "cursors",
+      "props": {
+        "word": "together",
+        "names": [
+          "you",
+          "your team",
+          "everyone"
+        ]
+      },
+      "duration": 10,
+      "narration": "Copy the embed code, or copy the prompt and build your own.",
+      "narrator": "Narrator Nova"
+    },
+    {
+      "id": "closer-fade",
+      "type": "generated",
+      "scene": "fade",
+      "props": {
+        "word": "shipped"
+      },
+      "duration": 12,
+      "narration": "Everything you have watched was made by the tool it is advertising. One config file, one command."
+    },
+    {
+      "id": "cta",
+      "type": "generated",
+      "scene": "cta",
+      "props": {
+        "brand": "newsreel",
+        "tagline": "A week of work, in two minutes.",
+        "button": "npx newsreel",
+        "url": "github.com/e3o8o/newsreel"
+      },
+      "duration": 11,
+      "narration": "Newsreel. Free, open source, and it runs on your own machine."
+    }
+  ]
 }

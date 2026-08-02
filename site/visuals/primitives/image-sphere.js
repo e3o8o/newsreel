@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -61,7 +61,7 @@ async function sourceImages(urls, count, make) {
   return ok.length ? ok : Array.from({ length: count }, (_, i) => make(i));
 }
 
-// src/image-sphere/adapter.ts
+// visuals/src/image-sphere/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     const count = typeof props.count === "number" ? Math.max(8, Math.min(220, props.count)) : 84;

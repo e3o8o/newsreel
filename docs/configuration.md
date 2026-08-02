@@ -153,6 +153,7 @@ always did.
       "response": 0.35,          // seconds; pan spring period (advanced)
       "zoomResponse": 0.55,      // seconds (advanced)
       "motionBlur": 0.35,        // 0..2; 0 = off
+      "smoothness": 1.0,         // 0.25..3: ONE dial for pace. 2 = twice as calm, 0.5 = snappier.
       "holdLastFrame": true      // release to 1.0 during narration holds
     }
   },

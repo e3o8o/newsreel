@@ -668,6 +668,50 @@ function testFollow() {
     }
 }
 
+// 🧘 Smoothness: one dial that calms (or sharpens) every camera transition.
+function testSmoothness() {
+    const { bake } = require('../lib/camera/spring.cjs');
+    const { followBake } = require('../lib/camera/follow.cjs');
+
+    const plan2 = (smoothness) => ({
+        schema: 1, mode: 'segments',
+        clip: { trimStart: 0, speed: 1, durOut: 4, fps: 30 },
+        config: { intensity: 1, maxZoom: 2.5, smoothness },
+        segments: [
+            { t0: 0, t1: 1.0, from: { zoom: 1, cx: 0.5, cy: 0.5 }, to: { zoom: 1, cx: 0.5, cy: 0.5 }, why: 'establish' },
+            { t0: 1.0, t1: 1.5, from: { zoom: 1, cx: 0.5, cy: 0.5 }, to: { zoom: 2, cx: 0.3, cy: 0.3 }, why: 'move' },
+            { t0: 1.5, t1: 4.0, from: { zoom: 2, cx: 0.3, cy: 0.3 }, to: { zoom: 2, cx: 0.3, cy: 0.3 }, why: 'hold' },
+        ],
+    });
+    const fast = bake(plan2(1));
+    const calm = bake(plan2(2));
+    const at = Math.round(1.5 * 30);   // right at the end of the move slot
+    const distF = Math.hypot(fast[at].cx - 0.3, fast[at].cy - 0.3) + Math.abs(fast[at].zoom - 2);
+    const distC = Math.hypot(calm[at].cx - 0.3, calm[at].cy - 0.3) + Math.abs(calm[at].zoom - 2);
+    ok('smoothness 2 is measurably calmer mid-transition', distC > distF * 1.3,
+        `remaining: calm ${distC.toFixed(3)} vs fast ${distF.toFixed(3)}`);
+    near('smoothness 2 still arrives (holds finish the job)', calm[calm.length - 1].zoom, 2, 0.08);
+
+    // 🫧 the pumping regression: consecutive nearby clicks must NOT dip the zoom between
+    // them, and the zoom trace must be monotone-ish (no down-up-down oscillation)
+    const events = [];
+    for (let i = 0; i < 4; i++) {
+        const t = 1000 + i * 1200;
+        const x = 0.3 + i * 0.1;
+        events.push({ type: 'move', t0: t - 400, t1: t, from: [x - 0.1, 0.4], to: [x, 0.4], reason: 'click',
+            path: [[t - 400, x - 0.1, 0.4], [t - 200, x - 0.05, 0.4], [t, x, 0.4]] });
+        events.push({ type: 'click', t, at: [x, 0.4], selector: '#b' + i,
+            box: { x: x - 0.04, y: 0.36, w: 0.08, h: 0.08 }, cursorStyle: 'pointer' });
+    }
+    const frames = followBake(events, { trimStart: 0, speed: 1, durOut: 7, fps: 30 }, { maxZoom: 2.2 });
+    // between the first and last click the zoom stays committed: no dip below 90% of its peak
+    const mid = frames.slice(Math.round(1.5 * 30), Math.round(5.5 * 30));
+    const peak = Math.max(...mid.map((f) => f.zoom));
+    const trough = Math.min(...mid.map((f) => f.zoom));
+    ok('follow: zoom commits through a run of clicks (no pumping)', trough > peak * 0.9,
+        `trough ${trough.toFixed(2)} vs peak ${peak.toFixed(2)}`);
+}
+
 // 🎥 Backward-compat pinning: a config with zero cinema keys must leave everything exactly
 //    as it was -- no telemetry, no pass, untouched sections. This is the contract that lets
 //    cinema ship inside a patch release.
@@ -975,6 +1019,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testBadges();
         testKindCamera();
         testFollow();
+        testSmoothness();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }

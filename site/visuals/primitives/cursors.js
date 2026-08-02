@@ -1,4 +1,4 @@
-// src/cursors/engine.ts
+// visuals/src/cursors/engine.ts
 var ARROW_PATH = "M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86a.5.5 0 0 1 .35-.15h6.87c.48 0 .72-.58.38-.92L5.94 2.47a.5.5 0 0 0-.44.74Z";
 var TWO_PI = Math.PI * 2;
 var FlyingCursors = class {
@@ -160,7 +160,7 @@ var FlyingCursors = class {
   }
 };
 
-// src/cursors/frosted.ts
+// visuals/src/cursors/frosted.ts
 var CSS = `
 .fw-root { position: relative; display: inline-block; }
 .fw-glow { pointer-events: none; position: absolute; left: 50%; top: 50%; z-index: -1;
@@ -235,7 +235,7 @@ function frostedWord(text, opts = {}) {
   return root;
 }
 
-// src/shared/ghost.ts
+// visuals/src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -263,7 +263,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// src/cursors/adapter.ts
+// visuals/src/cursors/adapter.ts
 var DEFAULT_DEFS = [
   { name: "Maija", color: "#7c4dff" },
   { name: "Karo", color: "#12a150" },

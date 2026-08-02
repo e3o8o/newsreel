@@ -40,6 +40,7 @@
       newsreel
     </a>
     <div class="nav-links">
+      <a href="#cinema">Camera</a>
       <a href="#kinds">Kinds</a>
       <a href="#collection">Collection</a>
       <a href="#studio">Studio</a>
@@ -110,6 +111,58 @@
            length of its own narration so picture and voice land together.</p>
       </li>
     </ol>
+  </div>
+</section>
+
+<!-- ══ cinema ══════════════════════════════════════════════════════════════ -->
+<section class="band" id="cinema">
+  <div class="wrap">
+    <h2 class="section-title">A camera that knows where to look</h2>
+    <p class="section-sub">
+      Screen recorders guess what you did from raw footage. newsreel <em>executes</em> the
+      script, so it knows every click before it happens — and films like an editor. All of it
+      is one config block, none of it is keyframed by hand.
+    </p>
+    <div class="cine-grid">
+      <article class="cine">
+        <h3>Auto zoom</h3>
+        <p>The camera zooms to the element each action targets, sized by the element itself,
+           leading the move by a beat. Springs, not tweens — motion carries momentum through
+           every retarget, with motion blur when it moves fast.</p>
+      </article>
+      <article class="cine">
+        <h3>A drawn cursor</h3>
+        <p>Headless captures have no cursor, so newsreel draws one — arrow, hand or I-beam
+           picked from each element's own CSS — smoothed by a spring, with a squash on every
+           click and a ripple where it landed.</p>
+      </article>
+      <article class="cine">
+        <h3>Keystrokes on screen</h3>
+        <p>Chords collapse into single badges (⇧⌘Z, in canonical order), and typing becomes
+           one pill that fills at the real key cadence. Never per-letter spam.</p>
+      </article>
+      <article class="cine">
+        <h3>Yours to tune</h3>
+        <p>Every zoom, spring and effect is config. One <code>smoothness</code> dial calms or
+           sharpens the whole camera; per-shot you can pin explicit segments, switch to a
+           cursor-follow mode, or opt out entirely.</p>
+      </article>
+    </div>
+    <div class="code-card" style="margin-top: 24px;">
+      <pre class="panel is-active"><code><span class="c">// the whole feature, from a standing start</span>
+{
+  <span class="k">"video"</span>: { <span class="k">"kind"</span>: <span class="s">"demo"</span>, <span class="k">"camera"</span>: { <span class="k">"mode"</span>: <span class="s">"auto"</span>, <span class="k">"smoothness"</span>: <span class="n">1.2</span> } },
+  <span class="k">"style"</span>: {
+    <span class="k">"cursor"</span>: { <span class="k">"style"</span>: <span class="s">"auto"</span> },
+    <span class="k">"clicks"</span>: { <span class="k">"effect"</span>: <span class="s">"ripple"</span> },
+    <span class="k">"keys"</span>:   { <span class="k">"symbols"</span>: <span class="s">"mac"</span> }
+  }
+}</code></pre>
+    </div>
+    <p class="fine" style="margin-top: 14px;">
+      Watch it in the film above — the two sections touring this very page were shot by the
+      camera, on this page, with these four lines.
+    </p>
   </div>
 </section>
 

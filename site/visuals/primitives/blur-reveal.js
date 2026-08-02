@@ -1,4 +1,4 @@
-// src/blur-reveal/panels.ts
+// visuals/src/blur-reveal/panels.ts
 var PANELS = [
   { line: "make it obvious", bg: "#0b3d3a", fg: "#f7c948" },
   { line: "then make it fast", bg: "#ff4d4d", fg: "#fff0e6" },
@@ -8,7 +8,7 @@ var PANELS = [
   { line: "cut what is dull", bg: "#18181b", fg: "#f472b6" }
 ];
 
-// src/blur-reveal/reveal-shader.ts
+// visuals/src/blur-reveal/reveal-shader.ts
 var REVEAL_VERT = `
   attribute vec2 aPosition;
   attribute vec2 aUV;
@@ -108,7 +108,7 @@ var REVEAL_FRAG = `
   }
 `;
 
-// src/blur-reveal/gl.ts
+// visuals/src/blur-reveal/gl.ts
 var RevealGL = class {
   canvas;
   gl;
@@ -243,7 +243,7 @@ var RevealGL = class {
   }
 };
 
-// src/blur-reveal/text-texture.ts
+// visuals/src/blur-reveal/text-texture.ts
 function renderText(o) {
   const dpr = o.dpr ?? Math.min(window.devicePixelRatio || 1, 2);
   const cssW = Math.max(1, Math.round(o.cardW));
@@ -267,7 +267,7 @@ function renderText(o) {
   return { canvas, cssW, cssH };
 }
 
-// src/blur-reveal/engine.ts
+// visuals/src/blur-reveal/engine.ts
 var HOLD_MS = 900;
 var OUT_HOLD_MS = 40;
 var BG_MS = 320;
@@ -482,7 +482,7 @@ var BlurReveal = class {
   }
 };
 
-// src/blur-reveal/adapter.ts
+// visuals/src/blur-reveal/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     if (Array.isArray(props.panels) && props.panels.length) {

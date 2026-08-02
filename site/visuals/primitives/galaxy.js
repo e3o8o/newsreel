@@ -1,4 +1,4 @@
-// src/galaxy/engine.ts
+// visuals/src/galaxy/engine.ts
 var lerp = (a, b, t) => (1 - t) * a + t * b;
 var CONFIG = {
   speed: 1.1,
@@ -152,7 +152,7 @@ var ImageGalaxy = class {
   }
 };
 
-// src/galaxy/adapter.ts
+// visuals/src/galaxy/adapter.ts
 function plate(i) {
   const c = document.createElement("canvas");
   c.width = 320;

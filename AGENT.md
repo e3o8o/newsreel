@@ -152,6 +152,8 @@ baked in. Add a drawn cursor and effects with:
 
 - The kind tunes the feel (an `ad` zooms deeper and snaps faster than a `report`); your keys
   always win over the kind's.
+- **If the motion feels rushed, set `"camera": { "smoothness": 1.5 }`** (0.25..3). One dial,
+  scales every transition; `response`/`zoomResponse` exist for finer control.
 - `"camera": "off"` on a shot opts it out -- do that for long scroll tours.
 - To hand-tune one shot: `npx newsreel cinema --only <shotId>` renders it standalone and
   prints its camera plan; paste the plan's `segments` into the shot as

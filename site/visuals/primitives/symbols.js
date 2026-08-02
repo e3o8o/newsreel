@@ -1,4 +1,4 @@
-// src/shared/source.ts
+// visuals/src/shared/source.ts
 function rng(seed) {
   let s = seed >>> 0 || 2654435769;
   s = Math.imul(s ^ s >>> 16, 569420461) >>> 0;
@@ -82,7 +82,7 @@ function setFont(ctx, px, family, weight = 400) {
   }
 }
 
-// src/symbols/adapter.ts
+// visuals/src/symbols/adapter.ts
 var BANDS = ["\u2588\u2588\u2593\u2592", "\u25C6\u25C7\u25C8\u25CF", "+\xD7\xF7=", "\xB7\u02D9\u2025:"];
 var adapter_default = {
   async mount(host, props) {

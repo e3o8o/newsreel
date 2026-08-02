@@ -1,4 +1,4 @@
-// src/kinetic/engine.ts
+// visuals/src/kinetic/engine.ts
 function parseHex(hex) {
   let h = hex.replace("#", "").trim();
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
@@ -299,7 +299,7 @@ var KineticA = class {
   }
 };
 
-// src/kinetic/adapter.ts
+// visuals/src/kinetic/adapter.ts
 var DEFAULTS = {
   text: "a",
   paper: "#fcfcfc",

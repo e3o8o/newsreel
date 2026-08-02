@@ -1,4 +1,4 @@
-// src/squircle/superellipse.ts
+// visuals/src/squircle/superellipse.ts
 var DEFAULT_EXPONENT = 5;
 var n = (v) => v.toFixed(4);
 var CORNER = [
@@ -65,7 +65,7 @@ function roundRectPath(w, h, r) {
   return `M ${rr} 0 L ${w - rr} 0 A ${rr} ${rr} 0 0 1 ${w} ${rr} L ${w} ${h - rr} A ${rr} ${rr} 0 0 1 ${w - rr} ${h} L ${rr} ${h} A ${rr} ${rr} 0 0 1 0 ${h - rr} L 0 ${rr} A ${rr} ${rr} 0 0 1 ${rr} 0 Z`;
 }
 
-// src/squircle/adapter.ts
+// visuals/src/squircle/adapter.ts
 var W = 340;
 var H = 116;
 var adapter_default = {

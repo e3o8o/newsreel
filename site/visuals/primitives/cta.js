@@ -1,4 +1,4 @@
-// src/cta/adapter.ts
+// visuals/src/cta/adapter.ts
 var CSS = `
 @keyframes cta-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes cta-in { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }

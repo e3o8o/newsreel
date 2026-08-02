@@ -1,4 +1,4 @@
-// src/shared/ghost.ts
+// visuals/src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -26,7 +26,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// src/badge-trail/adapter.ts
+// visuals/src/badge-trail/adapter.ts
 var WORDS = [
   "kerning",
   "baseline",

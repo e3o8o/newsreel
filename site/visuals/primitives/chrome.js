@@ -1,4 +1,4 @@
-// src/chrome/shaders.ts
+// visuals/src/chrome/shaders.ts
 var CHROME_VERT = `
 attribute vec2 aPosition;
 attribute vec2 aUV;
@@ -206,7 +206,7 @@ void main() {
 }
 `;
 
-// src/chrome/params.ts
+// visuals/src/chrome/params.ts
 var RAMPS = [
   {
     name: "Silver Teal",
@@ -302,7 +302,7 @@ var WORD = "metal";
 var FONT_CSS = "var(--font-neue-montreal)";
 var FONT_WEIGHT = 600;
 
-// src/chrome/text-mask.ts
+// visuals/src/chrome/text-mask.ts
 async function makeChromeField(word, blurPx, w, h, fontFamily) {
   const W = Math.max(1, Math.round(w));
   const H = Math.max(1, Math.round(h));
@@ -365,7 +365,7 @@ function blurTo(src, W, H, px) {
   return c;
 }
 
-// src/chrome/engine.ts
+// visuals/src/chrome/engine.ts
 function rampToFloats(r) {
   const out = [];
   for (const s of r.stops) out.push(s[0], s[1], s[2]);
@@ -687,7 +687,7 @@ var Chrome = class {
   }
 };
 
-// src/shared/ghost.ts
+// visuals/src/shared/ghost.ts
 function ghostPointer(host, opts = {}) {
   const target = opts.target ?? host;
   const speed = opts.speed ?? 1;
@@ -715,7 +715,7 @@ function ghostPointer(host, opts = {}) {
   return { stop: () => cancelAnimationFrame(raf) };
 }
 
-// src/chrome/adapter.ts
+// visuals/src/chrome/adapter.ts
 var adapter_default = {
   async mount(host, props) {
     host.style.background = "#0b0c0e";
