@@ -313,6 +313,147 @@ function testTelemetry() {
     eq('cursor style: grabbing -> grab', mapCursorStyle('grabbing'), 'grab');
 }
 
+// 🎥 The camera: the analytic spring and the segment planner. Pure math against synthetic
+//    sidecars with known events -- the golden tests the whole cinema pass leans on.
+function testCamera() {
+    const { springStep, clampCenter, bake } = require('../lib/camera/spring.cjs');
+    const { plan, zoomFor, toOut, normalizeOverride } = require('../lib/camera/plan.cjs');
+
+    // -- spring behavior -----------------------------------------------------------
+    {
+        // settles: within epsilon of the target after 3x response
+        let x = 0, v = 0;
+        const resp = 0.35, dt = 1 / 30;
+        for (let t = 0; t < resp * 3; t += dt) { const s = springStep(x, v, 1, dt, resp); x = s.x; v = s.v; }
+        near('spring settles within 2% by 3x response', x, 1, 0.02);
+
+        // no NaN at dt extremes
+        const tiny = springStep(0.3, 2, 1, 1e-6, 0.35);
+        const huge = springStep(0.3, 2, 1, 1, 0.35);
+        ok('spring finite at dt extremes', Number.isFinite(tiny.x) && Number.isFinite(tiny.v)
+            && Number.isFinite(huge.x) && Number.isFinite(huge.v));
+
+        // overdamped regime also settles
+        let x2 = 0, v2 = 0;
+        for (let t = 0; t < 2; t += dt) { const s = springStep(x2, v2, 1, dt, 0.35, 1.2); x2 = s.x; v2 = s.v; }
+        near('overdamped spring settles too', x2, 1, 0.02);
+    }
+
+    eq('clampCenter pins center at zoom 1', clampCenter(0.9, 1), 0.5);
+    eq('clampCenter: halfCrop = 0.5/zoom', clampCenter(0.05, 2), 0.25);
+
+    // -- bake: continuity, clamping, hold damping ----------------------------------
+    {
+        const p = {
+            schema: 1, mode: 'segments',
+            clip: { trimStart: 0, speed: 1, durOut: 4, fps: 30 },
+            config: { intensity: 1, maxZoom: 2.5 },
+            segments: [
+                { t0: 0, t1: 0.8, from: { zoom: 1, cx: 0.5, cy: 0.5 }, to: { zoom: 1, cx: 0.5, cy: 0.5 }, why: 'establish' },
+                { t0: 0.8, t1: 1.3, from: { zoom: 1, cx: 0.5, cy: 0.5 }, to: { zoom: 2, cx: 0.25, cy: 0.25 }, why: 'move' },
+                { t0: 1.3, t1: 3.0, from: { zoom: 2, cx: 0.25, cy: 0.25 }, to: { zoom: 2, cx: 0.25, cy: 0.25 }, why: 'hold' },
+                { t0: 3.0, t1: 4.0, from: { zoom: 2, cx: 0.25, cy: 0.25 }, to: { zoom: 1, cx: 0.5, cy: 0.5 }, why: 'release' },
+            ],
+        };
+        const frames = bake(p);
+        eq('bake emits one transform per frame', frames.length, 120);
+        // no teleports: peak per-frame step stays in the band real spring velocity produces
+        // (a 0.35-unit move peaks ~2.4 units/s = 0.08/frame at 30fps; a cut would be 0.2+)
+        const maxStep = Math.max(...frames.slice(1).map((f, i) => Math.hypot(f.cx - frames[i].cx, f.cy - frames[i].cy)));
+        ok('bake: velocity continuity (no teleports)', maxStep < 0.12, `max step ${maxStep.toFixed(4)}`);
+        // the crop never leaves the frame beyond the soft-pushback cap
+        const worst = Math.max(...frames.map((f) => {
+            const half = 0.5 / Math.max(1, f.zoom);
+            return Math.max(half - f.cx, f.cx - (1 - half), half - f.cy, f.cy - (1 - half), 0);
+        }));
+        ok('bake: clamp respected at every tick (within pushback cap)', worst <= 0.031, `worst overflow ${worst.toFixed(4)}`);
+        // deep into the hold, the camera rests on target
+        const rest = frames[Math.round(2.8 * 30)];
+        near('bake: hold rests on target (cx)', rest.cx, 0.25, 0.02);
+        near('bake: hold rests on target (zoom)', rest.zoom, 2, 0.05);
+        // by the end of the release the camera is home
+        const last = frames[frames.length - 1];
+        near('bake: release lands at zoom 1', last.zoom, 1, 0.05);
+    }
+
+    // -- planner goldens -----------------------------------------------------------
+    const clip = { trimStart: 0, speed: 1, durOut: 6, fps: 30 };
+    const box = { x: 0.58, y: 0.38, w: 0.08, h: 0.06 };
+
+    // zoom sizing: 0.7 / max(0.08+0.16, 0.06+0.16) = 2.9167 -> click range cap 2.5 -> maxZoom 2.2
+    near('zoom formula: coverage / padded size, range- and max-clamped',
+        zoomFor(box, 'click', { intensity: 1, maxZoom: 2.2 }), 2.2, 1e-9);
+    eq('zoom formula: a giant container never zooms', zoomFor({ x: 0.1, y: 0.1, w: 0.7, h: 0.5 }, 'click', {}), 1);
+    near('zoom formula: intensity scales the zoom-1 part',
+        zoomFor(box, 'click', { intensity: 0.5, maxZoom: 4 }), 1 + (2.5 - 1) * 0.5, 1e-9);
+
+    // single click: establish from 1.0, anticipated move, travel-clamped, hold, release
+    {
+        const events = [
+            { type: 'waitFor', t: 200, settledT: 700, selector: 'main', box: { x: 0, y: 0, w: 1, h: 1 } },
+            { type: 'click', t: 2000, at: [0.62, 0.41], selector: '#approve', box, cursorStyle: 'pointer' },
+        ];
+        const p = plan(events, clip, { intensity: 1, maxZoom: 2.2 });
+        eq('planner: first segment starts at 0 from zoom 1', p.segments[0].t0 === 0 && p.segments[0].from.zoom === 1, true);
+        const move = p.segments.find((s) => s.why.startsWith('click'));
+        ok('planner: click move exists', Boolean(move));
+        ok('planner: anticipation leads the click by >= 0.15s', move.t0 <= 2.0 - 0.15 + 0.01, `t0=${move.t0}`);
+        const dur = move.t1 - move.t0;
+        ok('planner: travel clamp [0.15, 0.8]', dur >= 0.15 - 1e-9 && dur <= 0.8 + 1e-9, `${dur.toFixed(3)}s`);
+        near('planner: click zoom honors the table', move.to.zoom, 2.2, 0.01);
+        const last = p.segments[p.segments.length - 1];
+        eq('planner: plan covers the full clip', last.t1, 6);
+        near('planner: trailing tail releases to 1.0', last.to.zoom, 1, 1e-9);
+        ok('planner: segments contiguous', p.segments.every((s, i, a) => i === 0 || Math.abs(s.t0 - a[i - 1].t1) < 1e-6));
+    }
+
+    // two clicks near in time and space merge into ONE focus
+    {
+        const b2 = { x: 0.60, y: 0.42, w: 0.08, h: 0.06 };
+        const events = [
+            { type: 'click', t: 2000, at: [0.62, 0.41], selector: '#a', box },
+            { type: 'click', t: 3000, at: [0.64, 0.45], selector: '#b', box: b2 },
+        ];
+        const p = plan(events, clip, { intensity: 1, maxZoom: 2.2 });
+        const moves = p.segments.filter((s) => s.why.includes('click'));
+        eq('planner: adjacent clicks merge to one focus', moves.length, 1);
+        ok('planner: merged focus is marked', moves[0].why.includes('merged'));
+    }
+
+    // corner click at maxZoom 2 -> center clamped to (0.25, 0.25)
+    {
+        const events = [{ type: 'click', t: 2000, at: [0.05, 0.03], selector: '#c', box: { x: 0, y: 0, w: 0.1, h: 0.05 } }];
+        const p = plan(events, clip, { intensity: 1, maxZoom: 2.0 });
+        const move = p.segments.find((s) => s.why.startsWith('click'));
+        near('planner: corner focus clamps cx to halfCrop', move.to.cx, 0.25, 1e-6);
+        near('planner: corner focus clamps cy to halfCrop', move.to.cy, 0.25, 1e-6);
+    }
+
+    // trim/speed mapping: raw 3.0s with trim 1.0 at speed 2 lands at out 1.0
+    near('planner: raw->output time mapping', toOut(3000, { trimStart: 1, speed: 2, durOut: 10 }), 1.0, 1e-9);
+
+    // no events at all: a single establishing hold covering the clip
+    {
+        const p = plan([], clip, {});
+        eq('planner: empty sidecar -> one hold at zoom 1', p.segments.length, 1);
+        eq('planner: empty sidecar covers the clip', p.segments[0].t1, 6);
+    }
+
+    // override normalization: gaps filled, zoom clamped with a warning, ends pinned
+    {
+        const { plan: np, warnings } = normalizeOverride([
+            { t0: 1, t1: 2, from: { zoom: 1, cx: 0.5, cy: 0.5 }, to: { zoom: 9, cx: 0.9, cy: 0.1 } },
+        ], clip, { maxZoom: 2.2 });
+        ok('override: zoom clamp warns', warnings.some((w) => w.includes('maxZoom')));
+        eq('override: leading gap filled with a hold', np.segments[0].why.includes('hold') || np.segments[0].why === 'hold (gap)', true);
+        eq('override: plan pinned to [0, durOut]', np.segments[0].t0 === 0 && np.segments[np.segments.length - 1].t1 === 6, true);
+        const to = np.segments.find((s) => s.why === 'override').to;
+        // 1e-3 tolerance: the plan stores 3 decimals, and the renderer re-clamps in pixel
+        // space anyway (belt and braces), so a rounding hair over the bound is harmless
+        ok('override: clamped center stays croppable', to.cx <= 1 - 0.5 / to.zoom + 1e-3 && to.cy >= 0.5 / to.zoom - 1e-3);
+    }
+}
+
 // 🎥 Integration: drive the instrumented actions against a real page and read the sidecar
 //    back. This is the test that proves the sidecar is ground truth, not bookkeeping.
 async function testTelemetryIntegration(dir) {
@@ -393,6 +534,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'newsreel-test-'));
         testPalettes();
         testValidator();
         testTelemetry();
+        testCamera();
 
         let ff = null;
         try { ff = makeFf(bin('ffmpeg', 'FFMPEG_PATH'), bin('ffprobe', 'FFPROBE_PATH')); } catch { /* reported below */ }
