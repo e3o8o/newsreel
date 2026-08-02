@@ -33,7 +33,7 @@
     "video": {
         "targetSeconds": 135,
         "maxSpeed": 3,
-        "title": "A week of work, in two minutes",
+        "title": "Videos your repo knows how to build",
         "narration": "This is newsreel.",
         "thumbnail": true,
         "kind": "ad"

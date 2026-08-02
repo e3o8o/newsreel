@@ -338,6 +338,23 @@ h1 em { font-style: normal; color: var(--ink-3); }
 .panel .n { color: var(--code-k); }
 .panel .c { color: var(--ink-3); }
 
+/* ── agent ───────────────────────────────────────────────────────────────── */
+.agent {
+  display: grid; grid-template-columns: 1.15fr 1fr; gap: 28px; align-items: start;
+}
+.agent-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 22px; }
+.agent-start {
+  padding: 22px; border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-card);
+}
+.mini {
+  margin-top: 14px; padding: 14px 16px; border-radius: var(--radius-md);
+  background: var(--band-alt); overflow-x: auto;
+  font: 400 12.5px/1.8 var(--font-mono); color: var(--ink);
+}
+.mini .c { color: var(--ink-3); }
+@media (max-width: 820px) { .agent { grid-template-columns: 1fr; } }
+
 /* ── dependencies ────────────────────────────────────────────────────────── */
 .deps {
   margin-top: 24px;

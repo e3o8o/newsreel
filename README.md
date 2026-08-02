@@ -1,24 +1,39 @@
 # newsreel
 
-Turn a week of shipped work into a short, styled demo video.
+Build a narrated video from a config file.
 
 A newsreel was a narrated reel of film, released weekly, showing what happened. This produces
-the same thing for your project: narrated footage of the week's work.
+the same thing for a software project, and not only weekly: one line decides whether the same
+shot list comes out as a shipping report, a product demo, an ad, or a launch film.
 
 Playwright drives your app and records one clip per scene. ffmpeg puts each clip inside a
-gradient frame with rounded corners and a soft shadow, speeds it to fit its narration, and
-cuts the whole thing together with a title card, lower-third captions, a voiceover and a
+gradient frame with rounded corners and a soft shadow, cuts it to the length of its own
+narration, and assembles the lot with a title card, lower-third captions, a voiceover and a
 music bed. You get an mp4 and a matching poster image.
 
 Everything project-specific lives in one `newsreel.config.json`. Adding a scene is a config
 change, not a code change. Everything is free and keyless by default; the hosted voice and
 generated music providers are opt-in.
 
+**Try it without an app.** 35 scenes ship inside the package and are drawn by newsreel itself,
+so a video made of those needs no app, no login and no keys:
+
 ```
-newsreel init      # scaffold a config
-newsreel login     # log in once, by hand
-newsreel run       # capture -> cards -> assemble
+npx newsreel init --generated
+npx newsreel run
 ```
+
+That is two commands from an empty directory to a finished mp4. To film your own app instead:
+
+```
+npx newsreel init      # scaffold a config
+npx newsreel login     # log in once, by hand
+npx newsreel run       # capture -> cards -> assemble
+```
+
+**Working with an agent?** `npx newsreel prompt --copy` puts a self-contained brief on your
+clipboard. Paste it into any coding agent and describe the video you want. It is
+[AGENT.md](AGENT.md).
 
 ## Contents
 
@@ -26,6 +41,8 @@ newsreel run       # capture -> cards -> assemble
 - [Requirements](#requirements)
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [Generated scenes](#generated-scenes)
+- [Video kinds](#video-kinds)
 - [Commands](#commands)
 - [Configuration](#configuration)
 - [Backgrounds](#backgrounds)
@@ -80,6 +97,18 @@ npx newsreel init
 
 ## Quickstart
 
+The shortest path, with no app involved at all:
+
+```bash
+npx newsreel init --generated   # a config whose every shot is a bundled scene
+npx newsreel run                # finished mp4 + poster, no login and no keys
+```
+
+Do that first. If it works, the toolchain is wired up, and anything that fails afterwards is
+about the config rather than the install.
+
+To film your own app:
+
 ```bash
 # 1. scaffold a commented config in your project root
 npx newsreel init
@@ -110,12 +139,57 @@ thumbnail. Intermediates (the saved session, clips, cards, any cached music bed)
 `output.workDir`. Point that at a persistent directory, never a session scratchpad, or they
 vanish between runs and a paid music bed gets bought twice. Add it to `.gitignore`.
 
+## Generated scenes
+
+Beside footage of your app, a shot can be a **generated scene**: a visual newsreel draws
+itself, recorded exactly like a captured route. 35 of them ship inside the package, from
+title treatments to backgrounds to a loot beam.
+
+```json
+{ "id": "opener", "type": "generated", "scene": "swirl",
+  "props": { "word": "launch" }, "duration": 9,
+  "caption": "The opener", "narration": "Spoken over this section." }
+```
+
+A generated shot needs no `route`, and a config made only of them needs no `baseUrl`, no
+`auth` and no `login`. The full list with props and when to reach for each is
+[`visuals/LOOKBOOK.md`](visuals/LOOKBOOK.md); every one of them also runs live on the landing
+page under `site/`.
+
+Each scene is a plain ES module exporting `mount(host, props)`, so the same file works in your
+own site:
+
+```js
+import scene from "newsreel/visuals/primitives/swirl.js";
+const handle = await scene.mount(el, { word: "acme" });
+handle.start();          // handle.destroy() when the element goes away
+```
+
+## Video kinds
+
+What a video is *for* decides how it should look and move. `video.kind` sets the palette
+family, the accent, the music bed, the pacing and the title-card layout in one word:
+
+| kind | for | feels like |
+| --- | --- | --- |
+| `report` | a weekly shipping report | calm, legible, unhurried |
+| `demo` | a product walkthrough | confident, focused on the screen |
+| `ad` | a short loud piece | heat and pace, ending on a call to action |
+| `launch` | a launch film | premium, deliberate, a little cinematic |
+
+The background is **rolled from the kind's family** rather than fixed, so two ads come out
+siblings instead of copies. The roll is saved in `workDir/.style-roll` so cards and assemble
+agree; pin it with `style.background.preset` when you want it stable, or pass `--reroll` to
+draw again. Anything set explicitly in the config always wins over the kind's default.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `init` | Scaffold a `newsreel.config.json` from the bundled example. `--force` overwrites. |
+| `init` | Scaffold a `newsreel.config.json`. `--generated` for an all-generated video that needs no app. `--force` overwrites. |
+| `prompt` | Print the agent brief. `--copy` puts it on the clipboard (macOS). |
 | `presets` | List the background presets by id. `--json` for the raw data. |
+| `voices` | List the bundled narration voices. `--install` puts them in Voicebox. |
 | `login` | Headed browser, manual login, saves the session. `--timeout <sec>` (default 480). |
 | `capture` | Record one clip per shot. `--only <shotId>`, `--headless`, `--slow-mo <ms>`. |
 | `cards` | Render the title/closing cards and the lower-thirds. |

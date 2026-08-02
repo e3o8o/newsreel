@@ -18,6 +18,7 @@
       <a href="#collection">Collection</a>
       <a href="#studio">Studio</a>
       <a href="#use">Use it</a>
+      <a href="#agent">Agent</a>
       <a class="nav-cta" href="https://github.com/e3o8o/newsreel">GitHub</a>
     </div>
   </div>
@@ -211,6 +212,42 @@ npx newsreel run
 <span class="c"># backgrounds, music beds, voices</span>
 npx newsreel presets
 npx newsreel voices --install</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ══ agent ═══════════════════════════════════════════════════════════════ -->
+<section class="band" id="agent">
+  <div class="wrap">
+    <div class="agent">
+      <div class="agent-copy">
+        <h2 class="section-title">Or let an agent drive it</h2>
+        <p class="section-sub">
+          One command puts a self-contained brief on your clipboard: the config shape, the two
+          kinds of shot, how to pick a scene, how to write narration that is worth listening to,
+          and the traps that cost real time. Paste it into any coding agent and describe the
+          video you want.
+        </p>
+        <div class="agent-actions">
+          <button class="cmd" type="button" data-copy="npx newsreel prompt --copy"
+                  aria-label="Copy the agent brief command">
+            <span class="cmd-prefix" aria-hidden="true">$</span>
+            <span class="cmd-text">npx newsreel prompt --copy</span>
+            <span class="cmd-icon" aria-hidden="true"></span>
+          </button>
+          <a class="btn-ghost" href="https://github.com/e3o8o/newsreel/blob/main/AGENT.md">Read the brief</a>
+        </div>
+      </div>
+      <div class="agent-start">
+        <h3 class="col-title">Nothing to set up first</h3>
+        <p class="fine">
+          Every shot in this config is a scene newsreel draws itself, so there is no app to run,
+          no login and no keys. Two commands from an empty directory to a finished mp4.
+        </p>
+        <pre class="mini"><code><span class="c"># a video that needs no app at all</span>
+npx newsreel init --generated
+npx newsreel run</code></pre>
+      </div>
     </div>
   </div>
 </section>
