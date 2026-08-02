@@ -11,3 +11,4 @@ npm-debug.log*
 .work/
 .newsreel/
 *.tgz
+dist/
