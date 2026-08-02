@@ -52,7 +52,7 @@ console.log(`site: visuals, assets and catalog copied; ${kinds.length} kinds wri
 const PUBLISH = [
     "index.html", "style.css", "site.js",
     "catalog.json", "kinds.json",
-    "favicon.svg", "favicon-32.png", "apple-touch-icon.png",
+    "favicon.svg", "favicon-32.png", "apple-touch-icon.png", "og.jpg",
     "assets", "visuals", "media",
     "ad/newsreel-ad.mp4", "ad/thumbnail.jpg",
 ];

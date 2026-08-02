@@ -18,7 +18,8 @@
         }
     },
     "style": {
-        "captionBand": 150
+        "captionBand": 150,
+        "cardBackground": { "image": "backdrop.jpg", "flat": "#2a2733" }
     },
     "voice": {
         "provider": "voicebox",
