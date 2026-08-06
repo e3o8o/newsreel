@@ -490,6 +490,39 @@
       "tech": "Canvas 2D cellular fire, own art",
       "scene": "fire",
       "props": {}
+    },
+    {
+      "id": "lifeline",
+      "title": "Lifeline",
+      "blurb": "Milestones on a dashed rail, swept in left to right with a slow-open ease while the track glides to the newest entry. Derived from evilrabbit/lifeline (MIT).",
+      "vibe": [
+        "motion",
+        "ui"
+      ],
+      "status": "live",
+      "tech": "DOM + CSS, framework-free",
+      "scene": "lifeline",
+      "props": {
+        "title": "Q2, week by week",
+        "entries": [
+          {
+            "date": "2026-05-04",
+            "title": "Reconciliation batch",
+            "detail": "8 fixes across mapping",
+            "tag": "W1"
+          },
+          {
+            "date": "2026-06-01",
+            "title": "Salt Edge hardening",
+            "tag": "W5"
+          },
+          {
+            "date": "2026-07-27",
+            "title": "Payroll self-service",
+            "tag": "W13"
+          }
+        ]
+      }
     }
   ]
 }

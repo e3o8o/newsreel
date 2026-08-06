@@ -38,4 +38,5 @@ export const REGISTRY = {
   "style-melt": () => import("../primitives/style-melt.js"),
   "image-sphere": () => import("../primitives/image-sphere.js"),
   "loot-beam": () => import("../primitives/loot-beam.js"),
+  lifeline: () => import("../primitives/lifeline.js"),
 };

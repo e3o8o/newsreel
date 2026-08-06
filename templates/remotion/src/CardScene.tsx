@@ -13,10 +13,16 @@ import type { CardSection } from './data';
 const ease = Easing.bezier(0.16, 1, 0.3, 1);
 
 // Title and closing cards: kicker drops in, headline slides up, bullets stagger in.
-export const CardScene: React.FC<{ card: CardSection }> = ({ card }) => {
-    const frame = useCurrentFrame();
+// With `settled`, the card renders fully assembled from frame 0 (no entrance motion),
+// so the video's first frame matches the thumbnail; only the exit fade remains.
+export const CardScene: React.FC<{ card: CardSection; settled?: boolean }> = ({
+    card,
+    settled = false,
+}) => {
+    const realFrame = useCurrentFrame();
     const { durationInFrames, width } = useVideoConfig();
-    const fadeOut = interpolate(frame, [durationInFrames - 12, durationInFrames - 2], [1, 0], {
+    const frame = settled ? 9999 : realFrame;
+    const fadeOut = interpolate(realFrame, [durationInFrames - 12, durationInFrames - 2], [1, 0], {
         extrapolateLeft: 'clamp',
         extrapolateRight: 'clamp',
     });

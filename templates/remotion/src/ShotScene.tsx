@@ -20,10 +20,16 @@ export const ShotScene: React.FC<{ shot: ShotSection }> = ({ shot }) => {
     const frame = useCurrentFrame();
     const { durationInFrames, width, height, fps } = useVideoConfig();
 
-    // The frame the clip sits in: side margins, room at the bottom for the lower-third.
-    const frameW = width - 194;
-    const frameH = Math.round((frameW / width) * height);
+    // The frame the clip sits in: side margins, and the bottom strip reserved for the
+    // lower-third so the caption never covers app content. The clip scales to fit the
+    // space above that strip, keeping its aspect ratio.
+    const lowerZone = 158;
     const frameTop = 44;
+    const availW = width - 194;
+    const availH = height - frameTop - lowerZone;
+    const fit = Math.min(availW / width, availH / height);
+    const frameW = Math.round(width * fit);
+    const frameH = Math.round(height * fit);
 
     const frozen = frame >= shot.liveFrames;
 

@@ -1,0 +1,217 @@
+/* Lifeline — a milestone timeline swept in left to right on a dashed rail.
+   The keyframes block below is lifted verbatim from evilrabbit/lifeline
+   (app/globals.css, MIT, (c) 2026 Evil Rabbit — see LICENSE); everything
+   after it reimplements the marker column and track styling as plain CSS,
+   mirroring the component's Tailwind utilities and zinc palette. */
+
+/* Lifeline — intro animation plumbing */
+@keyframes lifeline-rail-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes lifeline-marker-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes lifeline-labels-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.lifeline-rail-intro {
+  transform: scaleX(var(--lifeline-intro-progress, 0));
+  transform-origin: left center;
+}
+
+.lifeline-rail-intro-vertical {
+  transform: scaleY(var(--lifeline-intro-progress, 0));
+  transform-origin: top center;
+}
+
+.lifeline-marker-intro {
+  opacity: 0;
+  animation: lifeline-marker-in var(--lifeline-marker-fade-ms, 420ms)
+    cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.lifeline-labels-intro {
+  opacity: 0;
+  animation: lifeline-labels-in var(--lifeline-labels-ms, 600ms)
+    cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* ── scene styling (newsreel, plain CSS) ──
+   Themed from custom properties on the root; the zinc values mirror
+   lifeline's light/dark palette, with event text lifted a step brighter
+   than the component's resting state since nothing hovers in a video. */
+
+.lifeline-root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  font-family: var(--font-neue-montreal);
+  background: var(--ll-bg);
+  /* rail sits this far below the top of the track content: tag row
+     (16px + 20px gap) + date row (20px + 24px gap), lifeline's 5rem. */
+  --ll-rail: 80px;
+  /* where the rail crosses the 900px stage, and the track top with it. */
+  --ll-rail-y: 378px;
+}
+
+.lifeline-root[data-theme="light"] {
+  --ll-bg: #ffffff;
+  --ll-rail-color: #d4d4d8; /* zinc-300 */
+  --ll-tick: #a1a1aa; /* zinc-400 */
+  --ll-tag: #71717a; /* zinc-500 */
+  --ll-date: #71717a; /* zinc-500 */
+  --ll-title: #27272a; /* zinc-800 */
+  --ll-detail: #71717a; /* zinc-500 */
+  --ll-head: #71717a; /* zinc-500 */
+}
+
+.lifeline-root[data-theme="dark"] {
+  --ll-bg: #000000;
+  --ll-rail-color: #27272a; /* zinc-800 */
+  --ll-tick: #3f3f46; /* zinc-700 */
+  --ll-tag: #52525b; /* zinc-600 */
+  --ll-date: #a1a1aa; /* zinc-400 */
+  --ll-title: #e4e4e7; /* zinc-200 */
+  --ll-detail: #71717a; /* zinc-500 */
+  --ll-head: #52525b; /* zinc-600 */
+}
+
+/* The moving strip. Width is the sum of marker widths; the sweep
+   translates it left so the newest entry glides into frame. */
+.lifeline-track {
+  position: absolute;
+  top: calc(var(--ll-rail-y) - var(--ll-rail));
+  left: var(--ll-track-inset, 96px);
+  display: flex;
+  align-items: flex-start;
+  will-change: transform;
+}
+
+.lifeline-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--ll-rail);
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.lifeline-rail-line {
+  height: 1px;
+  width: 100%;
+  border-top: 1px dashed var(--ll-rail-color);
+}
+
+/* One marker column: tick on the rail, tag row above the date, event
+   lines beneath. Same vertical rhythm as lifeline-marker.tsx. */
+.lifeline-col {
+  position: relative;
+  flex-shrink: 0;
+  padding-right: 32px;
+}
+
+.lifeline-tick {
+  position: absolute;
+  left: 0;
+  top: var(--ll-rail);
+  width: 1px;
+  height: 10px;
+  transform: translateY(-50%);
+  background: var(--ll-tick);
+}
+
+.lifeline-col[data-color] .lifeline-tick {
+  background: var(--ll-entry-color);
+}
+
+.lifeline-tag {
+  height: 16px;
+  margin-bottom: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ll-tag);
+}
+
+.lifeline-col[data-color] .lifeline-tag {
+  color: var(--ll-entry-color);
+}
+
+.lifeline-date {
+  height: 20px;
+  margin-bottom: 24px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ll-date);
+}
+
+.lifeline-col[data-empty] .lifeline-date {
+  color: var(--ll-tag);
+}
+
+.lifeline-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 24px;
+  padding-bottom: 40px;
+  max-width: 288px; /* lifeline's 18rem text measure */
+}
+
+.lifeline-line {
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+  color: var(--ll-title);
+}
+
+.lifeline-detail {
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+  color: var(--ll-detail);
+}
+
+/* A `hold` beat freezes the fade clocks with the sweep, so markers still
+   in their delay phase stay pending until `resume`. */
+.lifeline-hold .lifeline-marker-intro,
+.lifeline-hold .lifeline-labels-intro {
+  animation-play-state: paused;
+}
+
+/* The standing header: scene title top-left — lifeline's Age/Years shield
+   column simplified to a static block, since nothing is user-scrolled. */
+.lifeline-head {
+  position: absolute;
+  left: 64px;
+  top: 72px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ll-head);
+}

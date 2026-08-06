@@ -11,7 +11,11 @@ export const Main: React.FC = () => {
             <Series>
                 {data.sections.map((s) => (
                     <Series.Sequence key={s.id} name={s.id} durationInFrames={s.durationInFrames}>
-                        {s.kind === 'card' ? <CardScene card={s} /> : <ShotScene shot={s} />}
+                        {s.kind === 'card' ? (
+                            <CardScene card={s} settled={s.id === '_title'} />
+                        ) : (
+                            <ShotScene shot={s} />
+                        )}
                         {s.voice ? (
                             // Narration starts a short beat into each section so cuts never clip a word.
                             <Sequence from={data.voiceDelayFrames} layout="none">
