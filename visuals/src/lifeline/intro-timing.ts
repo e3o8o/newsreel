@@ -5,10 +5,12 @@
 // calibrated so the first LIFELINE_SLOW_YEARS markers consume
 // LIFELINE_SLOW_TIME_RATIO of the sweep (slow open, accelerating tail), plus
 // the bisection inversion that turns a marker's track offset back into its
-// fade delay. Two local adaptations: `clamp` and `snapToDevicePixel` are
-// inlined from lifeline-utils.ts instead of imported, and the rail-duration
+// fade delay. Three local adaptations: `clamp` and `snapToDevicePixel` are
+// inlined from lifeline-utils.ts instead of imported, the rail-duration
 // scaling from use-lifeline-intro.ts is ported out of hook form into plain
-// functions at the bottom.
+// functions at the bottom, and getEasePower guards slowPortion >= 1 (a track
+// of five or fewer markers), where the power would degenerate to zero and
+// the sweep would jump straight to settled.
 
 /** Tweak these */
 export const LIFELINE_SLOW_YEARS = 5;
@@ -55,7 +57,10 @@ function getEasePower(widths: number[]) {
   const slowPortion = getSlowTrackPortion(widths);
   const softenedPivot = smoothstep(LIFELINE_SLOW_TIME_RATIO);
 
-  if (slowPortion <= 0 || softenedPivot <= 0 || softenedPivot >= 1) {
+  // ⚠️ slowPortion >= 1: every marker is a "slow" marker (short track), and
+  // log(1)/log(pivot) would be 0 — t^0 jumps to 1. Fall back like the other
+  // degenerate inputs.
+  if (slowPortion <= 0 || slowPortion >= 1 || softenedPivot <= 0 || softenedPivot >= 1) {
     return 2.6;
   }
 

@@ -27,7 +27,7 @@ function getEasePower(widths) {
   if (LIFELINE_EASE_POWER > 0) return LIFELINE_EASE_POWER;
   const slowPortion = getSlowTrackPortion(widths);
   const softenedPivot = smoothstep(LIFELINE_SLOW_TIME_RATIO);
-  if (slowPortion <= 0 || softenedPivot <= 0 || softenedPivot >= 1) {
+  if (slowPortion <= 0 || slowPortion >= 1 || softenedPivot <= 0 || softenedPivot >= 1) {
     return 2.6;
   }
   return Math.log(slowPortion) / Math.log(softenedPivot);
