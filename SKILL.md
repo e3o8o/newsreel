@@ -62,7 +62,9 @@ reached production, then what is queued and what is blocked and why.
 
 Every clip renders inside a gradient background with padding, rounded corners and a soft
 shadow, rather than raw full-bleed screen. `style.background` takes a BetterShot preset by
-id (`{"preset": "deep-ocean"}`), a custom gradient, or a solid. The presets were lifted from
+id (`{"preset": "deep-ocean"}`), a custom gradient, or a solid. **Rotate the preset every
+video** (Karo, 2026-08-06): never reuse the previous video's background, pick a different
+one of the 16 gradients each time so the thumbnails stay visually distinct in a feed. The presets were lifted from
 BetterShot's source (16 gradients, 12 solids, plus its shadow formula as reference data),
 which is how the look matches without forking it. Attribution: BetterShot, BSD-3-Clause.
 
