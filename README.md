@@ -19,7 +19,7 @@ Watch the full cut on [newsreel.pages.dev](https://newsreel.pages.dev).*
 
 ## Try it in two commands
 
-No app, no login, no API keys. 35 generated scenes ship inside the package, and a video made
+No app, no login, no API keys. 36 generated scenes ship inside the package, and a video made
 only of those runs on a machine that has just installed it:
 
 ```bash
@@ -43,7 +43,7 @@ want.
 
 Every entry in `shots[]` is either a **captured route** — Playwright opens your app, clicks,
 types and scrolls through the actions you listed — or a **generated scene** drawn by one of
-the bundled visuals ([the lookbook](visuals/LOOKBOOK.md) lists all 35; they all run live on
+the bundled visuals ([the lookbook](visuals/LOOKBOOK.md) lists all 36; they all run live on
 [the landing page](https://newsreel.pages.dev)). Both record the same way and cut together
 in one timeline.
 
@@ -102,7 +102,7 @@ version fight. Narration and music are local and bundled; nothing needs an accou
 | [Voice and music](docs/providers.md) | the bundled voices and beds, hosted options |
 | [Gotchas and limits](docs/gotchas.md) | every entry cost real time once |
 | [Development](docs/development.md) | adding a provider, the skill folder, releasing |
-| [Scene lookbook](visuals/LOOKBOOK.md) | all 35 generated scenes, their props, when to use each |
+| [Scene lookbook](visuals/LOOKBOOK.md) | all 36 generated scenes, their props, when to use each |
 | [Agent brief](AGENT.md) | hand this to a coding agent and it can drive newsreel |
 
 ## Licence

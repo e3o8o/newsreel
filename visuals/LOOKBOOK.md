@@ -46,10 +46,20 @@ contrast, and give every scene at least 5 seconds; most entrances need 2.
 | `galaxy` | A perspective field of images drifting behind text | A background with depth that text still sits on | `images[]`, `text`, `count` |
 | `aurora` | Blurred bars, a bezier mountain, a colour-dodge drift | A calm background under a long narration | `treatment`, `hues[]`, `speed` |
 | `fire` | A pixel fire on a low-res grid you can shove around | A hot ad beat; anything about heat or urgency | `cols`, `palette`, `wind` |
+| `lifeline` | Milestones sweeping onto a dashed rail, slow open, gliding to the newest | A quarter of shipping as one animated timeline | `title`, `entries[]`, `unit`, `theme`, `accent`, `sweepSeconds` |
 
 Timeline beats (`"timeline": [{ "at": s, "action": name }]`): `swirl` takes
 `replay`, `fade` takes `next` (palette), `dotcut` takes `advance` (scene),
-`chrome` takes `ramp`, `typer` takes `out`/`in`.
+`chrome` takes `ramp`, `typer` takes `out`/`in`, `lifeline` takes
+`hold`/`resume` (freeze the sweep on an entry while the narration names it).
+
+`lifeline` entries are `{ date, title, detail?, tag?, color? }` (date ISO,
+tag is the small row above the date, default `W1`.. by week; color tints
+that entry's tick and tag). `start`/`end` bound the axis (default first/last
+entry), `unit` is `week` or `day`, and `sweepSeconds` pins the sweep length;
+without it the sweep uses lifeline's track-length pacing (about 3.2s) and the
+scene holds settled for the rest of the shot. Derived from evilrabbit/lifeline
+(MIT) — see LICENSE.
 
 Gotchas that already cost time: Canvas 2D rejects `var()` font strings, so
 adapters must pass real family lists; props travel base64url as UTF-8 bytes;

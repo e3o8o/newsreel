@@ -1,7 +1,7 @@
 {
     "name": "newsreel",
     "version": "0.2.0",
-    "description": "Build narrated videos from a config file: reports, demos, ads, launch films. Playwright drives your real app, narration runs locally, ffmpeg assembles it with cards, a music bed and 35 generated scenes",
+    "description": "Build narrated videos from a config file: reports, demos, ads, launch films. Playwright drives your real app, narration runs locally, ffmpeg assembles it with cards, a music bed and 36 generated scenes",
     "license": "MIT",
     "repository": {
         "type": "git",

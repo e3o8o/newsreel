@@ -121,7 +121,7 @@ This is what makes the video good or bad, so spend the effort here.
 
 ## Choosing scenes
 
-`visuals/LOOKBOOK.md` inside the package lists all 35 with their props and what each is for.
+`visuals/LOOKBOOK.md` inside the package lists all 36 with their props and what each is for.
 A few reliable picks: `swirl` and `pixel-scan` for an opener, `typer` and `text-reveal` for a
 statement, `design-tiles` for a dense typographic beat, `aurora` and `galaxy` for a background
 under a long narration, `loot-beam` for a release, `cta` to close.
